@@ -127,12 +127,16 @@ Commit: `8c95d2ef3`.
   leaves the folder as it was, `IsRx7000` cases). `dotnet test`: 414 passed.
 - uishot: new `Flows.Rdna3.cs` (fakes the machine as an RX 7000 through `Session.Machine`'s private setter, seeds
   1.0.4 with the component, checks the box and note, ticks, installs, restores the real card and installs again).
-- Gate: GATE_RESULT
+- Gate (`tools\gate.ps1 -Ui`): build, test (414), publish, ui and flows OK; line-limit FAIL on
+  `tests/AmdNr.Core.Tests/GraphicsTests.cs` (504 lines), master's file as it is, untouched here. Screenshots:
+  `C:\Users\matheus\AppData\Local\Temp\amdnr-gate-473cde0b551242148434e0cf942357a7\shots\flow-2-optiscaler-rx7000.png`
+  (box unticked with its note) and `flow-2-optiscaler-rx7000-ticked.png` (the sheet scrolls back to the top after
+  the refresh, so the box is out of view there).
 
 ## Commits
 
 - opti `mochizuki-rdna3`: `27b5e02ef` (port + kit sources), `626502556` (merge), `8c95d2ef3` (checks, ACO slot, menu)
-- installer `rdna3-experimental`: INSTALLER_COMMIT
+- installer `rdna3-experimental`: `dd83cc3`
 
 ## Before release
 
