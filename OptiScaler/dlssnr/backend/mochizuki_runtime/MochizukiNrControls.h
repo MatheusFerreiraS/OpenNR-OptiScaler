@@ -178,6 +178,10 @@ extern "C"
         float reno_norm_slew_stops;
         float reno_mvec_scale_x;
         float reno_mvec_scale_y;
+        /* Natural and Cinematic graded after the network, as NVIDIA's DLL does (upstream 0.0.7's Style Grade):
+         * 1 (default, also for a host whose struct ends before it), 0 the picture these styles had before. Per
+         * frame, no rebuild. */
+        uint32_t style_grade;
     } MochizukiNrControls;
 
     /* What the session is doing, for a menu. Safe to ask from any thread, at any rate. */

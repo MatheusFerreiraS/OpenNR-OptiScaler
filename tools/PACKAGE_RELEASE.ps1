@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.5.4-amd-nr, the version in OptiScaler/resource.h.
+  Default product: OptiScaler-0.5.5-opennr, the version in OptiScaler/resource.h.
   The danielblnc runtime it drives is 0.5.1 (0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1, 0.3.0 and the 0.6.0 supporter build
   still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
@@ -9,11 +9,11 @@
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.5.4-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.5.5-opennr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.5.4-amd-nr',
+    [string]$Version = '0.5.5-opennr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',
@@ -260,9 +260,11 @@ MochizukiPreprocessCurve=3
 MochizukiPreprocessContrast=1
 MochizukiPreprocessSaturation=1
 ; NoiseEveryFrame: frames without motion vectors move the noise seed every frame. LayerMode is read and
-; ignored (older builds' 30-layer switch).
+; ignored (older builds' 30-layer switch). StyleGrade: Natural and Cinematic graded after the network, as
+; NVIDIA's DLL does; false gives the picture these styles had before.
 MochizukiNoiseEveryFrame=false
 MochizukiLayerMode=0
+MochizukiStyleGrade=true
 ; mochizuki RenoDX stage: RenoDX's encode and composition around the network (RenoComposition is not used
 ; with mochizuki). RenoPasses (1-4, 1-30 with RenoUnlockPasses), RenoResolutionScale and
 ; RenoSourceEncoding rebuild the network; the game's exposure is the stage's feed (RenoFeedMode).

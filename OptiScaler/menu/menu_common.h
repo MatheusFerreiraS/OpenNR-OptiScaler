@@ -164,6 +164,7 @@ class MenuCommon
     // Labels for the Neural Rendering comparison views. Drawn every frame, into the frame plane,
     // so a screenshot keeps them and the wipe reveals and hides them like the images.
     static void RenderNrCompareTags();
+    static void RenderNrBadge();
     static void RenderMainMenuWindow(RenderMenuContext& ctx);
 
     // RenderMainMenuWindow section helpers. These keep the main window flow readable

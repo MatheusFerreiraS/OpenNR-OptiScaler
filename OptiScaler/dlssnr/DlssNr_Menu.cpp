@@ -412,7 +412,8 @@ static void ResetMochizuki(Config* c)
           c->MochizukiJitterHistory, c->MochizukiAntiHaloStrength, c->MochizukiPassEstimate, c->MochizukiApplyModel,
           c->MochizukiUseDepth, c->MochizukiDynamicResolution, c->MochizukiPreprocess, c->MochizukiPreprocessExposure,
           c->MochizukiPreprocessBias, c->MochizukiPreprocessCurve, c->MochizukiPreprocessContrast,
-          c->MochizukiPreprocessSaturation, c->MochizukiLayerMode, c->MochizukiNoiseEveryFrame);
+          c->MochizukiPreprocessSaturation, c->MochizukiLayerMode, c->MochizukiNoiseEveryFrame,
+          c->MochizukiStyleGrade);
 #define MZR_F(name, def, lo, hi, group, label, member, help) Unset(c->name);
 #define MZR_U MZR_F
 #define MZR_B MZR_F
@@ -453,6 +454,7 @@ static void ResetDaniel(Config* c)
           c->DlssNrWhitePointSource, c->DlssNrWhitePointScale, c->DlssNrWhitePointTrim, c->DlssNrScanMeter,
           c->DlssNrScanInverted, c->DlssNrScanTrim, c->DlssNrHoldFrame, c->DlssNrCompare, c->DlssNrCompareSplit,
           c->DlssNrCompareZoom, c->DlssNrCompareSwap, c->DlssNrCompareTags, c->DlssNrTagScale, c->DlssNrDebugView);
+    Unset(c->DlssNrBadge, c->DlssNrBadgeCorner, c->DlssNrBadgeScale);
     UnsetReno(c);
 }
 
@@ -539,6 +541,26 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nOn: the model of 310.8, which int4 mixed needs. Switching rebuilds the network.");
         }
 
+        bool badge = config->DlssNrBadge.value_or_default();
+        if (ImGui::Checkbox("NR ON badge", &badge))
+            config->DlssNrBadge = badge;
+
+        HelpMarker("Puts the \"NR ON\" badge in a corner of the frame while Neural Rendering"
+                   "\nruns, so a screenshot or a video says it was on. It goes away by itself"
+                   "\nwhen NR is switched off, and needs no restart.");
+
+        if (badge)
+        {
+            static const char* cornerNames[] = { "Top left", "Top right", "Bottom left", "Bottom right" };
+            int corner = (int) std::min<uint32_t>(config->DlssNrBadgeCorner.value_or_default(), 3);
+            if (ImGui::Combo("Badge corner", &corner, cornerNames, IM_ARRAYSIZE(cornerNames)))
+                config->DlssNrBadgeCorner = (uint32_t) corner;
+
+            float badgeScale = config->DlssNrBadgeScale.value_or_default();
+            if (ImGui::SliderFloat("Badge size", &badgeScale, 0.5f, 3.0f, "%.1fx"))
+                config->DlssNrBadgeScale = std::clamp(badgeScale, 0.5f, 3.0f);
+        }
+
         // With more than one runtime installed, choose the one the next launch uses. This session keeps the
         // one it started with: each installs its own D3D12 hooks as the device is created.
         {
@@ -597,7 +619,7 @@ void RenderMenu(Config* config, float menuResScale)
         {
             HGap(0.12f);
             ImGui::TextDisabled("lmxxf");
-            HelpMarker("AMD NR runtime: lmxxf (open-source HIP kernels, same-frame execution)."
+            HelpMarker("NR runtime: lmxxf (open-source HIP kernels, same-frame execution)."
                        "\nNrBackend in OptiScaler.ini picks the runtime; restart after changing it.");
             ResetAllButton("lmxxf", config, ResetLmxxf);
 
@@ -717,7 +739,7 @@ void RenderMenu(Config* config, float menuResScale)
         {
             HGap(0.12f);
             ImGui::TextDisabled("mochizuki");
-            HelpMarker("AMD NR runtime: mochizuki (open-source Vulkan network on a device of its own,"
+            HelpMarker("NR runtime: mochizuki (open-source Vulkan network on a device of its own,"
                        "\nsame-frame execution). NrBackend in OptiScaler.ini picks the runtime; restart after"
                        "\nchanging it.");
             ResetAllButton("mochizuki", config, ResetMochizuki);
@@ -798,6 +820,12 @@ void RenderMenu(Config* config, float menuResScale)
             {
                 ScopedIndent indent {};
                 MochizukiRenoGroup(config, 1);
+                bool styleGrade = config->MochizukiStyleGrade.value_or_default();
+                if (ImGui::Checkbox("Style grade", &styleGrade))
+                    config->MochizukiStyleGrade = styleGrade;
+                HelpMarker("Natural and Cinematic: the network's answer is graded afterwards, as NVIDIA's DLL"
+                           "\ndoes, so the two styles look apart. Off gives the picture they had before (little"
+                           "\ndifference in some games). Standard is not graded. No rebuild.");
             }
             if (auto section = ScopedCollapsingHeader("Passes##mzsection", ImGuiTreeNodeFlags_DefaultOpen);
                 section.IsHeaderOpen())
@@ -998,8 +1026,8 @@ void RenderMenu(Config* config, float menuResScale)
             const bool haveVer = ver && *ver;
             HGap(0.12f);
             ImGui::TextDisabled("%s", haveVer ? ver : "pass1?");
-            HelpMarker(haveVer ? "AMD NR runtime: danielblnc (DLSS-NR-on-AMD)."
-                               : "AMD NR runtime: pass1 not identified yet.");
+            HelpMarker(haveVer ? "NR runtime: danielblnc (DLSS-NR-on-AMD)."
+                               : "NR runtime: pass1 not identified yet.");
             ResetAllButton("danielblnc", config, ResetDaniel);
         }
 

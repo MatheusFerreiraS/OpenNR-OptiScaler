@@ -16,6 +16,7 @@
 #include <misc/Screenshot.h>
 
 #include "font/Hack_Compressed.h"
+#include "font/NrOnBadge.h"
 
 #include <proxies/XeSS_Proxy.h>
 #include <proxies/XeFG_Proxy.h>
@@ -1788,6 +1789,15 @@ void MenuCommon::UpdateVersionAndStartupNotifications(RenderMenuContext& ctx)
     }
 }
 
+// The "NR ON" badge shows only while the model has run in the last second, so it goes when NR is switched off
+// or stops, and the setting takes effect the next frame.
+static bool NrBadgeShown()
+{
+    auto* config = Config::Instance();
+    return config->DlssNrBadge.value_or_default() && config->DlssNrEnabled.value_or_default() &&
+           DlssNr::AmdBridge::NeuralMsLast() > 0.f;
+}
+
 void MenuCommon::BeginMenuFrameIfNeeded(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
@@ -1805,6 +1815,7 @@ void MenuCommon::BeginMenuFrameIfNeeded(RenderMenuContext& ctx)
 
     if ((!config->DisableSplash.value_or_default() && now > splashStart && now < splashLimit) ||
         config->ShowFps.value_or_default() || _isVisible || ImGui::notifications.size() > 0 || scanIndicator ||
+        NrBadgeShown() ||
         (config->DlssNrCompare.value_or_default() != 0 && config->DlssNrCompareTags.value_or_default()))
     {
         if (!_isUWP)
@@ -2042,9 +2053,70 @@ void MenuCommon::RenderNrCompareTags()
     drawTag(rightText, splitX + margin, ImVec2(splitX, 0.0f), ImVec2(screen.x, screen.y));
 }
 
+// The badge's pixels live in a rectangle of the font atlas, which every backend (DX9, DX11, DX12, Vulkan,
+// OpenGL) already uploads, so it needs no texture of its own. The rectangle is added again whenever the
+// current atlas no longer has it.
+void MenuCommon::RenderNrBadge()
+{
+    if (!NrBadgeShown())
+        return;
+
+    const ImVec2 screen = ImGui::GetIO().DisplaySize;
+
+    if (screen.x < 1.0f || screen.y < 1.0f)
+        return;
+
+    static ImFontAtlas* owner = nullptr;
+    static ImFontAtlasRectId id = ImFontAtlasRectId_Invalid;
+    ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+    ImFontAtlasRect r;
+
+    if (owner != atlas || !atlas->GetCustomRect(id, &r))
+    {
+        if (atlas->TexData == nullptr || atlas->TexData->Format != ImTextureFormat_RGBA32)
+            return;
+
+        id = atlas->AddCustomRect(NrOnBadgeWidth, NrOnBadgeHeight, &r);
+
+        if (id == ImFontAtlasRectId_Invalid)
+            return;
+
+        owner = atlas;
+        atlas->TexPixelsUseColors = true;
+
+        int x = 0, y = 0;
+
+        for (size_t i = 0; i + 1 < IM_ARRAYSIZE(NrOnBadgeRuns); i += 2)
+        {
+            for (unsigned int n = NrOnBadgeRuns[i]; n > 0; n--)
+            {
+                *(ImU32*) atlas->TexData->GetPixelsAt(r.x + x, r.y + y) = NrOnBadgeRuns[i + 1];
+
+                if (++x == NrOnBadgeWidth)
+                {
+                    x = 0;
+                    y++;
+                }
+            }
+        }
+    }
+
+    auto* config = Config::Instance();
+    const float scale = std::clamp(config->DlssNrBadgeScale.value_or_default(), 0.5f, 3.0f);
+    const float h = screen.y * 0.04f * scale;
+    const float w = h * NrOnBadgeWidth / NrOnBadgeHeight;
+    const float margin = screen.y * 0.02f;
+    const uint32_t corner = config->DlssNrBadgeCorner.value_or_default();
+    const float x = (corner & 1) ? screen.x - margin - w : margin;
+    const float y = (corner & 2) ? screen.y - margin - h : margin;
+
+    ImGui::GetForegroundDrawList()->AddImage(atlas->TexRef, ImVec2(x, y), ImVec2(x + w, y + h), r.uv0, r.uv1);
+}
+
 void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
 {
     RenderNrCompareTags();
+    RenderNrBadge();
 
     auto& state = ctx.state;
     auto config = ctx.config;
@@ -10611,7 +10683,7 @@ void MenuCommon::RenderHudlessResourcesWindow(RenderMenuContext& ctx, ImGuiWindo
     }
 }
 
-// The AMD-NR Discord and the installer's GitHub, at the top left of every page.
+// The OpenNR Discord and the installer's GitHub, at the top left of every page.
 static void MainMenuLinks()
 {
     auto link = [](const char* label, const char* url, const char* tip)
@@ -10621,13 +10693,15 @@ static void MainMenuLinks()
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", tip);
     };
-    link("Discord", "https://discord.gg/wYhvS3JSHM", "Join the AMD Neural Rendering Discord");
+    link("Discord", "https://discord.gg/wYhvS3JSHM", "Join the OpenNR Discord");
     ImGui::SameLine();
-    link("GitHub", "https://github.com/zmodelerlover/AMD-NR-ReShade-Installer", "The AMD-NR installer on GitHub");
+    link("GitHub", "https://github.com/zmodelerlover/OpenNR-Installer", "The OpenNR installer on GitHub");
 }
 
 // The menu's own title bar, a fifth taller than ImGui's and across the whole menu, docked or floating (the dock node
 // shows no tab bar): dragging it moves the floating menu, or takes the docked one out of its node and moves it.
+static constexpr const char* kMenuTitleName = "OpenNR v" VER_FORK_VERSION " OptiScaler";
+
 static void MainMenuTitleBar(const std::string& title)
 {
     ImGuiWindow* const window = ImGui::GetCurrentWindow();
@@ -10640,9 +10714,9 @@ static void MainMenuTitleBar(const std::string& title)
     const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     window->DrawList->AddRectFilled(min, max, ImGui::GetColorU32(focused ? ImGuiCol_TitleBgActive : ImGuiCol_TitleBg),
                                     window->DockIsActive ? 0.0f : window->WindowRounding, ImDrawFlags_RoundCornersTop);
-    // "OptiScaler v<version>" in bold, the game after it as it is. No bold face is loaded: the name is drawn twice,
-    // a pixel apart.
-    static const std::string name = "OptiScaler v" VER_FORK_VERSION VER_FORK_TAG;
+    // "OpenNR v<version> OptiScaler" in bold, the game after it as it is. No bold face is loaded: the name is drawn
+    // twice, a pixel apart.
+    static const std::string name = kMenuTitleName;
     const size_t bold = title.rfind(name, 0) == 0 ? name.size() : 0;
     const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
     const ImVec2 at(min.x + style.FramePadding.x, min.y + (height - ImGui::GetFontSize()) * 0.5f);
@@ -10741,7 +10815,7 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
     // Main menu window
     if (windowTitle.empty())
     {
-        windowTitle = StrFmt("%s - %s %s %s %s", "OptiScaler v" VER_FORK_VERSION VER_FORK_TAG, state.gameExe.c_str(),
+        windowTitle = StrFmt("%s - %s %s %s %s", kMenuTitleName, state.gameExe.c_str(),
                              state.gameName.empty() ? "" : StrFmt("- %s", state.gameName.c_str()).c_str(),
                              (state.detectedQuirks.size() > 0) ? "(Q)" : "", state.isOptiPatcherSucceed ? "(OP)" : "");
     }

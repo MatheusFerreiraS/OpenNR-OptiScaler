@@ -43,6 +43,7 @@
 #include <vulkan/vulkan.h>
 
 #include "mz_interpose.h"
+#include "nr_ini_network.hpp"
 #include "nr_log.hpp"
 #include "nr_pipeline_binary.hpp"
 #include "nr_renodx.hpp"
@@ -600,6 +601,7 @@ struct SessionControls
     uint32_t drsMode = 0;    // MochizukiNrControls::drs_mode: 0 exact, 1 auto, 2 always (Session::DrsExtent)
     bool renodx = true;      // MochizukiNrControls::renodx: the RenoDX stage, with `reno` in place of `model`
     nr::renodx::Settings reno;
+    bool styleGrade = true;  // Runtime::set_style_grade
 };
 
 void DefaultControls(MochizukiNrControls& c)
@@ -630,6 +632,7 @@ void DefaultControls(MochizukiNrControls& c)
     c.enlarge_mode = uint32_t(model.transfer);
     c.classic_scaler = uint32_t(model.classic_scaler);
     c.renodx = 1;
+    c.style_grade = 1;
 #define RDX_F(member, field, def, low, high) c.member = def;
 #define RDX_U RDX_F
 #define RDX_B RDX_F
@@ -680,6 +683,7 @@ SessionControls Sanitise(const MochizukiNrControls& c)
     m.classic_scaler = c.classic_scaler <= 3 ? int(c.classic_scaler) : 1;
     m.noise_every_frame = c.noise_every_frame != 0;
     out.renodx = c.renodx != 0;
+    out.styleGrade = c.style_grade != 0;
 #define RDX_F(member, field, def, low, high) out.reno.field = San(c.member, low, high, def);
 #define RDX_U(member, field, def, low, high) out.reno.field = std::clamp(c.member, uint32_t(low), uint32_t(high));
 #define RDX_B(member, field, def, low, high) out.reno.field = c.member != 0;
@@ -1469,6 +1473,7 @@ struct Job
     float history = 1.f, white = 1.f; // set on the runtime before the frame is recorded
     nr::renodx::Settings reno;        // for a network in the RenoDX stage (ProductRuntime::reno), in place of controls
     float renoExposure = 0.f;         // the game's exposure (MochizukiNrSetExposure), 0 for none
+    bool styleGrade = true;           // set on the runtime before the frame is recorded
 };
 
 // The handle PrepareFrame hands out for job generation gen: odd, so never null and never a pointer.
@@ -3152,6 +3157,12 @@ struct Session
             config.first_pass_output = key.firstPass;
             // The linear path's frame is a proxy made with the soft knee, which the preprocess undoes first.
             config.preprocess_unknee = key.linear;
+            // The game's vectors at the nearest texel, as NVIDIA's DLL binds them (upstream 0.0.7, its NGX route).
+            config.motion_point = true;
+            // A network built while the frames keep the current one runs in that one's activation arena when it has
+            // the room (upstream 0.0.7's shared activation memory): the two never run in one frame.
+            if (keep && runtime)
+                config.act_arena = runtime->act_arena();
             // The RenoDX stage hands the network its own RGBA16F proxy at the stage's extent, one pass at a time, and
             // takes the answer as it is (native compose): RenoDX encodes, preprocesses and composes.
             if (key.renodx)
@@ -3183,7 +3194,10 @@ struct Session
             if (key.renodx)
                 std::snprintf(options, sizeof options, ", in the RenoDX stage at %ux%u, %u pass%s", key.renoWidth,
                               key.renoHeight, key.maxPasses, key.maxPasses == 1 ? "" : "es");
-            nr::logf("[mochizuki] building the%s network at %ux%u, VkFormat %d%s%s%s", key.int4 ? " int4 mixed" : "",
+            nr::logf("[mochizuki] building %s at %ux%u, VkFormat %d%s%s%s",
+                     nr::network_codename(key.int4       ? nr::kSilverAardwoldInt4
+                                          : key.original ? nr::kSilverAardwold
+                                                         : nr::kSmallFp8),
                      key.width, key.height, int(key.format), key.linear ? ", linear colour" : "", options,
                      keep ? "; the frames keep the current one meanwhile" : "");
             UseUtf8Paths();
@@ -3961,6 +3975,7 @@ struct Session
         // Plain fields the core reads while recording; the runtime is used under submitMutex only.
         runtime->set_history_strength(job.history);
         runtime->set_white_point(job.white);
+        runtime->set_style_grade(job.styleGrade);
         bool consumed = false;
         if (motion)
         {
@@ -4382,7 +4397,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             nr::Controls model;
             float history = 1.f, white = 1.f;
             uint32_t linearMode = 0, maxPassesSetting = 0, drsMode = 0;
-            bool renodx = false;
+            bool renodx = false, styleGrade = true;
             nr::renodx::Settings reno;
             const float exposure = s->gameExposure.load(std::memory_order_relaxed);
             {
@@ -4397,6 +4412,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 drsMode = s->controls.drsMode;
                 renodx = s->controls.renodx;
                 reno = s->controls.reno;
+                styleGrade = s->controls.styleGrade;
             }
             // The RenoDX stage runs its own stack, whatever the frame asks for.
             const uint32_t passes = renodx ? nr::renodx::stack_passes(reno) : framePasses;
@@ -4549,6 +4565,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             next.white = white;
             next.reno = reno;
             next.renoExposure = exposure;
+            next.styleGrade = styleGrade;
             s->infoWhite.store(white, std::memory_order_relaxed);
             if (mf.vk)
             {
@@ -4848,7 +4865,7 @@ int32_t GetLastError(char* buf, uint32_t chars)
 // whole fields a caller's struct holds are its first struct_size & ~3 bytes.
 static_assert(alignof(MochizukiNrControls) == 4 &&
               sizeof(MochizukiNrControls) ==
-                  offsetof(MochizukiNrControls, reno_mvec_scale_y) + sizeof(MochizukiNrControls::reno_mvec_scale_y) &&
+                  offsetof(MochizukiNrControls, style_grade) + sizeof(MochizukiNrControls::style_grade) &&
               offsetof(MochizukiNrControls, pass) == 72 && offsetof(MochizukiNrControls, preprocess) == 136 &&
               offsetof(MochizukiNrControls, enlarge_mode) == 164 && offsetof(MochizukiNrControls, renodx) == 176 &&
               sizeof(MochizukiNrPassControls) == 32);

@@ -235,16 +235,20 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    if (std::getenv("E2E_PREP"))
+    // E2E_PREP: the preprocess on; E2E_RENO_STYLE=n: the RenoDX stage's Style (1 Natural, 2 Cinematic: Style grade).
+    if (std::getenv("E2E_PREP") || std::getenv("E2E_RENO_STYLE"))
     {
         auto defs = reinterpret_cast<PFN_MochizukiNrGetControlDefaults>(GetProcAddress(dll, "MochizukiNrGetControlDefaults"));
         auto set = reinterpret_cast<PFN_MochizukiNrSetControls>(GetProcAddress(dll, "MochizukiNrSetControls"));
         MochizukiNrControls c {};
         c.struct_size = sizeof(c);
         Require(defs && set && defs(&c) == LMXXF_NR_OK, "control defaults");
-        c.preprocess = 1;
+        if (std::getenv("E2E_PREP"))
+            c.preprocess = 1;
+        if (const char* st = std::getenv("E2E_RENO_STYLE"))
+            c.reno_style = uint32_t(std::atoi(st));
         Require(set(ctx, &c) == LMXXF_NR_OK, "SetControls");
-        std::printf("preprocess on\n");
+        std::printf("controls: preprocess %u, RenoDX style %u\n", c.preprocess, c.reno_style);
     }
     std::vector<double> times;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT ofp {};

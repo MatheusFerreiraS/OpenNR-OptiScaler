@@ -130,6 +130,7 @@ void FillMochizukiControls(const Config& cfg, MochizukiNrControls& c)
     // Strength 0..1: 1 holds a pixel to the first pass's range, 0 lets a quarter past it (no effect in the stage).
     c.anti_halo_margin = .25f * (1.f - MzSetting(cfg.MochizukiAntiHaloStrength.value_or_default(), 0.f, 1.f, .8f));
     c.noise_every_frame = cfg.MochizukiNoiseEveryFrame.value_or_default() ? 1u : 0u;
+    c.style_grade = cfg.MochizukiStyleGrade.value_or_default() ? 1u : 0u;
     c.renodx = 1u;
     // RenoDX's NeuralUplift switch: Enable NR already turns the stage off, so it has no key of its own
     c.reno_nr_enabled = 1u;
@@ -671,6 +672,26 @@ float HalfToFloat(uint16_t h)
     return f;
 }
 
+// A typeless exposure as its float format (Dying Light: The Beast's is R32_TYPELESS); any other as it is.
+DXGI_FORMAT ExposureFloat(DXGI_FORMAT f)
+{
+    switch (f)
+    {
+    case DXGI_FORMAT_R32_TYPELESS:
+        return DXGI_FORMAT_R32_FLOAT;
+    case DXGI_FORMAT_R32G32_TYPELESS:
+        return DXGI_FORMAT_R32G32_FLOAT;
+    case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+        return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    case DXGI_FORMAT_R16_TYPELESS:
+        return DXGI_FORMAT_R16_FLOAT;
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+        return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    default:
+        return f;
+    }
+}
+
 // The exposure formats the danielblnc bridge takes.
 bool ExposureFormat(DXGI_FORMAT f)
 {
@@ -718,7 +739,8 @@ float LmxxfBackend::GameExposure(ID3D12GraphicsCommandList* cmd, const AmdPreSr:
         return 0.f;
     }
     const D3D12_RESOURCE_DESC ed = frame.exposure->GetDesc();
-    if (ed.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || ed.SampleDesc.Count != 1 || !ExposureFormat(ed.Format))
+    const DXGI_FORMAT format = ExposureFloat(ed.Format);
+    if (ed.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || ed.SampleDesc.Count != 1 || !ExposureFormat(format))
     {
         a.exposureFrames = 0;
         return 0.f;
@@ -756,7 +778,7 @@ float LmxxfBackend::GameExposure(ID3D12GraphicsCommandList* cmd, const AmdPreSr:
     dst.pResource = a.exposureRing;
     dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     dst.PlacedFootprint.Offset = slot * Api::kExposureSlotBytes;
-    dst.PlacedFootprint.Footprint = { ed.Format, 1, 1, 1, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT };
+    dst.PlacedFootprint.Footprint = { format, 1, 1, 1, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT };
     const D3D12_BOX box { 0, 0, 0, 1, 1, 1 };
     const bool move = frame.exposureState != D3D12_RESOURCE_STATE_COPY_SOURCE;
     D3D12_RESOURCE_BARRIER b {};
@@ -775,7 +797,7 @@ float LmxxfBackend::GameExposure(ID3D12GraphicsCommandList* cmd, const AmdPreSr:
     }
     const float pre = std::isfinite(frame.preExposure) && frame.preExposure > 0 ? frame.preExposure : 1.f;
     const float scale = std::isfinite(frame.exposureScale) && frame.exposureScale > 0 ? frame.exposureScale : 1.f;
-    a.exposureFormat[slot] = ed.Format;
+    a.exposureFormat[slot] = format;
     a.exposureScale[slot] = scale / pre;
     if (++a.exposureFrames < Api::kExposureSlots)
         return 0.f;

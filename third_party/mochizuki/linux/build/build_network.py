@@ -6,7 +6,8 @@
 Writes (default build/linux/<arch>/network, with --int4 build/linux/<arch>/network-int4):
     g_<name>.spv + the four marker files   the network, what --spv-dir points at
     runtime/                                 the arch-neutral passes (linux/shaders/passes)
-    temporal/                                the temporal variants and the motion estimator
+    g_<name>_grade.spv                      style_grade: the post block with the Natural/Cinematic grade
+    temporal/                                the temporal variants (+ their _grade twins) and the motion estimator
 
 The host must be compiled with the same constants: linux/build/arch/<arch>.sh.
 --int4: the int4 mixed network (pipelines.json with pipelines-int4.json applied; the host built with NR_INT4=1):
@@ -69,6 +70,14 @@ def main():
         base = pipelines[v['base']]
         glslang(a.arch, R / 'linux/shaders' / a.arch / base['source'], base['defines'] + v['add'],
                 out / 'temporal' / f'{name}.spv')
+    grade = table['style_grade']
+    for name in grade['pipelines']:
+        e = pipelines[name]
+        glslang(a.arch, R / 'linux/shaders' / a.arch / e['source'], e['defines'] + grade['add'], out / f'g_{name}_grade.spv')
+    for name in grade['variants']:
+        base = pipelines[table['variants'][name]['base']]
+        glslang(a.arch, R / 'linux/shaders' / a.arch / base['source'],
+                base['defines'] + table['variants'][name]['add'] + grade['add'], out / 'temporal' / f'{name}_grade.spv')
     for k in MOTION:
         glslang(a.arch, R / 'linux/shaders/passes' / f'{k}.comp', [], out / 'temporal' / f'{k}.spv')
     shutil.copy2(out / 'shader-constants.txt', out / 'temporal' / 'shader-constants.txt')
@@ -85,7 +94,8 @@ def main():
             glslang(a.arch, R / 'linux/shaders/passes' / f'{src}.comp', defines, out / 'runtime' / f'{k}.spv')
         # runtime_upscale.spv carries AMD FidelityFX Super Resolution 1 (MIT): its notice goes with it
         shutil.copy2(R / 'linux/shaders/passes/include/fsr1/LICENSE.txt', out / 'runtime' / 'FidelityFX-FSR1-LICENSE.txt')
-    print(f'{out}: {len(pipelines)} network pipelines, {len(table["variants"]) + len(MOTION)} temporal, '
+    print(f'{out}: {len(pipelines) + len(grade["pipelines"])} network pipelines, '
+          f'{len(table["variants"]) + len(grade["variants"]) + len(MOTION)} temporal, '
           f'{0 if a.int4 else len(RUNTIME) + len(RUNTIME_VARIANTS)} runtime')
 
     if a.check:
