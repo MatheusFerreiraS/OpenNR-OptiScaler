@@ -1267,7 +1267,9 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
     // was not (a game's device made before we could add them) builds with the driver's compiler.
     if (!nr::binary::directory().empty() && !nr::binary::enabled(host.device))
         nr::binary::disable("the device was created without pipeline binaries");
-    if (config.rdna3 && !nr::binary::directory().empty())
+    // The RDNA3 network runs only gfx11 records (the host's dlssnr-amd/aco-gfx11, none yet), never RDNA4's.
+    if (config.rdna3 && !nr::binary::directory().empty() &&
+        std::filesystem::path(nr::binary::directory()).filename() != "aco-gfx11")
         nr::binary::disable("the RDNA3 network has no ACO records");
     const std::string aco = nr::binary::directory();
     const auto native_shaders = installed ? data / (config.rdna3 ? "shaders-rdna3" : "shaders") : root / "build";

@@ -209,7 +209,10 @@ extern "C"
         uint32_t build_stage;
         uint32_t build_done, build_total;
         uint32_t renodx_effective; /* 1: the network the frames run on is the RenoDX stage's */
-        /* The fields end at byte 348 (struct_size as the runtime fills it); sizeof has 4 bytes of tail padding. */
+        /* The session's network: 0 the FP8 one (RX 9000), 1 the RDNA3 one on FP16 matrices, compiled by the driver
+           (RX 7000, experimental), 2 the RDNA3 one from ACO's gfx11 machine code. */
+        uint32_t network;
+        /* The fields end at byte 352, sizeof. */
     } MochizukiNrInfo;
 
     /* All but GetFeatures return an LmxxfNrStatus. SetControls takes effect on the next PrepareFrame; call it on the

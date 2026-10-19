@@ -188,16 +188,20 @@ inline Bytes prologue(const Record& r,unsigned descriptor_slot=33) {
     return b;
 }
 
+// The code objects the adapter takes, by ELF e_flags: RDNA4 only - gfx1200 (0x48, RX 9060 series) or gfx1201 (0x4e,
+// RX 9070 series, Radeon AI PRO R9700). Not gfx11 (0x41 gfx1100, 0x46 gfx1101, 0x47 gfx1102): MochizukiNrRuntime.cpp
+// asks before it would take an RDNA3 network's records.
+inline bool takes_machine(uint32_t mach) { return mach==0x48 || mach==0x4e; }
+
 struct Section { uint32_t name,type;uint64_t flags,addr,offset,size;uint32_t link,info;uint64_t align,entsize; };
 static_assert(sizeof(Section)==64);
 struct Elf {
     Bytes header;std::vector<Section> sections;std::vector<Bytes> data;std::vector<std::string> names;
     explicit Elf(const Bytes& b) {
         range(b,0,64);
-        // e_flags: RDNA4 only - gfx1200 (0x48, RX 9060 series) or gfx1201 (0x4e, RX 9070 series, Radeon AI PRO R9700).
         const auto mach=read<uint32_t>(b,48);
         require(std::memcmp(b.data(),"\x7f" "ELF",4)==0 && b[4]==2 && b[5]==1 && b[7]==65 &&
-                read<uint16_t>(b,16)==1 && read<uint16_t>(b,18)==224 && (mach==0x48 || mach==0x4e) &&
+                read<uint16_t>(b,16)==1 && read<uint16_t>(b,18)==224 && takes_machine(mach) &&
                 read<uint64_t>(b,32)==0 && read<uint16_t>(b,56)==0 && read<uint16_t>(b,58)==64,"unsupported PAL ELF");
         auto count=read<uint16_t>(b,60),str=read<uint16_t>(b,62); auto at=read<uint64_t>(b,40);
         require(count>0 && count<256 && str<count,"ELF section count");range(b,at,size_t(count)*64);

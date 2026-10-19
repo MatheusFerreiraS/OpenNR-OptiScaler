@@ -307,7 +307,7 @@ int main(int argc, char** argv)
                 break;
             api.GetLastError(err, sizeof err);
             // Up to 15 min for a cold build; a failed one is not tried again, so stop there.
-            if (rc == LMXXF_NR_UNAVAILABLE && tries < 9000 && !strstr(err, "build failed"))
+            if (rc == LMXXF_NR_UNAVAILABLE && tries < 9000 && !strstr(err, "build failed") && !strstr(err, "network off"))
             {
                 Sleep(100);
                 continue;

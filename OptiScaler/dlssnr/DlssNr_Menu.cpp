@@ -404,6 +404,26 @@ static void ResetLmxxf(Config* c)
     UnsetPerson(c);
 }
 
+// The mochizuki runtime's network, for its page: 1 the RX 7000 one (RDNA3: FP16 matrices, compiled by the driver), 2
+// the same from ACO's gfx11 code, 0 the FP8 one or no session. `off`: why the RX 7000 network stays off, when the
+// runtime said so (its self-check failed: the status carries the reason, "[unsupported] ..." at the start).
+static uint32_t MochizukiNetwork(std::string& off)
+{
+    static constexpr std::string_view kOff = "RDNA3 network off: ", kNoNr = " (NO NR)";
+    const std::string status = DlssNr::AmdBridge::Status();
+    if (const size_t at = status.find(kOff); at != std::string::npos)
+    {
+        off = status.substr(at + kOff.size());
+        if (off.ends_with(kNoNr))
+            off.resize(off.size() - kNoNr.size());
+    }
+    MochizukiNrInfo info {};
+    return DlssNr::Backend::LmxxfBackend::MochizukiInfo(info) &&
+                   info.struct_size >= offsetof(MochizukiNrInfo, network) + sizeof info.network
+               ? info.network
+               : 0;
+}
+
 static void ResetMochizuki(Config* c)
 {
     // The keys the page no longer shows (no effect in the RenoDX stage) go back to their defaults too.
@@ -749,6 +769,28 @@ void RenderMenu(Config* config, float menuResScale)
                                    "\n\nThe fps is 1000 divided by that time: how many frames per second the"
                                    "\nmodel alone could keep up with. The game runs slower than that, because"
                                    "\nthe rest of the frame takes time too.");
+            // The RX 7000's network (no FP8 there: mauri870's port to FP16 matrices), or why it stays off.
+            std::string rdna3Off;
+            const uint32_t network = MochizukiNetwork(rdna3Off);
+            const bool rdna3 = network != 0 || !rdna3Off.empty();
+            if (!rdna3Off.empty())
+            {
+                ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "RX 7000 network off: %s", rdna3Off.c_str());
+                HelpMarker("Before the RX 7000 network runs, the runtime checks how the driver lays out the GPU's"
+                           "\nmatrices and compiles every one of its pipelines once, apart from the game. One of"
+                           "\nthose failed, so NR stays off rather than draw a wrong picture or crash. The verdict"
+                           "\nis kept for this driver (dlssnr-amd\\rdna3-check.txt); a new driver is checked again."
+                           "\nmochizuki_nr.log has the details.");
+            }
+            else if (network)
+            {
+                ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "RX 7000 (experimental, FP16 network%s)",
+                                   network == 2 ? ", ACO" : "");
+                HelpMarker("The RX 7000 has no FP8, so this runs mauri870's port of the network to FP16"
+                           "\nmatrices: slower than on an RX 9000, and about 2 GB more VRAM at 1080p. The GPU's"
+                           "\nmatrix layout and every pipeline were checked before the first build."
+                           "\nExperimental: if the picture looks wrong, turn NR off and report it.");
+            }
             // A build takes from seconds to over a minute, and the frames go without NR (or on the previous network)
             // meanwhile: say so where the cost will appear, so it does not look broken.
             if (MochizukiNrInfo info {}; config->DlssNrEnabled.value_or_default() &&
@@ -942,22 +984,28 @@ void RenderMenu(Config* config, float menuResScale)
             {
                 ScopedIndent indent {};
                 MochizukiRenoGroup(config, 7);
+                // Neither is made for the RX 7000 network yet: the driver compiles it, and it has no int4 variant.
+                ImGui::BeginDisabled(rdna3);
                 bool aco = config->MochizukiAco.value_or_default();
                 if (ImGui::Checkbox("ACO machine code (restart)", &aco))
                     config->MochizukiAco = aco;
-                HelpMarker("Runs the network as machine code made in advance by ACO, the Linux driver's compiler,"
-                           "\ninstead of compiling it with AMD's Windows one: about a fifth faster, the same picture."
-                           "\nTested by its author on AMD Software 26.9.2 only; if the game crashes or the picture is"
-                           "\nwrong, turn it off. Save Settings and start the game again to apply it.");
-                ImGui::BeginDisabled(!aco);
+                ImGui::EndDisabled();
+                HelpMarker(rdna3 ? "Not on the RX 7000: ACO's machine code is made for the RX 9000 only, so the"
+                                   "\ndriver compiles the RX 7000 network."
+                                 : "Runs the network as machine code made in advance by ACO, the Linux driver's compiler,"
+                                   "\ninstead of compiling it with AMD's Windows one: about a fifth faster, the same picture."
+                                   "\nTested by its author on AMD Software 26.9.2 only; if the game crashes or the picture is"
+                                   "\nwrong, turn it off. Save Settings and start the game again to apply it.");
+                ImGui::BeginDisabled(!aco || rdna3);
                 bool int4 = config->MochizukiInt4.value_or_default();
                 if (ImGui::Checkbox("int4 mixed network (old model only)", &int4))
                     config->MochizukiInt4 = int4;
                 ImGui::EndDisabled();
-                HelpMarker("Runs part of the network in 4-bit integers: about a tenth faster than ACO alone, the"
-                           "\npicture close to the default network's but not the same. Needs ACO. Switching builds"
-                           "\nthe other network in a few seconds while the current one keeps running; no restart."
-                           "\nMade from the old model only, so it runs that one while it is on.");
+                HelpMarker(rdna3 ? "Not on the RX 7000: there is no int4 mixed network for it."
+                                 : "Runs part of the network in 4-bit integers: about a tenth faster than ACO alone, the"
+                                   "\npicture close to the default network's but not the same. Needs ACO. Switching builds"
+                                   "\nthe other network in a few seconds while the current one keeps running; no restart."
+                                   "\nMade from the old model only, so it runs that one while it is on.");
                 // MochizukiDynamicResolution: exact, auto or always; anything else is auto, as the host sends it.
                 const std::string dynamicResolution = config->MochizukiDynamicResolution.value_or_default();
                 int drs = dynamicResolution == "exact" ? 1 : dynamicResolution == "always" ? 2 : 0;

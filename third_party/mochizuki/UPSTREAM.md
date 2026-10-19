@@ -306,6 +306,9 @@ Local patches:
     f32 ALU), and `pipelines.json` has rdna4's `style_grade` table (`fswinimagepost32`, the three `temporal_post_fp32*`
     variants). The RDNA4 `_grade` SPIR-V cannot serve RDNA3: each is the whole post block, FP8 matrices included.
     The RDNA3 ones declare no Float8 capability. On the forced RX 9070 XT Natural runs and differs from Standard.
+17. The ACO slot for RDNA3: `nr_pal_binary.hpp` names the code objects it takes (`takes_machine`: gfx1200 and
+    gfx1201, as before) so the host can ask before it would take gfx11 records, and `nr_runtime.cpp` lets an RDNA3
+    network run ACO only from a bundle named `aco-gfx11` (never RDNA4's records). No gfx11 records exist yet.
 
 The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
 OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;
@@ -315,6 +318,32 @@ RDNA3 network on any card. ACO and int4 mixed are off with it. The prewarm uses 
 `pipeline-rdna3.cache` and `prewarm\manifest-rdna3.txt`. The log says which network and why:
 `[mochizuki] the RDNA3 network, on FP16 matrices: <reason>` or `[mochizuki] the FP8 network (VK_EXT_shader_float8)`.
 The VRAM check adds the twins (336 MB and 384 bytes a model pixel).
+
+Before the RDNA3 network runs, the host checks the device (`OptiScaler/dlssnr/backend/mochizuki_runtime/mz_rdna3.cpp`),
+and either check failing keeps NR off with the reason (`[mochizuki] RDNA3 network off: ...`, shown on the menu's
+mochizuki page). Both verdicts are kept in `dlssnr-amd\rdna3-check.txt` by device id and driver version (the
+pipelines' also by the names and sizes of the shader files), so each runs once a driver:
+- the layout probes of the RX 7000 kit (`rdna3_probe/*.comp`, embedded as SPIR-V): accumulator f32 and f16 maps, A and
+  B with 16 components a lane, the lane-half rule and the k-pair swap, as tiny dispatches on the network's own device
+  at the session's start (124 ms on the RX 9070 XT). A failure is the adapter's `[unsupported]` reason;
+- every pipeline of `shaders-rdna3` and `shaders\renodx` (99) compiled in a child process (`rundll32` on the DLL's
+  `MochizukiNrPipelineCheck` entry) on the builder thread before its locks, at below-normal priority on up to 8
+  threads, 300 s without progress counting as a hang. A crash with several pipelines in flight runs each of them
+  again alone to name it. The child's AMD driver cache is its own (per executable), so it warms nothing for the game:
+  on the RX 9070 XT the check took 12.3 s cold, then the network's own cold build 15.7 s.
+`MZ_RDNA3_CHECK=0` skips both, `=pipelines` the probes only (with `MZ_FORCE_RDNA3=1` on an RX 9000, whose layout
+fails the probes); the hooks `MZ_TEST_RDNA3_COMPILE_CRASH=<file>`, `MZ_TEST_RDNA3_COMPILE_HANG=<file>` and
+`MZ_TEST_RDNA3_TIMEOUT_MS` test the child's paths.
+
+ACO for the RDNA3 network: with ACO asked for, the host looks for `dlssnr-amd\aco-gfx11\` laid out as `aco\`
+(`records\` named by the hash of the SPIR-V in `shaders\`, which `linux/build/build_network.py rdna3` makes, and an
+optional `shell\` and `shell-aliases.txt`) and takes it when the PAL adapter takes the GPU's code objects (gfx1100
+0x41, gfx1101 0x46, gfx1102 0x47 by device id); otherwise `[mochizuki] ACO off for the RDNA3 network: no gfx11 ACO
+records ...` or `... the PAL adapter takes gfx1200/gfx1201 code objects only`, and the driver compiles
+`shaders-rdna3`. To plug mochizuki0323's records in: the gfx11 code objects in `aco-gfx11\records\`, the SPIR-V they
+were made from in `aco-gfx11\shaders\` (+ `temporal\`), `nr::pal::takes_machine` and the PAL adapter's
+register/user-data handling extended to gfx11, and the pipeline check then run on the template shaders the records go
+into.
 
 On an RX 9070 XT with `MZ_FORCE_RDNA3=1` (driver 26.9.2) every pipeline compiles, the network builds (16 s cold at
 1080p) and runs at 720p, 1080p and 4K without errors; the picture is wrong, as gfx12's fragment layout is not gfx11's.

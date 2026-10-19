@@ -17,7 +17,7 @@ cl %CL_% /I "%VK%\Include" vkprobe.cpp /Fe"%F%\vkprobe.exe" /link "%VK%\Lib\vulk
 cl %CL_% /I "%VK%\Include" pipecheck.cpp /Fe"%F%\pipecheck.exe" /link "%VK%\Lib\vulkan-1.lib" delayimp.lib /DELAYLOAD:vulkan-1.dll || exit /b 1
 cl %CL_% /I "%OS_%\lmxxf_runtime" /I "%OS_%\mochizuki_runtime" mz_e2e.cpp /Fe"%F%\mz_e2e.exe" /link d3d12.lib dxgi.lib windowscodecs.lib ole32.lib || exit /b 1
 cl %CL_% compare.cpp /Fe"%F%\compare.exe" /link windowscodecs.lib ole32.lib || exit /b 1
-for %%s in (acc32 acc16 fraga fragb halves kswap) do "%GLSLANG%" --target-env vulkan1.3 -o "%F%\probe\%%s.spv" probe\%%s.comp >nul || exit /b 1
+for %%s in (acc32 acc16 fraga fragb halves kswap) do "%GLSLANG%" --target-env vulkan1.3 -o "%F%\probe\%%s.spv" ..\..\OptiScaler\dlssnr\backend\mochizuki_runtime\rdna3_probe\%%s.comp >nul || exit /b 1
 copy /y "%RT%\MochizukiNrRuntime.dll" "%F%\" >nul || exit /b 1
 robocopy "%RT%\dlssnr-amd\shaders-rdna3" "%F%\dlssnr-amd\shaders-rdna3" /e /purge /njh /njs /nfl /ndl >nul
 robocopy "%RT%\dlssnr-amd\shaders\renodx" "%F%\dlssnr-amd\shaders\renodx" /e /purge /njh /njs /nfl /ndl >nul

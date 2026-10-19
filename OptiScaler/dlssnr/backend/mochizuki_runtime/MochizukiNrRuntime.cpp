@@ -43,6 +43,7 @@
 #include <vulkan/vulkan.h>
 
 #include "mz_interpose.h"
+#include "mz_rdna3.h"
 #include "nr_ini_network.hpp"
 #include "nr_log.hpp"
 #include "nr_pipeline_binary.hpp"
@@ -60,6 +61,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -226,6 +228,44 @@ const TestHooks& Hooks()
     return hooks;
 }
 std::atomic<bool> g_buildOomInjected { false }; // MZ_TEST_BUILD_OOM_ONCE: once per process
+
+// The RDNA3 network's checks (mz_rdna3.h): their verdicts, by device and driver. MZ_RDNA3_CHECK=0 skips both checks,
+// =pipelines the layout probes only (diagnostics: MZ_FORCE_RDNA3 on an RX 9000 then builds and runs).
+std::wstring Rdna3CheckFile() { return DataDirectory() + L"\\dlssnr-amd\\rdna3-check.txt"; }
+
+bool Rdna3CheckSkips(bool layout)
+{
+    char v[16] {};
+    if (!GetEnvironmentVariableA("MZ_RDNA3_CHECK", v, sizeof v))
+        return false;
+    return !std::strcmp(v, "0") || (layout && !std::strcmp(v, "pipelines"));
+}
+
+// The RDNA3 network's pipelines (shaders-rdna3, and the RenoDX stage's in shaders\renodx), and the key the pipeline
+// check's verdict is kept under: the device's, and a hash of the files' names and sizes, so other shaders (a new
+// release) are checked again.
+std::vector<std::wstring> Rdna3PipelineFiles(std::string& key)
+{
+    std::vector<std::wstring> files;
+    std::error_code ec;
+    for (const wchar_t* dir : { L"\\dlssnr-amd\\shaders-rdna3", L"\\dlssnr-amd\\shaders\\renodx" })
+        for (const auto& e : std::filesystem::recursive_directory_iterator(DataDirectory() + dir, ec))
+            if (e.path().extension() == L".spv")
+                files.push_back(e.path().wstring());
+    std::sort(files.begin(), files.end());
+    uint64_t h = 1469598103934665603ull;
+    for (const std::wstring& f : files)
+    {
+        const std::wstring name = std::filesystem::path(f).filename().wstring() + L"|" +
+                                  std::to_wstring(std::filesystem::file_size(f, ec));
+        for (wchar_t c : name)
+            h = (h ^ uint64_t(c)) * 1099511628211ull;
+    }
+    char text[24];
+    std::snprintf(text, sizeof text, "-%016llx", static_cast<unsigned long long>(h));
+    key += text;
+    return files;
+}
 
 // Adapters the network cannot run on: a Start that threw "[unsupported] ..." (a missing extension or feature, or
 // no Vulkan device for the adapter). That does not change while the process lives, so a later PrepareSession on the
@@ -721,6 +761,8 @@ struct Vulkan
     uint32_t family = 0;
     bool bufferDeviceAddress = false; // enabled on `device`; the network reads its arena through it where faster
     bool rdna3 = false; // the RDNA3 network on FP16 matrices (RuntimeConfig::rdna3): no FP8 on the device
+    bool rdna3Aco = false; // ... as ACO's gfx11 machine code (Rdna3Aco)
+    uint32_t deviceId = 0, driverVersion = 0; // as AMD's driver reports them: the key of the RDNA3 verdicts
     VkPhysicalDeviceMemoryProperties memory {};
     PFN_vkGetMemoryWin32HandlePropertiesKHR memoryHandleProperties {};
     PFN_vkImportSemaphoreWin32HandleKHR importSemaphore {};
@@ -900,6 +942,8 @@ struct Vulkan
             if (reported.properties.vendorID != 0x1002 || driver.driverID != VK_DRIVER_ID_AMD_PROPRIETARY)
                 nr::driver::amd_reported(p, &reported.properties, &driver);
             const bool amd = reported.properties.vendorID == 0x1002;
+            deviceId = reported.properties.deviceID;
+            driverVersion = reported.properties.driverVersion;
             const bool rdna4 = amd && (reported.properties.deviceID & 0xFF00) == 0x7500;
             candidateRdna3 = forceRdna3 || (!hasFp8Extension && amd && !rdna4);
             for (const char* e : extensions)
@@ -1007,9 +1051,7 @@ struct Vulkan
             // Not offered or not asked for: off, out of the device's chain and extension list.
             coop.pNext = &f11;
             nr::logf("[mochizuki] the RDNA3 network, on FP16 matrices: %s", rdna3Why.c_str());
-            if (!nr::binary::directory().empty())
-                nr::logf("[mochizuki] ACO off: the RDNA3 network has no ACO records");
-            nr::binary::disable("the RDNA3 network has no ACO records");
+            Rdna3Aco();
         }
         else
             nr::logf("[mochizuki] the FP8 network (VK_EXT_shader_float8)");
@@ -1055,6 +1097,82 @@ struct Vulkan
             vkGetDeviceProcAddr(device, "vkImportSemaphoreWin32HandleKHR"));
         if (!memoryHandleProperties || !importSemaphore)
             throw std::runtime_error("the Win32 external memory entry points are missing");
+        if (rdna3)
+            Rdna3Layout();
+    }
+
+    // ACO for the RDNA3 network, when it was asked for (ConfigureAco set dlssnr-amd\aco up): mochizuki0323 plans
+    // mauri870's network as gfx11 machine code, which would sit in dlssnr-amd\aco-gfx11\ laid out as aco\ is
+    // (records\ named by the hash of the SPIR-V in shaders\, which linux\build\build_network.py rdna3 makes). It is
+    // taken when its records are there and the PAL adapter takes this GPU's code objects (nr::pal::takes_machine);
+    // otherwise the driver compiles the network from shaders-rdna3. Neither is so yet: the adapter is gfx12 only.
+    void Rdna3Aco()
+    {
+        const std::string asked = nr::binary::directory();
+        if (asked.empty())
+        {
+            nr::binary::disable("the RDNA3 network has no ACO records");
+            return;
+        }
+        const std::string bundle = RootUtf8(DataDirectory()) + "\\dlssnr-amd\\aco-gfx11";
+        // gfx1100 (Navi 31), gfx1101 (Navi 32), gfx1102 (Navi 33): their code objects' ELF e_flags.
+        const uint32_t mach = (deviceId & 0xFFF0) == 0x7470 ? 0x46 : (deviceId & 0xFFF0) == 0x7480 ? 0x47 : 0x41;
+        const char* why = GetFileAttributesA((bundle + "\\records").c_str()) == INVALID_FILE_ATTRIBUTES ||
+                                  GetFileAttributesA((bundle + "\\shaders").c_str()) == INVALID_FILE_ATTRIBUTES
+                              ? "no gfx11 ACO records (dlssnr-amd\\aco-gfx11\\records\\)"
+                          : !nr::pal::takes_machine(mach)
+                              ? "the PAL adapter takes gfx1200/gfx1201 code objects only, not this GPU's"
+                              : nullptr;
+        if (why)
+        {
+            nr::logf("[mochizuki] ACO off for the RDNA3 network: %s; the driver compiles it", why);
+            nr::binary::disable(std::string("the RDNA3 network: ") + why);
+            return;
+        }
+        nr::binary::configure(bundle, { bundle + "\\shell", RootUtf8(DataDirectory()) + "\\dlssnr-amd\\shaders-rdna3",
+                                        RootUtf8(DataDirectory()) + "\\dlssnr-amd\\shaders-rdna3\\temporal" },
+                              nr::binary::cache_dir(), {});
+        rdna3Aco = true;
+        nr::logf("[mochizuki] ACO: the RDNA3 network runs ACO's gfx11 machine code from %s", bundle.c_str());
+    }
+
+    // The RDNA3 network's fragment layout on this device (mzr3::LayoutCheck), once a driver, and the pipeline check's
+    // verdict when it failed before: either keeps the network off ("[unsupported] ...", the adapter's reason for the
+    // process; the menu shows it).
+    void Rdna3Layout() const
+    {
+        const std::wstring file = Rdna3CheckFile();
+        const std::string key = mzr3::Key(deviceId, driverVersion);
+        std::string pipelines = key, why;
+        Rdna3PipelineFiles(pipelines);
+        if (!Rdna3CheckSkips(false) && mzr3::Cached(file, pipelines, "pipelines", why) && !why.empty())
+            why += " (an earlier check's, kept in dlssnr-amd\\rdna3-check.txt)";
+        else if (Rdna3CheckSkips(true))
+        {
+            nr::logf("[mochizuki] the RDNA3 layout probes are skipped (MZ_RDNA3_CHECK)");
+            return;
+        }
+        else if (mzr3::Cached(file, key, "layout", why))
+        {
+            if (!why.empty())
+                why += " (an earlier check's, kept in dlssnr-amd\\rdna3-check.txt)";
+        }
+        else
+        {
+            const auto t0 = std::chrono::steady_clock::now();
+            why = mzr3::LayoutCheck(physical, device, queue, family);
+            mzr3::Keep(file, key, "layout", why);
+            nr::logf("[mochizuki] RDNA3 layout probes %s in %.0f ms", why.empty() ? "passed" : "failed",
+                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        }
+        if (why.empty())
+            return;
+        nr::logf("[mochizuki] RDNA3 network off: %s", why.c_str());
+        // The first failure for the menu, whose status line holds 256 characters; the log has them all.
+        const size_t more = size_t(std::count(why.begin(), why.end(), ';'));
+        if (more)
+            why = why.substr(0, why.find(';')) + " (and " + std::to_string(more) + " more, mochizuki_nr.log)";
+        throw std::runtime_error("[unsupported] RDNA3 network off: " + why);
     }
 
     uint32_t MemoryType(uint32_t bits, VkMemoryPropertyFlags wanted) const
@@ -1812,6 +1930,7 @@ struct Session
     std::chrono::steady_clock::time_point abandonedAt;
     std::unique_ptr<ProductRuntime> built;
     char buildError[1024] {}; // a fixed buffer, so the builder cannot throw on its way to buildDone
+    std::string rdna3Off;     // under buildMutex: why the RDNA3 network stays off for the session (Rdna3Pipelines)
     NrError::Kind buildErrorKind = NrError::Other;
     double buildSeconds = 0;
     // Networks the frames no longer use (RetireNetwork), each with the finished value of the last frame handed to the
@@ -3041,6 +3160,14 @@ struct Session
         }
         if (finished && !built)
             BuildFailed();
+        {
+            std::lock_guard lock(buildMutex);
+            if (!rdna3Off.empty())
+            {
+                why = rdna3Off;
+                return false;
+            }
+        }
         if (built)
             Install();
         if (runtime && net == key)
@@ -3270,6 +3397,47 @@ struct Session
         BuildMarker& operator=(const BuildMarker&) = delete;
     };
 
+    // Before the first RDNA3 network build on a driver, on the builder thread and before it takes the build's locks:
+    // every pipeline the network needs compiled in a child process (mzr3::PipelineCheck). One AMD's compiler crashes
+    // on, hangs on or refuses keeps the network off for the session (rdna3Off) and for these shaders on this driver (rdna3-check.txt).
+    void Rdna3Pipelines()
+    {
+        if (Rdna3CheckSkips(false))
+            return;
+        const std::wstring file = Rdna3CheckFile();
+        std::string key = mzr3::Key(vk.deviceId, vk.driverVersion), why;
+        const std::vector<std::wstring> files = Rdna3PipelineFiles(key);
+        if (!mzr3::Cached(file, key, "pipelines", why))
+        {
+            nr::logf("[mochizuki] RDNA3 pipeline check: %zu pipelines, each compiled once in a child process first",
+                     files.size());
+            bool ran = false;
+            std::string note;
+            why = mzr3::PipelineCheck(device->GetAdapterLuid(), files, DataDirectory() + L"\\dlssnr-amd\\rdna3-check",
+                                     &abandon, ran, note);
+            if (abandon)
+                throw std::runtime_error("stopped: the session is being destroyed");
+            if (!ran)
+            {
+                nr::logf("[mochizuki] the RDNA3 pipeline check could not run (%s); the network builds without it",
+                         why.c_str());
+                return;
+            }
+            nr::logf("[mochizuki] RDNA3 pipeline check %s: %s", why.empty() ? "passed" : "failed", note.c_str());
+            mzr3::Keep(file, key, "pipelines", why);
+        }
+        if (why.empty())
+            return;
+        const std::string off = "RDNA3 network off: " + why;
+        nr::logf("[mochizuki] %s", off.c_str());
+        {
+            std::lock_guard lock(buildMutex);
+            rdna3Off = off;
+        }
+        RememberError(off.c_str());
+        throw std::runtime_error(off);
+    }
+
     void Build(const nr::HostDevice& host, const nr::RuntimeConfig& config, const nr::TemporalConfig& temporal,
                const NetworkKey& key, std::unique_ptr<ProductRuntime> old, UINT64 oldFinished,
                std::unique_ptr<FrameBuffers> buffers)
@@ -3292,6 +3460,8 @@ struct Session
         NrError::Kind kind = NrError::Other;
         try
         {
+            if (vk.rdna3 && !vk.rdna3Aco)
+                Rdna3Pipelines();
             // One core build at a time in the process, waited for in steps so that Destroy can end the wait.
             std::unique_lock core(CoreBuildMutex(), std::defer_lock);
             while (!core.try_lock_for(std::chrono::milliseconds(kWatchMs)))
@@ -4875,14 +5045,16 @@ static_assert(offsetof(MochizukiNrInfo, reserved0) == 44 && offsetof(MochizukiNr
               offsetof(MochizukiNrInfo, last_error) == 64 && offsetof(MochizukiNrInfo, network_dispatches) == 320 &&
               offsetof(MochizukiNrInfo, preprocess_ev) == 324 && offsetof(MochizukiNrInfo, white_point) == 328 &&
               offsetof(MochizukiNrInfo, build_stage) == 332 && offsetof(MochizukiNrInfo, build_total) == 340 &&
-              offsetof(MochizukiNrInfo, renodx_effective) == 344);
+              offsetof(MochizukiNrInfo, renodx_effective) == 344 && offsetof(MochizukiNrInfo, network) == 348 &&
+              sizeof(MochizukiNrInfo) == 352);
 
 // The bytes GetInfo writes into a struct of `size` bytes: the whole fields that fit, never part of one, and never
 // Info's tail padding. A host that appends a field there (sizeof does not grow) then sees struct_size end before it.
 size_t InfoBytes(size_t size)
 {
     constexpr size_t ends[] = {
-        offsetof(MochizukiNrInfo, renodx_effective) + sizeof(MochizukiNrInfo::renodx_effective), // the last field
+        offsetof(MochizukiNrInfo, network) + sizeof(MochizukiNrInfo::network), // the last field
+        offsetof(MochizukiNrInfo, network),
         offsetof(MochizukiNrInfo, renodx_effective),
         offsetof(MochizukiNrInfo, build_stage),
         offsetof(MochizukiNrInfo, white_point) + sizeof(MochizukiNrInfo::white_point),
@@ -4949,6 +5121,7 @@ int32_t GetInfo(void* context, MochizukiNrInfo* out)
         info.preprocess_ev = s->infoPrepEv;
         info.white_point = s->infoWhite;
         info.renodx_effective = s->infoReno;
+        info.network = s->vk.rdna3 ? (s->vk.rdna3Aco ? 2u : 1u) : 0u;
         // The core's own build progress (nr_log.hpp: builds run one at a time), while this session builds.
         if (info.building)
         {

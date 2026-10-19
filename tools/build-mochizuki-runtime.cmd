@@ -31,19 +31,24 @@ rem The core's pipeline creation goes through mz_interpose.cpp (the parallel pre
 rem entry points are renamed for nr_runtime.cpp alone, which calls them directly, never through vkGetDeviceProcAddr.
 set "MZI=/DvkCreateComputePipelines=mzi_vkCreateComputePipelines /DvkCreateShaderModule=mzi_vkCreateShaderModule /DvkCreateDescriptorSetLayout=mzi_vkCreateDescriptorSetLayout /DvkCreatePipelineLayout=mzi_vkCreatePipelineLayout /DvkCreatePipelineCache=mzi_vkCreatePipelineCache /DvkDestroyPipelineCache=mzi_vkDestroyPipelineCache"
 
+set "GLSLANG=%UP%\toolchain\glslang"
+if not exist "%GLSLANG%\bin\glslang.exe" (
+  if not exist "%UP%\toolchain" mkdir "%UP%\toolchain"
+  python -c "import hashlib,io,urllib.request,zipfile; b=urllib.request.urlopen('https://github.com/KhronosGroup/glslang/releases/download/16.5.0/glslang-16.5.0-windows-x86_64-release.zip').read(); assert hashlib.sha256(b).hexdigest()=='06b71298b750268c127f2ee7ae0ef7525e2068120c6c8a3a08b2f58ca6f325ce', 'glslang checksum mismatch'; zipfile.ZipFile(io.BytesIO(b)).extractall(r'%GLSLANG%')" || goto fail
+)
+rem The RDNA3 network's layout probes (mz_rdna3.cpp), embedded as SPIR-V arrays.
+set "PROBE=OptiScaler\dlssnr\backend\mochizuki_runtime\rdna3_probe"
+if not exist "%OBJ%\rdna3_probe" mkdir "%OBJ%\rdna3_probe"
+for %%s in (acc32 acc16 fraga fragb halves kswap) do "%GLSLANG%\bin\glslang.exe" --target-env vulkan1.3 --vn mzr3_probe_%%s -o "%OBJ%\rdna3_probe\%%s.h" "%PROBE%\%%s.comp" >nul || goto fail
 cl %CFLAGS% %NR_DEFINES% %MZI% %INCLUDES% /c "%UP%\windows\src\core\nr_runtime.cpp" /Fo"%OBJ%\nr_runtime.obj" || goto fail
 cl %CFLAGS% %INCLUDES% /c "%UP%\windows\src\core\nr_native_plan.cpp" /Fo"%OBJ%\nr_native_plan.obj" || goto fail
 rem Upstream's RenoDX stage, which the network always runs in: RenoDX's encode and composition around it.
 cl %CFLAGS% %INCLUDES% /c "%UP%\windows\src\core\nr_renodx.cpp" /Fo"%OBJ%\nr_renodx.obj" || goto fail
 cl %CFLAGS% %INCLUDES% /c "OptiScaler\dlssnr\backend\mochizuki_runtime\mz_interpose.cpp" /Fo"%OBJ%\mz_interpose.obj" || goto fail
 cl %CFLAGS% %INCLUDES% /DLMXXF_NR_RUNTIME_EXPORTS /c "OptiScaler\dlssnr\backend\mochizuki_runtime\MochizukiNrRuntime.cpp" /Fo"%OBJ%\MochizukiNrRuntime.obj" || goto fail
-link /nologo /DLL /OUT:"%OUT%\MochizukiNrRuntime.dll" "%OBJ%\MochizukiNrRuntime.obj" "%OBJ%\mz_interpose.obj" "%OBJ%\nr_runtime.obj" "%OBJ%\nr_native_plan.obj" "%OBJ%\nr_renodx.obj" "%VULKAN_SDK%\Lib\vulkan-1.lib" d3d12.lib || goto fail
+cl %CFLAGS% %INCLUDES% /I "%OBJ%\rdna3_probe" /c "OptiScaler\dlssnr\backend\mochizuki_runtime\mz_rdna3.cpp" /Fo"%OBJ%\mz_rdna3.obj" || goto fail
+link /nologo /DLL /OUT:"%OUT%\MochizukiNrRuntime.dll" "%OBJ%\MochizukiNrRuntime.obj" "%OBJ%\mz_interpose.obj" "%OBJ%\mz_rdna3.obj" "%OBJ%\nr_runtime.obj" "%OBJ%\nr_native_plan.obj" "%OBJ%\nr_renodx.obj" "%VULKAN_SDK%\Lib\vulkan-1.lib" d3d12.lib shell32.lib || goto fail
 
-set "GLSLANG=%UP%\toolchain\glslang"
-if not exist "%GLSLANG%\bin\glslang.exe" (
-  if not exist "%UP%\toolchain" mkdir "%UP%\toolchain"
-  python -c "import hashlib,io,urllib.request,zipfile; b=urllib.request.urlopen('https://github.com/KhronosGroup/glslang/releases/download/16.5.0/glslang-16.5.0-windows-x86_64-release.zip').read(); assert hashlib.sha256(b).hexdigest()=='06b71298b750268c127f2ee7ae0ef7525e2068120c6c8a3a08b2f58ca6f325ce', 'glslang checksum mismatch'; zipfile.ZipFile(io.BytesIO(b)).extractall(r'%GLSLANG%')" || goto fail
-)
 python "%UP%\windows\build\build_network.py" rdna4 --out "%OUT%\dlssnr-amd\shaders" || goto fail
 rem The RDNA3 network (RX 7000, no FP8) in shaders-rdna3\: mauri870/DLSSNR-RDNA3's linux\shaders\rdna3, unrolled for
 rem LLPC as the Windows network is (it crashes on their rolled loops), without the four-wide quantisation.
