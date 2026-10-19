@@ -483,6 +483,8 @@ class Config
     CustomOptional<uint32_t> MochizukiLayerMode { 0 };
     // Frames without motion vectors: the network's noise seed moves every frame, as NVIDIA's DLL does.
     CustomOptional<bool> MochizukiNoiseEveryFrame { false };
+    // Natural and Cinematic graded after the network, as NVIDIA's DLL does (upstream 0.0.7); off gives the earlier picture.
+    CustomOptional<bool> MochizukiStyleGrade { true };
 #define MZR_F(name, def, lo, hi, group, label, member, help) CustomOptional<float> name { def };
 #define MZR_U(name, def, lo, hi, group, label, member, help) CustomOptional<uint32_t> name { def };
 #define MZR_B(name, def, lo, hi, group, label, member, help) CustomOptional<bool> name { def };

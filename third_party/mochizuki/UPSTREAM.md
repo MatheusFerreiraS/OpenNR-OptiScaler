@@ -3,10 +3,12 @@
 The Vulkan network behind `MochizukiNrRuntime.dll` (`NrBackend=mochizuki`).
 
 - Source: https://github.com/mochizuki0323/DLSSNR-AMD
-- Pinned commit: `8a70f7f4` (2026-10-14, tag v0.0.5-win-preview): `windows/` as upstream has it, apart from the local
-  patches below; plus upstream's hotfix `f35f00f` (2026-10-15, `nr_pal_binary.hpp`: ACO accepts gfx1200, the RX 9060
-  series, as well as gfx1201), and `windows/src/core/` from `ab00d2b` (2026-10-17, v0.0.6-win-preview-alpha: the new
-  model of `nvngx_dlssnr.dll` 310.9.16, see The model); no shader changed
+- Pinned commit: `cc27501` (2026-10-19, tag v0.0.7): `windows/src/core/`, `windows/shaders/`, `windows/build/` and
+  `windows/data/aco/` as upstream has them, apart from the local patches below, and the Linux network ACO is made
+  from (`linux/build/build_network.py`, `linux/shaders/`) from the same tag (its Linux half, `29fda44`). See Sync to
+  v0.0.7
+- Before it: `8a70f7f4` (v0.0.5-win-preview) with the hotfix `f35f00f` (ACO on gfx1200, the RX 9060 series) and
+  `windows/src/core/` from `ab00d2b` (v0.0.6-win-preview-alpha, the 310.9.16 model); both are in v0.0.7
 - `linux/package/model-tools/` is still from `791b046` (v0.0.1); the model it makes has not changed
 - Licence: MIT, `LICENSE` beside this file
 
@@ -35,8 +37,8 @@ MochizukiNrRuntime.cpp` hosts the runtime instead, on a Vulkan device of its own
 
 1. `windows/src/core/nr_runtime.hpp` and `nr_graph.cpp`: a host's stop flag for a network build. `nr::build_cancel`
    is a thread-local pointer to an `std::atomic<bool>`, set around the `Runtime` constructor with
-   `nr::BuildCancelScope`; the graph build's pipeline loop checks it before each pipeline and, once set, writes the
-   pipeline cache it has so far and throws `NR build cancelled`. `MochizukiNrRuntime.dll`'s `Destroy` during a cold
+   `nr::BuildCancelScope`; the graph build's pipeline loop (`create_kernels` since v0.0.7) checks it before each
+   pipeline and, once set, writes the pipeline cache it has so far and throws `NR build cancelled`. `MochizukiNrRuntime.dll`'s `Destroy` during a cold
    build then returns in under a second instead of waiting out the compile, and the next start keeps what was
    compiled. Null by default.
 2. `windows/shaders/rdna4/pipelines.json`: `NR_EDGE_BODIES=0` on the eight pipelines upstream builds with 1
@@ -76,6 +78,53 @@ MochizukiNrRuntime.cpp` hosts the runtime instead, on a Vulkan device of its own
     frame changes the image when either strength is above 0 (upstream: colour, or transfer with pedestal removal).
 
 The new passes are in both `build_network.py` `RUNTIME` lists.
+
+### Sync to v0.0.7 (2026-10-19)
+
+All eleven patches are kept; v0.0.7 does none of them. Taken as upstream has it:
+- the Style grade: Natural and Cinematic graded after the post block as NVIDIA's DLL does
+  (`include/nr_style_grade.glsl`, `NR_STYLE_GRADE`, the `style_grade` table of `pipelines.json`: the
+  `g_fswinimagepost32_grade` and `temporal_post_fp32*_grade` twins, dispatched only for those two Styles, with their
+  ACO records, 4 default and 4 int4). `Runtime::set_style_grade`, on by default, is the host's `MochizukiStyleGrade`;
+  Standard runs the pipeline it always did;
+- `RuntimeConfig::motion_point`: the game's vectors sampled at the nearest texel, as the DLL binds them. The host sets
+  it. `[Network] Motion Without Depth` (default 1: the depth no longer picks where the vector is read) is read from a
+  `dlssnr-amd.ini` beside the game, which OptiScaler does not write; the RenoDX stage passed no depth to the network
+  already, so nothing changes there and `MochizukiUseDepth` still only reaches a network outside the stage;
+- `runtime_transfer.comp`: negative linear channels taken as zero before the ratios (bright dots on scRGB frames below
+  100% model resolution). The transfer runs only for a network outside the RenoDX stage; the stage's own resolve,
+  which OptiScaler always uses, clamped them already;
+- the resize path (`GraphCore`, `build_shared`, `RuntimeConfig::share`/`deferred`/`plan_only`, image heaps,
+  `carry_history` for `[Network] Resize History`), residency (`GraphAct`, `RuntimeConfig::act_arena`,
+  `offload_network`/`reload_network`) and pipelines shared by every kernel of one SPIR-V file (`nrvk::SharedPipeline`).
+  The weight blob now ends with the extent-dependent noise field (same values, other offsets) and arena zeroing moved
+  into `retarget`; nothing of it changes a picture. The host uses only `act_arena`: a network built while the frames
+  keep the current one takes that one's activation arena when it fits (log: "activation arena: taken over"); a switch
+  to the 310.8 model at 1080p then allocates no second 400 MB arena. Not used: `share_for`, deferred builds inside a
+  frame and `carry_history`. The host keeps a dynamic-resolution game on one network built for its bucket (64 px,
+  `MochizukiDynamicResolution`), which never rebuilds within it, so upstream's per-size runtimes are not needed;
+  Resize History has nothing to carry there;
+- a game whose colour switches format: upstream lets a runtime of another tex-in format share the network
+  (`share_arguments` clears `--tex-in-format`/`--out0-format`), through `share_for`. The host's own fix
+  (`float-colour-shared`, one RGBA16F network for R11G11B10_FLOAT and RGBA16F frames, a blit each way) stays: it
+  switches with no build at all and the marker builds the right network from a later session's first frame; with
+  the RenoDX stage the network is RGBA16F anyway and only the stage depends on the frame's format;
+- the network names (`nr_ini_network.hpp`: `CC_SMALL_FP8`, `CC_SILVER_AARDWOLD`, `CC_SILVER_AARDWOLD_INT4_MIXED`),
+  which the host's build log line now uses; `nr_ini_int4.hpp` and `nr_control_shared.hpp` (NR Control's shared
+  memory, `windows/src/pe/`'s menu) follow upstream and are not used by the host;
+- `nr_renodx` `Stage::facts()` (the Engine data panel's source), `tinlayout.hpp`'s faster weight packing.
+
+Already in our tree: the CC_SMALL_FP8 stale block at the left edge (fixed in `linux/` by 0.0.7) was fixed on Windows
+before (the barrier kept between the C=64 decoder and the fused C=32 upsample, `kinds & 32`). Upstream's in-game
+network switch, OSD, Engine data panel and `[Network] Residency` modes are its own host's (`windows/src/pe/`); the
+typeless exposure is OptiScaler's (`LmxxfBackend.cpp` reads an R32/R16/RGBA typeless exposure as its float format;
+typeless motion vectors were taken already).
+
+Harness (RX 9070 XT, AMD Software 26.9.2, ACO, 40 frames, the runtime's own GPU time), 0.5.5 against this tree, new
+model / 310.8 model: 720p 3.22 / 5.04 and 3.21 / 5.00 ms, 1080p 5.30 / 7.75 and 5.28 / 7.43, 4K 20.9 / 24.3 and
+20.5 / 24.6. Output byte-identical at all six, with a pan of 8 px a frame (both models), R10G10B10A2, Standard set
+through the controls, Cinematic with the grade off, and across a live model switch and an int4 switch. With the grade:
+Natural 25.9 dB from 0.5.5 (15% darker on average), Cinematic 38.4 dB; 5.16 -> 5.23 ms.
 
 ### Sync to v0.0.5 (2026-10-14)
 
@@ -132,10 +181,10 @@ before (mean |out_n - shift(out_n-1)| 0.0007 against 0.0102 and 0.0075), the mot
 Upstream's [Network] ACO Mode: the network as machine code made in advance with Mesa's ACO, loaded through
 `VK_KHR_pipeline_binary` instead of compiled by the AMD driver. Vendored for it: `linux/build/build_network.py`,
 `linux/shaders/rdna4/` and `linux/shaders/passes/` (the Linux network, which the records were made from), and
-`windows/data/aco/records/` and `shell-aliases.txt` (58 records; int4's are not taken). The build script writes
+`windows/data/aco/records/` and `shell-aliases.txt` (62 records since v0.0.7, the Style grade twins included). The build script writes
 `dlssnr-amd/aco/` beside the shaders: `shaders/` built from the Linux sources, `records/`, `shell-aliases.txt`.
 Each record is named by the FNV-1a hash of its SPIR-V, so the Linux network must build byte for byte as upstream's
-(glslang 16.5.0): all 58 match.
+(glslang 16.5.0): all 62 match.
 
 The host (`MochizukiNrRuntime.cpp`) takes `LMXXF_NR_CREATE_FLAG_ACO`: once a process, before its Vulkan device,
 `nr::binary::configure` with the bundle, the shell folders (`aco/shell`, our `shaders`, `shaders/temporal`) and
@@ -152,12 +201,12 @@ compiler / ACO: 1080p 13.9 / 10.5 ms, 2 passes 27.4 / 20.2, 1707x961 11.4 / 8.9,
 
 Upstream's second network, part of it in 4-bit integers, built only as ACO's machine code. Vendored for it:
 `linux/data/int4/rdna4/` (the quantisation tables `vit/` and `swin/`, `settings.txt`, the weights' hash),
-`linux/shaders/rdna4/pipelines-int4.json`, `windows/data/aco/int4/` (71 records and their aliases) and
+`linux/shaders/rdna4/pipelines-int4.json`, `windows/data/aco/int4/` (75 records and their aliases) and
 `windows/src/tools/nr_int4_weights.cpp`. The core is compiled with `NR_INT4=1` (every unit: `RuntimeConfig` holds
 `int4_mixed` under it). The build writes `dlssnr-amd/aco/int4/` (the Linux int4 network and its records, the aliases
 merged into `aco/shell-aliases.txt`) and `dlssnr-amd/int4/` (the tables, settings and the same SPIR-V); with
 `MZ_MODEL` set to a `dlssnr.bin` it also runs `dlssnr-int4-weights.exe` and writes `dlssnr-amd/dlssnr-int4.bin`
-(53 MB, 8 s), checked against `dlssnr-int4.sha256`: the model the payload pins gives upstream's hash exactly. All 71
+(53 MB, 8 s), checked against `dlssnr-int4.sha256`: the model the payload pins gives upstream's hash exactly. All 75
 records match the SPIR-V built here.
 
 The host asks for it a frame at a time (`LMXXF_NR_FRAME_FLAG_INT4`, part of the network key): a change rebuilds the
@@ -198,10 +247,12 @@ Harness, RX 9070 XT, 1080p RGBA16F, ACO, pan 8 px a frame, wall time a frame wit
 2026.19 (SHA-256 checked, for the RenoDX shaders) into `toolchain\` here, and writes `MochizukiNrRuntime.dll` and
 `dlssnr-amd\shaders\` (with `renodx\`) to `out` (default `exports\mochizuki-runtime`).
 
-The shader folder has 54 network, 5 temporal and 11 runtime pipelines (v0.0.5; `runtime\FidelityFX-FSR1-LICENSE.txt`
-beside the FSR 1 EASU in `runtime_upscale`). The prewarm list (`dlssnr-amd\prewarm\manifest.txt`) must be made again
-whenever the shaders change: run the runtime once at 720p, 1080p, 1440p and 3840x2160 (the larger ones add `ffwd3w`)
-and take the list it writes.
+The shader folder has 55 network, 6 temporal and 15 runtime pipelines (v0.0.7 and the local passes;
+`runtime\FidelityFX-FSR1-LICENSE.txt` beside the FSR 1 EASU in `runtime_upscale`), 103 files. The prewarm list
+(`dlssnr-amd\prewarm\manifest.txt`) must be made again whenever the shaders change: with ACO off (it is skipped with
+ACO on), run the runtime once at 720p, 1080p, 1440p and 3840x2160 and once at 1080p with the 310.8 model, from an
+empty `prewarm\`, and take the list it writes: 38 pipelines for v0.0.7. The 0.5.5 list had 33: it lacked `ffwd3w`,
+`gemmprojw` and `gemmvqkvnorm` (the larger extents and the 310.8 model) besides the two new Style grade pipelines.
 
 ## The model
 

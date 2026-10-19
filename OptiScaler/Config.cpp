@@ -624,6 +624,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             MochizukiPreprocessSaturation.set_from_config(readFloat("DlssNr", "MochizukiPreprocessSaturation"));
             MochizukiLayerMode.set_from_config(readUInt("DlssNr", "MochizukiLayerMode"));
             MochizukiNoiseEveryFrame.set_from_config(readBool("DlssNr", "MochizukiNoiseEveryFrame"));
+            MochizukiStyleGrade.set_from_config(readBool("DlssNr", "MochizukiStyleGrade"));
 #define MZR_F(name, def, lo, hi, group, label, member, help) name.set_from_config(readFloat("DlssNr", #name));
 #define MZR_U(name, def, lo, hi, group, label, member, help) name.set_from_config(readUInt("DlssNr", #name));
 #define MZR_B(name, def, lo, hi, group, label, member, help) name.set_from_config(readBool("DlssNr", #name));
@@ -1848,6 +1849,8 @@ bool Config::SaveIni()
                      GetIntValue(Instance()->MochizukiLayerMode.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiNoiseEveryFrame",
                      GetBoolValue(Instance()->MochizukiNoiseEveryFrame.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiStyleGrade",
+                     GetBoolValue(Instance()->MochizukiStyleGrade.value_for_config()).c_str());
 #define MZR_F(name, def, lo, hi, group, label, member, help)                                                           \
     ini.SetValue("DlssNr", #name, GetFloatValue(Instance()->name.value_for_config()).c_str());
 #define MZR_U(name, def, lo, hi, group, label, member, help)                                                           \
