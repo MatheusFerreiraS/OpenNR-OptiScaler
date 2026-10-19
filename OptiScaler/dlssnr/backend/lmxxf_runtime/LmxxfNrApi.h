@@ -104,8 +104,7 @@ extern "C"
 /* mochizuki: the 310.8 model (dlssnr-amd\dlssnr.bin) instead of 310.9's new one (dlssnr-small.bin, about a third
    faster, the default when it is there). int4 mixed exists for the 310.8 model only. A change rebuilds the network.
    lmxxf: the 71-block model instead of 310.9's 31-block Small one (upstream 0.44's 0.5x, in <weights>\small), which
-   runs by default with one pass when it is there; two or three passes always run the 71-block model. A change
-   rebuilds the network. */
+   runs by default at any pass count when it is there. A change rebuilds the network. */
 #define LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL (1u << 13)
 /* Two or more passes: the first pass's answer as well, in LmxxfNrJob::first_pass_output, for person protection. A
    texture of the frame's size, readable after RecordOutputs as private_output is. Needs the job's full size; a runtime

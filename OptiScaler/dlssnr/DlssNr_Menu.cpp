@@ -658,14 +658,12 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::SeparatorText("Effect");
             int passes = std::clamp(int(config->DlssNrPasses.value_or_default()), 1, 3);
             {
-                bool original = config->LmxxfOriginalModel.value_or_default() || passes > 1;
-                ImGui::BeginDisabled(passes > 1);
+                bool original = config->LmxxfOriginalModel.value_or_default();
                 if (ImGui::Checkbox("Old model", &original))
                     config->LmxxfOriginalModel = original;
-                ImGui::EndDisabled();
                 HelpMarker("Off: the new model of NVIDIA's 310.9.16 DLL (lmxxf 0.44's Small), about a third"
                            "\nfaster, when native-game-tiled-assets\\small is installed (without it the old"
-                           "\none runs anyway). It runs once: two or three passes use the old model."
+                           "\none runs anyway), with any number of passes."
                            "\nOn: the 71-block model lmxxf ran before. Switching rebuilds the model.");
             }
             if (ImGui::SliderInt("Passes", &passes, 1, 3))

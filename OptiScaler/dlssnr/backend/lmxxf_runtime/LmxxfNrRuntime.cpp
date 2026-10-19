@@ -1518,9 +1518,9 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                                      !(cw == 1600 && ch == 900) && NativeNetworkGeometry::FreeFits(cw, ch);
                 _putenv_s("DLSS5_NETWORK_FREE_RES", freeRes ? "1" : "0");
             }
-            // The Small model of NVIDIA's 310.9.16 DLL (upstream 0.44's 0.5x mode): 31 blocks, run once, the default
-            // when its weights are in <weights>\small. ORIGINAL_MODEL, or two or three passes, runs the 71-block model,
-            // as upstream's 1/2/3 modes do. A codec passthrough frame keeps the model the frames around it run.
+            // The Small model of NVIDIA's 310.9.16 DLL (upstream 0.44's 0.5x mode): 31 blocks, the default when its
+            // weights are in <weights>\small, at any pass count. ORIGINAL_MODEL runs the 71-block model. A codec
+            // passthrough frame keeps the model the frames around it run.
             if (!session->smallChecked)
             {
                 session->smallReady = SmallModelUsable(session->weightsDir, session->modulesDir);
@@ -1531,7 +1531,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             const bool smallModel =
                 (info->flags & LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH) && session->hipPrepared
                     ? session->builtSmall
-                    : session->smallReady && passes == 1 && !(info->flags & LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL);
+                    : session->smallReady && !(info->flags & LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL);
             // The network reads the mode as it is built (dlss5_mode::Requested); the geometry follows the model.
             dlss5_mode::Request(smallModel ? 0u : 1u);
             NativeSmallGeometryEnabled() = smallModel;

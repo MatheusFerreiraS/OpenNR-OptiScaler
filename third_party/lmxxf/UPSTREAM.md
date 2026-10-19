@@ -170,9 +170,10 @@ and writes the network's. The sync script re-applies both.
   both directions, e2e harness), and OptiScaler submits the producer before `EnqueueHip`, so the upload behind the
   producer wait that the hotfix forbids is what every first frame has always done here. MODE1 fast history, the F9
   hotkey and `DLSS5_MULTI_PASS` stay unused, as since 0.42.
-- Runtime (`LmxxfNrRuntime.cpp`): the Small model runs with one pass when its weights pass `SmallAssetsAvailable`
-  and the modules it needs are there, unless the frame has `LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL`; two or three
-  passes run the 71-block model, as upstream's 1/2/3 modes do. The temporal chain gives its big buffers back to
+- Runtime (`LmxxfNrRuntime.cpp`): the Small model runs, at any pass count, when its weights pass
+  `SmallAssetsAvailable` and the modules it needs are there, unless the frame has
+  `LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL` (upstream runs Small once only; our passes are the bridge's, which take any
+  network geometry). The temporal chain gives its big buffers back to
   `NativeCreateCommittedResource`'s residency list when it goes: every chain built again (Style, compact 1080, a new
   colour size, a model change) left about 35 MB behind before (harness: +34 MiB a rebuild without end; now flat).
 - Small weights: `tools/make-lmxxf-small.py` takes upstream's converter at this commit, recovers the layout maps its

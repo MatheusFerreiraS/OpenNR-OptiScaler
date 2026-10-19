@@ -32,7 +32,7 @@ Upstream lmxxf/dlss5-on-amd-9070xt-porting `c24e3a97` (0.44 and its F9 hotfix, p
   run the 71-block model. Without it, with one pass and the Small weights present (and the c32-wave1, c64-wave2,
   c512-m32-*, vit-wide-deep modules), the runtime runs Small. An older lmxxf runtime refuses the flag, so only a host
   and runtime from the same package should be mixed (they ship together in the OptiScaler zip).
-- Passes: Small runs once. Passes 2-3 always run the 71-block model, as upstream's 1/2/3 modes (0.5 = Small one pass).
+- Passes (changed since, see "Small with 2 and 3 passes"): Small runs once. Passes 2-3 always run the 71-block model, as upstream's 1/2/3 modes (0.5 = Small one pass).
   So estimate pass 3, skin protect and person protection (all need 2+ passes) run on the 71-block model. A codec
   passthrough frame keeps the model the network was built with.
 - Key `[DlssNr] LmxxfOriginalModel` (bool, default false). Menu, lmxxf page, Effect section, above Passes: "Old model"
@@ -128,3 +128,43 @@ Back up `dxgi.dll` first as usual; set `NrBackend=lmxxf` in OptiScaler.ini (Cybe
 4. Upload before publishing the payload:
    `hf upload zmodelerlover/amd-nr "<repo>\publish-lmxxf-weights-small-1\lmxxf-weights-small-1.zip" lmxxf-weights-small/1/lmxxf-weights-small-1.zip --repo-type dataset --commit-message "lmxxf 0.44 Small model weights 1 (NVIDIA 310.9.16)"`
 5. `tools\publish-payload.ps1` as usual. The add-on/ReShade side is not touched (lmxxf runs in OptiScaler only).
+
+## Small with 2 and 3 passes (2026-10-19, after bd814bd01)
+
+- Rule removed: the model is `[DlssNr] LmxxfOriginalModel` (`LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL`) alone, at any pass
+  count. Runtime: `passes == 1` out of the Small choice. Menu: "Old model" no longer greyed or forced ticked with
+  Passes > 1; help, `Config.h`, `LmxxfNrApi.h`, README and UPSTREAM.md say so. The host already sent the flag from the
+  key only. Installer untouched (nothing there depends on it).
+- Nothing else needed: the extra passes, estimate (`mp_predict_*` over the network's W x H, 16x16 tiles), skin
+  (`mp_skin_*` over n = W x H), the per-pass history feeds/samplers and the first pass's codec all take the network's
+  geometry as pass 1 does, wider rows included.
+- Harness (`h\r.ps1`, `h\lmxxf_e2e.cpp` now dumps `first_pass_output` with `E2E_FIRST`; new runtime in `h\sp`, the
+  previous one still in `h\new`), temporal on, best of 3 alternating medians, ms:
+
+  | | 720p Small / 71 | 1080p Small / 71 | 1440p Small / 71 |
+  |---|---|---|---|
+  | 1 pass | 4.65 / 7.24 | 6.84 / 10.41 | 7.27 / 10.46 |
+  | 2 passes | 7.79 / 11.03 | 12.64 / 20.32 | 12.62 / 20.20 |
+  | 3 passes | 9.76 / 15.93 | 18.72 / 30.14 | 18.55 / 30.00 |
+  | 3 with estimate | 7.20 / 11.69 | 13.37 / 21.03 | |
+
+- PSNR after 80 static frames (dB): Small 2 passes vs Small 1: 27.5 / 29.3 / 28.9 (720/1080/1440); 3 vs 1: 24.8 /
+  23.5 / 23.4. Small vs 71-block at the same passes: 1 pass 27.2 / 29.5 / 29.7, 2 passes 20.5 / 24.1 / 25.0, 3 passes
+  21.7 / 21.8 / 22.8. All outputs finite, no failure; no shift or edge band between Small 1 and 3 passes at 720p.
+- Paths checked on Small: estimate (35-41 dB from real 3 passes without history), skin at 2 and 3 passes (output
+  changes, 23-34 dB), smoothing and residual smoothing at 3 passes, first pass output (person protection): handed out
+  and byte-identical to a 1-pass run at 720p and 1080p, also with skin on.
+- Byte-identical to the previous runtime: 71-block 1, 2 and 3 passes and Small 1 pass at 720p, 1080p, 1440p (71-block
+  also equal to main's base runs).
+- Switches (400 frames, every 10): passes 1 <-> 3 on Small at 1080p/720p, VRAM flat (1401 / 978 MiB from the start);
+  Small <-> 71-block at 3 passes, VRAM settles after ~9 switches and stays flat (1080p 1834 / 1706 MiB), the same
+  shape as the 1-pass switch before; the output after the switches equals a cold run of that model, both directions.
+- Seen, not a Small bug: with history on a static image the output moves from frame to frame, more with each pass and
+  more with the 71-block model (frame 79 vs 80, 1080p: Small 51.6 / 38.6 / 28.1 dB for 1/2/3 passes, 71-block 27.3 /
+  23.6 / 21.2). At 720p Small with 3 passes sits further from its no-history result (23 dB vs 30-33 at 900p/1080p),
+  and so does 1408x792, which has no wider rows, so it is the size, not the row width.
+- Tests: host-contracts, shader-compatibility (with the junctions), hip-runtime-load, the lmxxf ones and nr-harness:
+  PASS (amd-runtime-init still needs a danielblnc DLL).
+- Builds in `exports\lmxxf044-work\install`: `dxgi.dll` sha256 433f47945a28d90ab44243cb04ca7cb40a55b12c42725d86535949c9ab7c88e8,
+  `LmxxfNrRuntime.dll` sha256 009e1921c6beb065459d181c6d36d270e3f7065e31b3597282242d48567f915b. Junctions removed.
+- In game: Small with Passes 2 and 3 (log `model=small`), Estimate pass 3 and Skin protect with it, person protection.

@@ -407,9 +407,9 @@ class Config
     // The 1080 tier on 1920x1088 rows instead of 1152: about 4% faster, slightly lossy at the bottom. Rebuilds the
     // network when changed.
     CustomOptional<bool> LmxxfCompact1080 { false };
-    // The 71-block model instead of the Small one of NVIDIA's 310.9.16 DLL (lmxxf 0.44's 0.5x), which runs with one
-    // pass when native-game-tiled-assets\small is there; two or three passes run the 71-block model anyway. A change
-    // rebuilds the network (LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL).
+    // The 71-block model instead of the Small one of NVIDIA's 310.9.16 DLL (lmxxf 0.44's 0.5x), which runs at any
+    // pass count when native-game-tiled-assets\small is there. A change rebuilds the network
+    // (LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL).
     CustomOptional<bool> LmxxfOriginalModel { false };
     // Three passes: run two and extrapolate the third from them, about a third less time, close to a real third
     // pass (upstream's multi-pass predict). On by default.
