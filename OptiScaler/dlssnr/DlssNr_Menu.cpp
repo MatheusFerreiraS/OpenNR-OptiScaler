@@ -412,7 +412,8 @@ static void ResetMochizuki(Config* c)
           c->MochizukiJitterHistory, c->MochizukiAntiHaloStrength, c->MochizukiPassEstimate, c->MochizukiApplyModel,
           c->MochizukiUseDepth, c->MochizukiDynamicResolution, c->MochizukiPreprocess, c->MochizukiPreprocessExposure,
           c->MochizukiPreprocessBias, c->MochizukiPreprocessCurve, c->MochizukiPreprocessContrast,
-          c->MochizukiPreprocessSaturation, c->MochizukiLayerMode, c->MochizukiNoiseEveryFrame);
+          c->MochizukiPreprocessSaturation, c->MochizukiLayerMode, c->MochizukiNoiseEveryFrame,
+          c->MochizukiStyleGrade);
 #define MZR_F(name, def, lo, hi, group, label, member, help) Unset(c->name);
 #define MZR_U MZR_F
 #define MZR_B MZR_F
@@ -819,6 +820,12 @@ void RenderMenu(Config* config, float menuResScale)
             {
                 ScopedIndent indent {};
                 MochizukiRenoGroup(config, 1);
+                bool styleGrade = config->MochizukiStyleGrade.value_or_default();
+                if (ImGui::Checkbox("Style grade", &styleGrade))
+                    config->MochizukiStyleGrade = styleGrade;
+                HelpMarker("Natural and Cinematic: the network's answer is graded afterwards, as NVIDIA's DLL"
+                           "\ndoes, so the two styles look apart. Off gives the picture they had before (little"
+                           "\ndifference in some games). Standard is not graded. No rebuild.");
             }
             if (auto section = ScopedCollapsingHeader("Passes##mzsection", ImGuiTreeNodeFlags_DefaultOpen);
                 section.IsHeaderOpen())

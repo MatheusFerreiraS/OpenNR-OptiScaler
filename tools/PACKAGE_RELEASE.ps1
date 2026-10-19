@@ -260,9 +260,11 @@ MochizukiPreprocessCurve=3
 MochizukiPreprocessContrast=1
 MochizukiPreprocessSaturation=1
 ; NoiseEveryFrame: frames without motion vectors move the noise seed every frame. LayerMode is read and
-; ignored (older builds' 30-layer switch).
+; ignored (older builds' 30-layer switch). StyleGrade: Natural and Cinematic graded after the network, as
+; NVIDIA's DLL does; false gives the picture these styles had before.
 MochizukiNoiseEveryFrame=false
 MochizukiLayerMode=0
+MochizukiStyleGrade=true
 ; mochizuki RenoDX stage: RenoDX's encode and composition around the network (RenoComposition is not used
 ; with mochizuki). RenoPasses (1-4, 1-30 with RenoUnlockPasses), RenoResolutionScale and
 ; RenoSourceEncoding rebuild the network; the game's exposure is the stage's feed (RenoFeedMode).
