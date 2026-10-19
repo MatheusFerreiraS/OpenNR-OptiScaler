@@ -284,6 +284,10 @@ static const QuirkEntry quirkTable[] = {
     QUIRK_ENTRY("ffxiv_dx11.exe", GameQuirk::DisableVsyncOverride),
     QUIRK_ENTRY("graphadapterdesc.exe", GameQuirk::SkipD3D11FeatureLevelElevation),
 
+    // eFootball: given a feature level 11_1 device for its 11_0 request, it falls back to WARP and stops at
+    // "GPU: Shader 5.0"
+    QUIRK_ENTRY("efootball.exe", GameQuirk::SkipD3D11FeatureLevelElevation),
+
     // Prey 2017
     // Requires Prey Luma Remastered mod for upscalers
     QUIRK_ENTRY("prey.exe", GameQuirk::DontUseNTShared, GameQuirk::DisableOptiXessPipelineCreation,
