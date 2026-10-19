@@ -218,6 +218,9 @@ LmxxfStyle=1
 LmxxfVitReuse=false
 ; lmxxf: run the 1080 tier on 1088 rows instead of 1152, about 4% faster, slightly lossy at the bottom.
 LmxxfCompact1080=false
+; lmxxf: the 71-block model instead of the Small one of NVIDIA's 310.9.16 DLL, which runs with one pass when
+; native-game-tiled-assets\small\ is there (about a third faster); two or three passes run the 71-block model.
+LmxxfOriginalModel=false
 ; lmxxf, three passes: run two and work out the third from them, about a third less time, close to a
 ; real third pass. Skin protection (two or three passes): skin-coloured areas keep pass 1's result
 ; (by colour, so brown and orange surfaces too).

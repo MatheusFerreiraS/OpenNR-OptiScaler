@@ -1,16 +1,18 @@
 #pragma once
 #include <cstdlib>
+#include <algorithm>
 #include <cwchar>
 #include <cstring>
 #include <cstdio>
 #include <stdexcept>
+#include "native_model_mode.h"
 
 struct NativeNetworkGeometry {
  unsigned valid_width,valid_height,processing_width,processing_height;
  /* DLSS5_NETWORK_FREE_RES=1 (2026-10-02): a free geometry carries its own ViT token grid (vit_w x vit_h); 0 = one of the fixed
     tiers, whose grid follows from valid_height exactly as before. */
- unsigned vit_w=0,vit_h=0;
- bool Free()const{return vit_w!=0;}
+ unsigned vit_w=0,vit_h=0;bool small_model=false,small_tier=false;
+ bool Free()const{return vit_w!=0&&!small_tier;}
  unsigned VitTokens()const{if(vit_w)return vit_w*vit_h;return valid_height==720?240u:valid_height==900?400u:640u;}
  static NativeNetworkGeometry FromHeight(unsigned height){
   if(height==720)return {1280,720,1280,768};
@@ -63,6 +65,19 @@ struct NativeNetworkGeometry {
   if(w==1600&&(h==960||h==1024)){g.vit_w=25;g.vit_h=16;} /* a processing size that is a tier keeps the tier's grid (the HIP host decides by size: TierGeometry) */
   return g;
  }
+ static unsigned Round4(unsigned n){return (n+3)&~3u;}
+ static void SmallProcessing(unsigned width,unsigned height,unsigned&w,unsigned&h){
+  unsigned ax=Round4((width+1)/2)%8==4?128:64,ay=Round4((height+1)/2)%8==4?128:64;
+  w=std::max(320u,(width+ax-1)/ax*ax);h=std::max(320u,(height+ay-1)/ay*ay);
+  if(w%(4*ax)==0&&h%(4*ay)==0)w+=ax;
+ }
+ static bool SmallFits(unsigned width,unsigned height){if(width<320||height<320||width>free_max_axis||height>free_max_axis)return false;unsigned w,h;SmallProcessing(width,height,w,h);return w<=free_max_axis&&h<=free_max_axis&&1ull*w*h<=free_max_pixels;}
+ static NativeNetworkGeometry Small(unsigned width,unsigned height,bool tier=false){
+  unsigned w,h;SmallProcessing(width,height,w,h);
+  if(w>free_max_axis||h>free_max_axis||1ull*w*h>free_max_pixels)throw std::runtime_error("Small geometry out of budget");
+  NativeNetworkGeometry g{width,height,w,h};g.small_model=true;g.small_tier=tier;
+  unsigned x=w,y=h;for(unsigned i=0;i<6;i++){x=Round4((x+1)/2);y=Round4((y+1)/2);}g.vit_w=x;g.vit_h=y;return g;
+ }
  static NativeNetworkGeometry ForInput(unsigned width,unsigned height){
   if(Near(width,height,1280,720))return FromHeight(720);
   if(Near(width,height,1600,900))return FromHeight(900);
@@ -95,7 +110,14 @@ inline int NativeNetworkHeightFlag(){ /* 720/900/1080 (1024 = "900w", the 0.21 l
  if(value&&!(value[0]=='0'&&!value[1])&&!(value[0]=='1'&&!value[1]))throw std::runtime_error("invalid DLSS5_NETWORK_720P flag");
  return value&&value[0]=='1'?720:-1;
 }
+inline bool& NativeSmallGeometryEnabled(){static bool v=false;return v;}
 inline NativeNetworkGeometry NativeResolveNetworkGeometry(unsigned input_width,unsigned input_height){
+ if(NativeSmallGeometryEnabled()){
+  NativeNetworkGeometry g;
+  if(NativeNetworkFreeRes()&&NativeNetworkGeometry::SmallFits(input_width,input_height)){g=NativeNetworkGeometry::Small(input_width,input_height);}
+  else {int flag=NativeNetworkHeightFlag();auto base=flag==0?NativeNetworkGeometry::ForInput(input_width,input_height):NativeNetworkGeometry::FromHeight(flag<0?1080u:unsigned(flag));g=NativeNetworkGeometry::Small(base.valid_width,base.valid_height,true);}
+  *NativeNetworkGeometrySlot()=g;NativeNetworkGeometryResolved()=true;return g;
+ }
  if(NativeNetworkFreeRes()&&NativeNetworkGeometry::FreeFits(input_width,input_height)){*NativeNetworkGeometrySlot()=NativeNetworkGeometry::Free(input_width,input_height);NativeNetworkGeometryResolved()=true;return *NativeNetworkGeometrySlot();}
  int flag=NativeNetworkHeightFlag();
  *NativeNetworkGeometrySlot()=flag==0?NativeNetworkGeometry::ForInput(input_width,input_height):NativeNetworkGeometry::FromHeight(flag<0?(NativeNetworkGeometry::Compact1080()?1088u:1080u):unsigned(flag));

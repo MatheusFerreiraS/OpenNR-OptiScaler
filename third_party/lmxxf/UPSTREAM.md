@@ -1,7 +1,7 @@
 # lmxxf runtime source pin
 
 - Upstream: https://github.com/lmxxf/dlss5-on-amd-9070xt-porting
-- Commit: `1a0579839b025e6b2b041c1414c4531aa7a4ce03` (synced 2026-10-17)
+- Commit: `c24e3a97cdf596d0c997cee7deda91c981d520ce` (synced 2026-10-19)
 - License: MIT, Copyright (c) 2026 Kien (`LICENSE`)
 - `hip_api.h` also carries the AMD HIP runtime API MIT notice from ROCm 7.1.1
 
@@ -39,6 +39,7 @@ Synced from `-UpstreamRef` (default `origin/main`) via `git archive`. Intent: au
 | `Development/HIP/swin_persistent_network.h`, `swin_persistent_types.h` | C256 persistent stage (`swin_run`, 0.37) |
 | `src/native_hip_network.h` | HIP entry |
 | `src/native_network_geometry.h` | 720 / 900 / 1080 tiers + FIT_LARGE helpers |
+| `Development/HIP/small_model_assets.h`, `src/native_model_mode.h` | 0.44's Small model: its weights check, and the model mode (0.5/1/2/3) the network reads as it is built |
 | `src/native_input_geometry.h` | Input viewport / fit |
 | `src/native_lab_paths.h` | Paths, typed views, weight IO |
 | `src/native_game_codec.h` | Scene encode / decode host |
@@ -103,6 +104,13 @@ Upstream includes `native_split.h` (the D3D12 network body) without using it. Th
 ### Patch G: residual smoothing in `shaders/native_output_smooth.hlsl`
 `LmxxfSmoothResidual` runs upstream's output smoothing on the network's change alone. The block appended behind `#if SMOOTH_RESIDUAL` adds `residual_main`, which takes the RGB output minus the network's input (`base`, t1), blends it toward the previous frame's change (`warped`, t0; `pad` = 1 when it is valid) with the same threshold and strength rule, writes the input plus the result back to `rgb` and keeps the change in `residual` (u1) for the next frame. Upstream's `main` is untouched and compiles as before. The sync script re-appends the block after every copy when `residual_main` is missing, and fails when upstream's `main` entry is gone.
 
+### Patch H: history copy at the network's row width
+The Small model's geometry can make the network's rows wider than the colour's (1280x720 runs on 1344x768). The
+history copy in `native_temporal_feed.h` / `.hlsl` reads the network's RGB with `NATIVE_RGB_PROCESSING_WIDTH` as its
+stride when the two differ, the way upstream's RGB texture and decode do; otherwise it compiles as before. For the
+same reason Patch G's `residual_main` keeps its change in the colour's rows (`NATIVE_VALID_WIDTH`) while it reads
+and writes the network's. The sync script re-applies both.
+
 ### Sync to 0.41 (2026-10-05)
 - Bridge: three-way merge again (base 8af8624, theirs 0.41). Upstream's network timing (`EnableNetworkTiming`,
   `PollNetworkTiming`), `hipSetDevice` before each enqueue (XMoon's PR #15) and the post-signal `hipStreamQuery` came in;
@@ -146,6 +154,36 @@ Upstream includes `native_split.h` (the D3D12 network body) without using it. Th
 - e2e harness against the 0.5.3 release: 1 and 3 passes byte-identical at 1920x1080, 1600x900, 1280x720 and 1707x960.
   1080p median 10.21 -> 10.11 ms, 900p within noise. Upstream's 0.53-0.60 ms over 0.42 is mostly the October 14 work
   that 0.5.3 already ships; the October 17 part is ~20-35 us by its own ABBA.
+
+### Sync to 0.44 (2026-10-19)
+- Upstream `c24e3a97` (0.44 and its F9 hotfix, payload source `4764e4f1`). No `.hip` changed, so the 40 modules per
+  architecture stay as built for 0.43 (upstream reuses all 80 too); `hip/SHA256SUMS` keeps the local hashes. New in
+  the sync list: `Development/HIP/small_model_assets.h` and `src/native_model_mode.h`.
+- What came in: NVIDIA 310.9.16's Small model, 31 blocks, from `<weights>/small` (`model-manifest.json` naming the
+  DLL's SHA, 93 files checked by size), picked by `dlss5_mode::Requested()` as the network is built; its geometry
+  (`NativeNetworkGeometry::Small`: each level halved and rounded up to 4, the 1080/900/720 tiers and free sizes),
+  the RGB input, RGB texture and decode taking the network's row width, Small's adaptive ViT reuse gain.
+- Bridge: three-way merge again; only upstream's `ModelMode`, `EffectiveModelMode` and `SetModelMode` accessors came
+  in. Its in-place F9 switch (both models resident from the 1080 start, `PrepareForExternalInput`, no upload after
+  the producer wait) is left out: the runtime builds the network again on a model change. A model the network goes
+  back to with its kept weights differs from a fresh one as soon as a history comes in (46 dB on the frame after,
+  both directions, e2e harness), and OptiScaler submits the producer before `EnqueueHip`, so the upload behind the
+  producer wait that the hotfix forbids is what every first frame has always done here. MODE1 fast history, the F9
+  hotkey and `DLSS5_MULTI_PASS` stay unused, as since 0.42.
+- Runtime (`LmxxfNrRuntime.cpp`): the Small model runs with one pass when its weights pass `SmallAssetsAvailable`
+  and the modules it needs are there, unless the frame has `LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL`; two or three
+  passes run the 71-block model, as upstream's 1/2/3 modes do. The temporal chain gives its big buffers back to
+  `NativeCreateCommittedResource`'s residency list when it goes: every chain built again (Style, compact 1080, a new
+  colour size, a model change) left about 35 MB behind before (harness: +34 MiB a rebuild without end; now flat).
+- Small weights: `tools/make-lmxxf-small.py` takes upstream's converter at this commit, recovers the layout maps its
+  `release/` folder holds (not in its git) from the DLL's Original records and our lmxxf weights, proves them by
+  converting the Original model again (184 files bit for bit), and checks the 93 Small files against upstream's
+  `model-manifest-small.json`: all equal, 241,214,392 bytes. NVIDIA-derived, published as `lmxxf-weights-small`.
+- e2e harness (RX 9070 XT, driver 26.9.2, temporal on), against main: the 71-block model with 1 and 3 passes is
+  byte-identical at 1280x720, 1600x900, 1920x1080, 1707x960, 2560x1440 and 3840x2160, and with smoothing (both
+  kinds) at 720p and 1080p. Small vs 71-block, frame time: 720p 5.9 -> 3.8 ms, 900p 7.5 -> 5.4, 1080p 10.3 -> 6.5, 1440p 10.3 ->
+  6.5, 4K 10.8 -> 7.2, 1707x960 8.4 -> 5.4. Small is 34 dB from the 71-block model on one frame and edits less
+  (28.6 dB from the input against 24.3).
 
 ## Shipping modules (`.hsaco`)
 

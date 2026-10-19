@@ -399,7 +399,7 @@ static void ResetLmxxf(Config* c)
 {
     Unset(c->DlssNrPasses, c->DlssNrTransferStrength, c->DlssNrColourStrength, c->DlssNrDebugView, c->LmxxfTemporal,
           c->LmxxfSmoothStrength, c->LmxxfSmoothThreshold, c->LmxxfSmoothResidual, c->LmxxfStyle, c->LmxxfVitReuse,
-          c->LmxxfCompact1080, c->LmxxfPassEstimate, c->LmxxfSkinProtect, c->LmxxfAutoExposure);
+          c->LmxxfCompact1080, c->LmxxfPassEstimate, c->LmxxfSkinProtect, c->LmxxfAutoExposure, c->LmxxfOriginalModel);
     UnsetReno(c);
     UnsetPerson(c);
 }
@@ -657,6 +657,17 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::EndDisabled();
             ImGui::SeparatorText("Effect");
             int passes = std::clamp(int(config->DlssNrPasses.value_or_default()), 1, 3);
+            {
+                bool original = config->LmxxfOriginalModel.value_or_default() || passes > 1;
+                ImGui::BeginDisabled(passes > 1);
+                if (ImGui::Checkbox("Old model", &original))
+                    config->LmxxfOriginalModel = original;
+                ImGui::EndDisabled();
+                HelpMarker("Off: the new model of NVIDIA's 310.9.16 DLL (lmxxf 0.44's Small), about a third"
+                           "\nfaster, when native-game-tiled-assets\\small is installed (without it the old"
+                           "\none runs anyway). It runs once: two or three passes use the old model."
+                           "\nOn: the 71-block model lmxxf ran before. Switching rebuilds the model.");
+            }
             if (ImGui::SliderInt("Passes", &passes, 1, 3))
                 config->DlssNrPasses = uint32_t(passes);
             HelpMarker("Runs the model again on its own output, for a stronger effect."
@@ -713,7 +724,8 @@ void RenderMenu(Config* config, float menuResScale)
             if (ImGui::Checkbox("Compact 1080 tier", &compact))
                 config->LmxxfCompact1080 = compact;
             HelpMarker("For inputs that use the 1080 tier: runs it on 1088 rows instead of 1152, about 4% faster."
-                       "\nSlightly lossy, most at the bottom of the picture. Changing it rebuilds the model.");
+                       "\nSlightly lossy, most at the bottom of the picture. Changing it rebuilds the model."
+                       "\nThe new model always runs NVIDIA's 1152 rows.");
             ImGui::SeparatorText("Inspect");
             int debugView = std::clamp(int(config->DlssNrDebugView.value_or_default()), 0, 4);
             if (ImGui::Combo("Debug view", &debugView,

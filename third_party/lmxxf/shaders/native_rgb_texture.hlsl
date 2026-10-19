@@ -6,6 +6,10 @@ RWTexture2D<float4> output : register(u0);
 void main(uint3 id:SV_DispatchThreadID) {
  uint width,height;output.GetDimensions(width,height);
  if(id.x>=width||id.y>=height)return;
+#ifdef NATIVE_RGB_PROCESSING_WIDTH
+ uint p=(id.y*NATIVE_RGB_PROCESSING_WIDTH+id.x)*3;
+#else
  uint p=(id.y*width+id.x)*3;
+#endif
  output[id.xy]=float4(rgb[p],rgb[p+1],rgb[p+2],1);
 }
