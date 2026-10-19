@@ -716,6 +716,7 @@ struct Vulkan
     VkQueue buildQueue {}; // the network builds': a second queue of the family at a lower priority, else `queue`
     uint32_t family = 0;
     bool bufferDeviceAddress = false; // enabled on `device`; the network reads its arena through it where faster
+    bool rdna3 = false; // the RDNA3 network on FP16 matrices (RuntimeConfig::rdna3): no FP8 on the device
     VkPhysicalDeviceMemoryProperties memory {};
     PFN_vkGetMemoryWin32HandlePropertiesKHR memoryHandleProperties {};
     PFN_vkImportSemaphoreWin32HandleKHR importSemaphore {};
@@ -760,6 +761,7 @@ struct Vulkan
             VkPhysicalDevice device {};
             std::string name;
             uint32_t driverVersion = 0;
+            bool rdna3 = false;
         };
         std::vector<Candidate> matches;
         for (VkPhysicalDevice p : all)
@@ -817,6 +819,35 @@ struct Vulkan
                                      VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME,
                                      VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
                                      VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME };
+        // A device without FP8 (RX 7000, gfx11) runs the RDNA3 network, whose e4m3 values are FP16 operands of the
+        // FP16 x FP16 -> FP32 16x16x16 subgroup matrices; VK_EXT_shader_float8 and its features are then neither
+        // required nor enabled. An RX 9000 (device 0x75xx) still needs FP8: the RDNA3 network computes a wrong
+        // picture there, as its kernels assume gfx11's fragment layout. MZ_FORCE_RDNA3=1 takes it on any card
+        // (a test of the pipelines, builds and frames on RDNA4).
+        char force[4] {};
+        const bool forceRdna3 = GetEnvironmentVariableA("MZ_FORCE_RDNA3", force, sizeof force) == 1 && force[0] == '1';
+        const auto fp16Matrices = [this](VkPhysicalDevice p)
+        {
+            auto query = reinterpret_cast<PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR>(
+                vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"));
+            uint32_t n = 0;
+            if (!query || query(p, &n, nullptr) != VK_SUCCESS)
+                return false;
+            std::vector<VkCooperativeMatrixPropertiesKHR> m(n, { VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR });
+            if (query(p, &n, m.data()) != VK_SUCCESS)
+                return false;
+            return std::any_of(m.begin(), m.begin() + n,
+                               [](const VkCooperativeMatrixPropertiesKHR& c)
+                               {
+                                   return c.MSize == 16 && c.NSize == 16 && c.KSize == 16 &&
+                                          c.scope == VK_SCOPE_SUBGROUP_KHR && c.AType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                                          c.BType == VK_COMPONENT_TYPE_FLOAT16_KHR &&
+                                          c.CType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
+                                          c.ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR && !c.saturatingAccumulation;
+                               });
+        };
+        bool candidateRdna3 = false; // check's answer for the device it checked
+        std::string rdna3Why;
 
         // The capability precheck: what vkCreateDevice would refuse with the chain above, found and named before it
         // is called, as the reason the device fails (empty when it passes). Vulkan 1.3 and the extensions first,
@@ -852,9 +883,23 @@ struct Vulkan
             offered = VkEnumerate<VkExtensionProperties>(
                 "vkEnumerateDeviceExtensionProperties", [this, p](uint32_t* n, VkExtensionProperties* e)
                 { return vkEnumerateDeviceExtensionProperties(p, nullptr, n, e); });
+            const auto offers = [](const std::vector<VkExtensionProperties>& list, const char* e)
+            {
+                return std::any_of(list.begin(), list.end(),
+                                   [e](const VkExtensionProperties& x) { return !std::strcmp(x.extensionName, e); });
+            };
+            const bool hasFp8Extension = offers(offered, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME);
+            // The card as AMD's driver reports it: OptiScaler's GPU spoofing can rewrite what the loader answers.
+            VkPhysicalDeviceDriverProperties driver { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
+            VkPhysicalDeviceProperties2 reported { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &driver };
+            vkGetPhysicalDeviceProperties2(p, &reported);
+            if (reported.properties.vendorID != 0x1002 || driver.driverID != VK_DRIVER_ID_AMD_PROPRIETARY)
+                nr::driver::amd_reported(p, &reported.properties, &driver);
+            const bool amd = reported.properties.vendorID == 0x1002;
+            const bool rdna4 = amd && (reported.properties.deviceID & 0xFF00) == 0x7500;
+            candidateRdna3 = forceRdna3 || (!hasFp8Extension && amd && !rdna4);
             for (const char* e : extensions)
-                if (std::none_of(offered.begin(), offered.end(),
-                                 [e](const VkExtensionProperties& x) { return !std::strcmp(x.extensionName, e); }))
+                if (!(candidateRdna3 && !std::strcmp(e, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME)) && !offers(offered, e))
                     return std::string("[unsupported] the driver lacks ") + e;
             VkPhysicalDeviceCooperativeMatrixFeaturesKHR hasCoop {
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR
@@ -868,21 +913,32 @@ struct Vulkan
             VkPhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR hasWml {
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_FEATURES_KHR
             };
-            hasCoop.pNext = &hasFp8;
+            hasCoop.pNext = hasFp8Extension ? static_cast<void*>(&hasFp8) : &has11;
             hasFp8.pNext = &has11;
             has11.pNext = &has12;
             has12.pNext = &has13;
             has13.pNext = &hasWml;
             VkPhysicalDeviceFeatures2 has { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &hasCoop };
             vkGetPhysicalDeviceFeatures2(p, &has);
+            if (!candidateRdna3 && amd && !rdna4 && (!hasFp8.shaderFloat8 || !hasFp8.shaderFloat8CooperativeMatrix))
+                candidateRdna3 = true;
+            if (candidateRdna3)
+            {
+                rdna3Why = forceRdna3          ? "MZ_FORCE_RDNA3=1"
+                           : !hasFp8Extension ? "the driver has no VK_EXT_shader_float8"
+                                              : "the driver offers no FP8 matrices";
+                if (!fp16Matrices(p))
+                    return std::string("[unsupported] ") + rdna3Why +
+                           " and reports no FP16 x FP16 -> FP32 16x16x16 subgroup matrices";
+            }
             const struct
             {
                 VkBool32 wanted, offered;
                 const char* name;
             } features[] = {
                 { coop.cooperativeMatrix, hasCoop.cooperativeMatrix, "cooperativeMatrix" },
-                { fp8.shaderFloat8, hasFp8.shaderFloat8, "shaderFloat8" },
-                { fp8.shaderFloat8CooperativeMatrix, hasFp8.shaderFloat8CooperativeMatrix,
+                { candidateRdna3 ? VK_FALSE : fp8.shaderFloat8, hasFp8.shaderFloat8, "shaderFloat8" },
+                { candidateRdna3 ? VK_FALSE : fp8.shaderFloat8CooperativeMatrix, hasFp8.shaderFloat8CooperativeMatrix,
                   "shaderFloat8CooperativeMatrix" },
                 { f11.storageBuffer16BitAccess, has11.storageBuffer16BitAccess, "storageBuffer16BitAccess" },
                 { f12.storageBuffer8BitAccess, has12.storageBuffer8BitAccess, "storageBuffer8BitAccess" },
@@ -907,9 +963,10 @@ struct Vulkan
         };
         std::string refused;
         const Candidate* chosen = nullptr;
-        for (const Candidate& c : matches)
+        for (Candidate& c : matches)
         {
             const std::string reason = check(c.device);
+            c.rdna3 = candidateRdna3;
             if (!reason.empty())
             {
                 if (matches.size() > 1)
@@ -918,7 +975,9 @@ struct Vulkan
                 if (refused.empty())
                     refused = reason;
             }
-            else if (!chosen || c.driverVersion > chosen->driverVersion)
+            // FP8 before the RDNA3 network, then the newest driver.
+            else if (!chosen || (chosen->rdna3 && !c.rdna3) ||
+                     (chosen->rdna3 == c.rdna3 && c.driverVersion > chosen->driverVersion))
                 chosen = &c;
         }
         if (!chosen)
@@ -938,11 +997,25 @@ struct Vulkan
                      matches.size(), size_t(chosen - matches.data()));
             check(physical);
         }
+        rdna3 = chosen->rdna3;
+        if (rdna3)
+        {
+            // Not offered or not asked for: off, out of the device's chain and extension list.
+            coop.pNext = &f11;
+            nr::logf("[mochizuki] the RDNA3 network, on FP16 matrices: %s", rdna3Why.c_str());
+            if (!nr::binary::directory().empty())
+                nr::logf("[mochizuki] ACO off: the RDNA3 network has no ACO records");
+            nr::binary::disable("the RDNA3 network has no ACO records");
+        }
+        else
+            nr::logf("[mochizuki] the FP8 network (VK_EXT_shader_float8)");
         // Optional: without it the network takes its descriptor reads.
         bufferDeviceAddress = deviceAddress;
         f12.bufferDeviceAddress = bufferDeviceAddress ? VK_TRUE : VK_FALSE;
         // MZ_PROBE_PIPELINE_BINARY=1 only (mz_interpose.h): two more extensions, and their features after wml.
         std::vector<const char*> enabled(std::begin(extensions), std::end(extensions));
+        if (rdna3)
+            enabled.erase(std::find(enabled.begin(), enabled.end(), VK_EXT_SHADER_FLOAT8_EXTENSION_NAME));
         mzi::BinaryProbe probe;
         wml.pNext = probe.Prepare(physical, offered, enabled, wml.pNext);
 
@@ -2583,7 +2656,10 @@ struct Session
         const UINT64 reno =
             key.renodx ? UINT64(key.width) * key.height * 128 + width * height * (64 + 48 * key.maxPasses) : 0;
         const UINT64 first = key.firstPass ? UINT64(16) * key.width * key.height : 0; // the core's first_full
-        return kNetworkFixedBytes + activations + scaled + reno + first;
+        // The RDNA3 network's FP16 twins: twice the weight arena, and twice the activation arena per model pixel
+        // (1080p, MZ_FORCE_RDNA3 on an RX 9070 XT: the process grew by 1877 MB against 799).
+        const UINT64 twins = vk.rdna3 ? (336ull << 20) + 384 * model(UINT(width)) * model(UINT(height)) : 0;
+        return kNetworkFixedBytes + activations + scaled + reno + first + twins;
     }
 
     // What the network for `key` costs in VRAM: the estimate, or what building or releasing it measured when that was
@@ -3068,7 +3144,8 @@ struct Session
             config.model_scale = key.scale;
             config.max_passes = key.maxPasses;
             config.preprocess = key.prep;
-            config.int4_mixed = key.int4 ? 1 : 0;
+            config.int4_mixed = key.int4 && !vk.rdna3 ? 1 : 0; // the RDNA3 network has no int4 mixed
+            config.rdna3 = vk.rdna3;
             // The new model goes back to the 310.8 one by itself when dlssnr-small.bin is missing, and logs it.
             config.network = key.original ? 0 : 1;
             config.cascade_detail_only = key.cascade;
@@ -3216,7 +3293,7 @@ struct Session
             // the core then loads; the capture records this build's for the next one, and Finish saves what the core
             // compiled after its own save (mz_interpose.h).
             const BuildMarker marker;
-            mzi::Capture pipelines(host.device, host.physical, DataDirectory());
+            mzi::Capture pipelines(host.device, host.physical, DataDirectory(), vk.rdna3 ? L"-rdna3" : L"");
             if (marker.lastDied)
             {
                 nr::logf("[mochizuki] the last network build in this folder never finished (the game crashed or was "

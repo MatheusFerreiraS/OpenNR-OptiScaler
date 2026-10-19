@@ -201,6 +201,11 @@ struct RuntimeConfig {
     // (its linear-HDR encode, or linear_input's own): the preprocess undoes the
     // knee first, so its curve is the only one. False for an SDR frame.
     bool preprocess_unknee = false;
+    // The RDNA3 network (local patch, mauri870/DLSSNR-RDNA3): for a device without FP8 that has the
+    // FP16 x FP16 -> FP32 16x16x16 subgroup matrices. The e4m3 values are held as FP16 (twin
+    // arenas), its shaders are dlssnr-amd/shaders-rdna3 and its cache pipeline-rdna3.cache. No ACO,
+    // no int4 mixed.
+    bool rdna3 = false;
 };
 
 // A build on this thread stops before its next pipeline once *build_cancel is

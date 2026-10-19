@@ -647,6 +647,7 @@ struct mzi::Capture::State
     VkDevice device {};
     VkPhysicalDevice physical {};
     std::wstring data; // root\dlssnr-amd
+    std::wstring variant; // Capture's: L"" or L"-rdna3"
     State* outer = nullptr;
 
     // What the core made on this thread since the Capture opened.
@@ -667,7 +668,7 @@ struct mzi::Capture::State
     std::string NameOf(const Module& m)
     {
         if (shaderFiles.empty())
-            shaderFiles = Scan(data + L"\\shaders").files;
+            shaderFiles = Scan(Shaders()).files;
         std::string names;
         for (const File& f : shaderFiles)
             if (f.bytes == m.bytes)
@@ -679,8 +680,9 @@ struct mzi::Capture::State
     bool checked = false;
     Manifest manifest;
 
-    std::wstring ManifestPath() const { return data + L"\\prewarm\\manifest.txt"; }
-    std::wstring CachePath() const { return data + L"\\pipeline.cache"; }
+    std::wstring Shaders() const { return data + L"\\shaders" + variant; }
+    std::wstring ManifestPath() const { return data + L"\\prewarm\\manifest" + variant + L".txt"; }
+    std::wstring CachePath() const { return data + L"\\pipeline" + variant + L".cache"; }
 
     void Refuse(const char* what)
     {
@@ -902,7 +904,7 @@ extern "C" VKAPI_ATTR void VKAPI_CALL mzi_vkDestroyPipelineCache(VkDevice device
 
 namespace mzi
 {
-Capture::Capture(VkDevice device, VkPhysicalDevice physical, const std::wstring& root) noexcept
+Capture::Capture(VkDevice device, VkPhysicalDevice physical, const std::wstring& root, const std::wstring& variant) noexcept
 {
     try
     {
@@ -914,6 +916,7 @@ Capture::Capture(VkDevice device, VkPhysicalDevice physical, const std::wstring&
         state->device = device;
         state->physical = physical;
         state->data = data;
+        state->variant = variant;
         state->outer = t_capture;
         t_capture = state.get();
     }
@@ -987,7 +990,7 @@ void Capture::State::Prewarm(const std::atomic<bool>* stop)
         nr::logf("[mochizuki] prewarm off (one compile thread); the pipelines are built serially");
         return;
     }
-    const Folder folder = Scan(data + L"\\shaders");
+    const Folder folder = Scan(Shaders());
     std::string why;
     bool missing = false;
     std::map<std::string, std::vector<uint32_t>> code;
@@ -1238,7 +1241,7 @@ void Capture::State::WriteManifest()
     }
     if (pipelines.empty())
         return;
-    const Folder folder = Scan(data + L"\\shaders");
+    const Folder folder = Scan(Shaders());
     uint8_t uuid[VK_UUID_SIZE];
     CacheUuid(physical, uuid);
 
