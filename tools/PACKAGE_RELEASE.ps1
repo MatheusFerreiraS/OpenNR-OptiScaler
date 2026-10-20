@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.5.5-opennr, the version in OptiScaler/resource.h.
+  Default product: OptiScaler-0.5.6-opennr, the version in OptiScaler/resource.h.
   The danielblnc runtime it drives is 0.5.1 (0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1, 0.3.0 and the 0.6.0 supporter build
   still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
@@ -9,11 +9,11 @@
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.5.5-opennr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.5.6-opennr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.5.5-opennr',
+    [string]$Version = '0.5.6-opennr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',
@@ -218,8 +218,8 @@ LmxxfStyle=1
 LmxxfVitReuse=false
 ; lmxxf: run the 1080 tier on 1088 rows instead of 1152, about 4% faster, slightly lossy at the bottom.
 LmxxfCompact1080=false
-; lmxxf: the 71-block model instead of the Small one of NVIDIA's 310.9.16 DLL, which runs with one pass when
-; native-game-tiled-assets\small\ is there (about a third faster); two or three passes run the 71-block model.
+; lmxxf: the 71-block model instead of the Small one of NVIDIA's 310.9.16 DLL, which runs at any number of passes
+; when native-game-tiled-assets\small\ is there (about a third faster).
 LmxxfOriginalModel=false
 ; lmxxf, three passes: run two and work out the third from them, about a third less time, close to a
 ; real third pass. Skin protection (two or three passes): skin-coloured areas keep pass 1's result
