@@ -1,7 +1,7 @@
 @echo off
 rem D3D10 final-image NR in a small D3D10 game that loads the built OptiScaler as dxgi.dll. Not part of the release set:
 rem it needs an x64 MSVC developer environment, an RX 9000 GPU and a visible desktop (it opens a window).
-rem   tools\test-dx10-final-image.cmd <installed folder> [seconds] [d3d10_1^|d3d10] [full]
+rem   tools\test-dx10-final-image.cmd <installed folder> [seconds] [d3d10_1^|d3d10] [full^|r10]
 rem <installed folder> is a game folder OptiScaler is installed in with NR without upscaling on: its OptiScaler.ini, the
 rem runtime NrBackend names (MochizukiNrRuntime.dll and dlssnr-amd\, or dlssnr_amd_pass1.dll and its weights) and the
 rem OptiScaler\ folder are copied beside the test.
@@ -23,5 +23,5 @@ if not %errorlevel%==0 exit /b 2
 exit /b %errorlevel%
 
 :usage
-echo usage: %~nx0 ^<installed folder^> [seconds] [d3d10_1^|d3d10] [full]
+echo usage: %~nx0 ^<installed folder^> [seconds] [d3d10_1^|d3d10] [full^|r10]
 exit /b 2
