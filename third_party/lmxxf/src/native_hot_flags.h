@@ -1,4 +1,5 @@
 #pragma once
+#include "native_model_mode.h"
 #include "native_lab_paths.h"
 #include <windows.h>
 #include <atomic>
@@ -14,7 +15,7 @@
      DLSS5_STRENGTH   transfer,colour (0..3) or auto  -- decoder blend after the network, not the network itself
      DLSS5_NOTICE     on-screen status line (0/1/2)
      DLSS5_SHOW_FPS   FPS text in that line (0/1)
-     DLSS5_MULTI_PASS pass count 1/2/3 (2026-10-03; HIP network, applied before the next network frame; invalid/absent = 1)
+     DLSS5_MULTI_PASS model mode 0.5/1/2/3 (2026-10-03; HIP network, applied before the next network frame; invalid/absent = 0.5)
      DLSS5_MULTI_PASS_PREDICT 0/1; default 1; only active with 3 passes (LOSSY)
      DLSS5_MULTI_PASS_SKIN_PROTECT 0/1; default 0; skin-color heuristic blend at N>1
    Everything else (network height, skip blocks, HIP kernels/modules, FP8/wave/tiling switches, DIRECT_IO, PRE_UPSCALE, FIT_*, ASYNC,
@@ -40,8 +41,8 @@ class NativeHotFlags{
    if(sscanf(line,"DLSS5_NOTICE=%u",&n)==1)v.notice=int(n);if(sscanf(line,"DLSS5_SHOW_FPS=%u",&n)==1)v.fps=int(n);sscanf(line,"DLSS5_STRENGTH=%47s",strength);
    if(!strncmp(line,"DLSS5_MULTI_PASS_PREDICT=",25)){const char*m=line+25;v.multi_pass_predict=(!*m||!strcmp(m,"1"))?1:!strcmp(m,"0")?0:(std::fprintf(stderr,"DLSS5_MULTI_PASS_PREDICT=%s invalid (0/1), using 0\n",m),0);}
    if(!strncmp(line,"DLSS5_MULTI_PASS_SKIN_PROTECT=",30)){const char*m=line+30;v.multi_pass_skin_protect=(!*m||!strcmp(m,"0"))?0:!strcmp(m,"1")?1:(std::fprintf(stderr,"DLSS5_MULTI_PASS_SKIN_PROTECT=%s invalid (0/1), using 0\n",m),0);}
-   if(!strncmp(line,"DLSS5_MULTI_PASS=",17)){const char*m=line+17;v.multi_pass=(!*m||!strcmp(m,"1"))?1:!strcmp(m,"2")?2:!strcmp(m,"3")?3:(std::fprintf(stderr,"DLSS5_MULTI_PASS=%s invalid (1/2/3), using 1\n",m),1);}}}
-  if(v.multi_pass<0)v.multi_pass=1; /* key gone from every layer: built-in default */
+   if(!strncmp(line,"DLSS5_MULTI_PASS=",17)){const char*m=line+17;v.multi_pass=int(dlss5_mode::Parse(m));}}}
+  if(v.multi_pass<0)v.multi_pass=0; /* key gone from every layer: built-in default */
   if(v.multi_pass_predict<0)v.multi_pass_predict=1; /* key removed: built-in default */
   if(v.multi_pass_skin_protect<0)v.multi_pass_skin_protect=0; /* key removed: built-in default */
   float a=1.f,b=1.f;if(sscanf(strength,"%f,%f",&a,&b)==2&&a>=0.f&&a<=3.f&&b>=0.f&&b<=3.f){v.strength=true;v.transfer=a;v.color=b;}
@@ -56,18 +57,17 @@ public:
  }
  /* Current values (defaults = "use what was read at start"). Polls the file stamp at most once per second. */
  NativeHotFlagValues Get(){
-  if(!Enabled())return {};
+  if(!Enabled()){std::lock_guard<std::mutex>lock(mutex);return values;}
   std::lock_guard<std::mutex>lock(mutex);const ULONGLONG now=GetTickCount64();
-  if(!last_poll||now-last_poll>=1000){last_poll=now;FILETIME t{};
+  if(force_reload.load()||!last_poll||now-last_poll>=1000){last_poll=now;FILETIME t{};
    if(read_stamp(t)){if(force_reload.exchange(false)){stamp=t;stamped=true;reload();}else if(!stamped){stamp=t;stamped=true;}else if(CompareFileTime(&t,&stamp)!=0){stamp=t;reload();}}}
   return values;
  }
  /* DLSS5_MULTI_PASS_HOTKEY (2026-10-03): default F9; "F1".."F24" or a virtual-key number (e.g. 0x78); 0 = off. Edge-triggered,
-    polled by the HIP network once per frame. A press cycles 1->2->3->1 starting from the pass count in effect and writes
+    polled by the HIP network once per frame. A press cycles 0.5->1->2->3->0.5 starting from the pass count in effect and writes
     DLSS5_MULTI_PASS=N into custom-config.txt (the line replaced, else appended; the file created if missing, BOM and line ends kept).
     If native-game-flags.txt also has the key (it would win over custom), that line is rewritten as well, with a stderr line.
-    A DLSS5_MULTI_PASS system environment variable wins over every file: stderr line, files still written. The hot reload above
-    then applies the value (so DLSS5_HOT_RELOAD=0 disables the effect). Returns the new count (0 = no press). Not pressed = no file access. */
+    A DLSS5_MULTI_PASS system environment variable wins over every file: stderr line, files still written. The running mode changes immediately, even if persistence fails; HOT_RELOAD controls external file polling. Returns the new count (0 = no press). Not pressed = no file access. */
  static unsigned HotkeyCode(){
   static const unsigned vk=[]{std::string v="F9";for(const std::string&l:NativeConfigFileLines())if(!l.compare(0,24,"DLSS5_MULTI_PASS_HOTKEY="))v=l.substr(24);
    if(const char*e=std::getenv("DLSS5_MULTI_PASS_HOTKEY"))v=e;
@@ -93,15 +93,29 @@ public:
  static unsigned CycleMultiPass(unsigned current,bool allow_cycle=true){
   // Consume the key edge before rejecting: never persist an unsupported pass count.
   if(!allow_cycle){if(FILE*f=_wfopen(NativeLabPath(L"logs\\native-game-oneshot.txt").c_str(),L"ab")){fprintf(f,"pid=%lu tick=%llu event=multi_pass_hotkey_blocked reason=active_temporal_mode_requires_MP1\n",GetCurrentProcessId(),GetTickCount64());fclose(f);}return 0;}
-  const unsigned next=current%3+1;const std::string n=std::to_string(next);
+  auto&hot=Instance();std::lock_guard<std::mutex>guard(hot.mutex);
+  const unsigned next=dlss5_mode::Next(current);const std::string n=dlss5_mode::Name(next);
+  // Disk persistence is best effort. The key changes the running model immediately.
+  hot.values.multi_pass=int(next);++hot.values.generation;dlss5_mode::Request(next);
   const bool custom=RewriteKey(L"custom-config.txt","DLSS5_MULTI_PASS",n,true);
   std::string native;bool native_has=false;
   if(NativeConfigReadFile(NativeLabPath(L"native-game-flags.txt"),native))native_has=NativeConfigFind(NativeConfigParseText(native),"DLSS5_MULTI_PASS")!=nullptr;
   bool native_ok=false;if(native_has){std::fprintf(stderr,"DLSS5_MULTI_PASS_HOTKEY: native-game-flags.txt also sets DLSS5_MULTI_PASS (it overrides custom-config.txt); rewriting that line too\n");native_ok=RewriteKey(L"native-game-flags.txt","DLSS5_MULTI_PASS",n,false);}
+  if(!custom||(native_has&&!native_ok))std::fprintf(stderr,"DLSS5_MULTI_PASS_HOTKEY: persistence failed; running mode %s remains active in memory\n",n.c_str());
   const bool env=NativeConfigFind(NativeConfigSystemEnvironment(),"DLSS5_MULTI_PASS")!=nullptr;
   if(env)std::fprintf(stderr,"DLSS5_MULTI_PASS_HOTKEY: a DLSS5_MULTI_PASS environment variable overrides the config files; the change will not apply\n");
-  Instance().force_reload=true;
+  if(env){const auto*e=NativeConfigFind(NativeConfigSystemEnvironment(),"DLSS5_MULTI_PASS");hot.values.multi_pass=int(dlss5_mode::Parse(e->value.c_str()));dlss5_mode::Request(unsigned(hot.values.multi_pass));}
+  // Consume our own writes (including partial or failed persistence). Only a later external edit reloads disk.
+  hot.stamped=read_stamp(hot.stamp);hot.last_poll=GetTickCount64();hot.force_reload=false;
   if(FILE*f=_wfopen(NativeLabPath(L"logs\\native-game-oneshot.txt").c_str(),L"ab")){fprintf(f,"pid=%lu tick=%llu event=multi_pass_hotkey detail=%u->%u custom=%s native=%s env_override=%u\n",GetCurrentProcessId(),GetTickCount64(),current,next,custom?"written":"FAILED",native_has?(native_ok?"rewritten":"FAILED"):"no-key",unsigned(env));fclose(f);}
   return next;}
  static NativeHotFlags&Instance(){static NativeHotFlags*h=new NativeHotFlags;return *h;}
 };
+
+// Called before choosing per-frame geometry so a model hot switch can rebuild its buffers.
+inline unsigned NativePollRequestedModelMode(bool allow=true){
+ auto&hot=NativeHotFlags::Instance();if(NativeHotFlags::Enabled()||NativeHotFlags::HotkeyCode()){
+  hot.PollMultiPassHotkey(dlss5_mode::Requested(),allow);auto v=hot.Get();
+  if(v.multi_pass>=0)dlss5_mode::Request(unsigned(v.multi_pass));
+ }return dlss5_mode::Requested();
+}

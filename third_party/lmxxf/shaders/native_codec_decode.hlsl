@@ -157,7 +157,13 @@ float3 Upgrade(float3 original,float3 proxy,float3 neural) {
 /* DLSS5_IO_FUSE=1 (2026-10-01, input-slim): read the network's f32 RGB output directly instead of the RGBA16F texture the neural pass
    used to fill; each value takes the same f32 -> f16 round trip the texture store did. Row stride = network surface width (ProxySize.x). */
 StructuredBuffer<float> NeuralRgb : register(t5);
-float3 NeuralAt(uint2 q){uint i=(q.y*ProxySize.x+q.x)*3;return f16tof32(f32tof16(float3(NeuralRgb[i],NeuralRgb[i+1],NeuralRgb[i+2])));}
+float3 NeuralAt(uint2 q){
+#ifdef NATIVE_RGB_PROCESSING_WIDTH
+ uint i=(q.y*NATIVE_RGB_PROCESSING_WIDTH+q.x)*3;
+#else
+ uint i=(q.y*ProxySize.x+q.x)*3;
+#endif
+return f16tof32(f32tof16(float3(NeuralRgb[i],NeuralRgb[i+1],NeuralRgb[i+2])));}
 #endif
 #if NATIVE_CODEC_FIT
 float3 ReadFitted(Texture2D<float4> image,float2 p) {

@@ -598,6 +598,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             LmxxfStyle.set_from_config(readUInt("DlssNr", "LmxxfStyle"));
             LmxxfVitReuse.set_from_config(readBool("DlssNr", "LmxxfVitReuse"));
             LmxxfCompact1080.set_from_config(readBool("DlssNr", "LmxxfCompact1080"));
+            LmxxfOriginalModel.set_from_config(readBool("DlssNr", "LmxxfOriginalModel"));
             LmxxfPassEstimate.set_from_config(readBool("DlssNr", "LmxxfPassEstimate"));
             LmxxfSkinProtect.set_from_config(readBool("DlssNr", "LmxxfSkinProtect"));
             LmxxfAutoExposure.set_from_config(readBool("DlssNr", "LmxxfAutoExposure"));
@@ -1799,6 +1800,8 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "LmxxfVitReuse", GetBoolValue(Instance()->LmxxfVitReuse.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LmxxfCompact1080",
                      GetBoolValue(Instance()->LmxxfCompact1080.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "LmxxfOriginalModel",
+                     GetBoolValue(Instance()->LmxxfOriginalModel.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LmxxfPassEstimate",
                      GetBoolValue(Instance()->LmxxfPassEstimate.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LmxxfSkinProtect",

@@ -972,6 +972,8 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
             fi.flags |= LMXXF_NR_FRAME_FLAG_VIT_REUSE;
         if (Config::Instance()->LmxxfCompact1080.value_or_default())
             fi.flags |= LMXXF_NR_FRAME_FLAG_COMPACT_1080;
+        if (Config::Instance()->LmxxfOriginalModel.value_or_default())
+            fi.flags |= LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL;
         if (Config::Instance()->LmxxfPassEstimate.value_or_default())
             fi.flags |= LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE;
         if (Config::Instance()->LmxxfSkinProtect.value_or_default())
@@ -1276,6 +1278,8 @@ ID3D12Resource* LmxxfBackend::RecordDiagnostic(ID3D12GraphicsCommandList* cmd, c
                     fi.style = std::min(Config::Instance()->LmxxfStyle.value_or_default(), 2u);
                     if (Config::Instance()->LmxxfCompact1080.value_or_default())
                         fi.flags |= LMXXF_NR_FRAME_FLAG_COMPACT_1080;
+                    if (Config::Instance()->LmxxfOriginalModel.value_or_default())
+                        fi.flags |= LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL;
                 }
                 else
                 {
