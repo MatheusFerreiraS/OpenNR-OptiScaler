@@ -897,6 +897,19 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
                                                  reinterpret_cast<void**>(&logical))) ||
                       !logical))
     {
+        if (!boundaryLogged)
+        {
+            boundaryLogged = true;
+            // Whose list it is: the module its methods come from (the driver's for a native list).
+            HMODULE owner = nullptr;
+            char name[MAX_PATH] {};
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   *reinterpret_cast<LPCSTR*>(cmd), &owner))
+                GetModuleFileNameA(owner, name, MAX_PATH);
+            LOG_WARN("lmxxf: Evaluate on cmd {:X}, which is no proxy (methods from {}), likely made before the "
+                     "swapchain by a module not taken for the game's; frames on it get no NR (logged once)",
+                     (size_t) cmd, name);
+        }
         return declineFrame("lmxxf: same-frame boundary unavailable (original Color; NO NR)");
     }
     const bool ineligible = logical && logical->IsSplitIneligible();

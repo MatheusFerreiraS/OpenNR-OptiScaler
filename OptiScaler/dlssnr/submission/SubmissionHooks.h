@@ -66,11 +66,37 @@ inline HMODULE ModuleOf(void* address)
                : nullptr;
 }
 
+// The module a D3D12 call comes from. Streamline's interposer only passes the game's calls on (Forza Horizon 6 makes
+// its device and early lists through it), so behind it the first frame outside it counts. Streamline's own calls,
+// with no such frame above, come from none.
+inline HMODULE CallerModule(void* address)
+{
+    const HMODULE caller = ModuleOf(address);
+    const HMODULE interposer = GetModuleHandleW(L"sl.interposer.dll");
+    if (!caller || caller != interposer)
+        return caller;
+    const HMODULE self = ModuleOf(reinterpret_cast<void*>(&CallerModule));
+    void* frames[32] {};
+    const USHORT count = CaptureStackBackTrace(0, 32, frames, nullptr);
+    bool behind = false;
+    for (USHORT i = 0; i < count; ++i)
+    {
+        const HMODULE module = ModuleOf(frames[i]);
+        if (module == interposer)
+            behind = true;
+        else if (behind)
+            return module;
+        else if (module != self)
+            return nullptr;
+    }
+    return nullptr;
+}
+
 // The module that called D3D12CreateDevice, when it is the game's own: in the game's folder, neither OptiScaler nor
 // one of the vendor libraries that ship beside games (Streamline, NGX, FidelityFX, XeSS).
 inline void NoteDeviceCaller(void* address)
 {
-    const HMODULE module = ModuleOf(address);
+    const HMODULE module = CallerModule(address);
     if (!module || module == GetModuleHandleW(nullptr))
         return;
     wchar_t path[MAX_PATH] {}, exe[MAX_PATH] {};
@@ -98,7 +124,7 @@ inline void NoteDeviceCaller(void* address)
 
 inline bool IsHostExecutableCaller(void* address)
 {
-    const HMODULE caller = ModuleOf(address);
+    const HMODULE caller = CallerModule(address);
     return caller && (caller == GetModuleHandleW(nullptr) || caller == g_deviceModule.load(std::memory_order_acquire));
 }
 
