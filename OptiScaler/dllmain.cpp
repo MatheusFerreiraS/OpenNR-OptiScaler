@@ -1977,7 +1977,15 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         if (std::filesystem::path mainDllPath(Config::Instance()->MainDllPath.value()); mainDllPath.is_relative())
         {
-            Config::Instance()->MainDllPath.set_volatile_value(Util::ExePath().parent_path() / mainDllPath);
+            // Packaged (Xbox) games load us from the package root, while the exe sits in a subfolder
+            wchar_t ownPath[MAX_PATH];
+            GetModuleFileNameW(hModule, ownPath, MAX_PATH);
+            auto besideExe = Util::ExePath().parent_path() / mainDllPath;
+            auto besideDll = std::filesystem::path(ownPath).parent_path() / mainDllPath;
+
+            Config::Instance()->MainDllPath.set_volatile_value(
+                !std::filesystem::is_directory(besideExe) && std::filesystem::is_directory(besideDll) ? besideDll
+                                                                                                    : besideExe);
         }
 
         // If path is invalid or doesn't exist, use the exe folder as main
