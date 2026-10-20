@@ -570,8 +570,9 @@ struct TemporalChain
 // reads as the game's exposure (NATIVE_CODEC_EXPOSURE), so the codec itself is unchanged. Its own estimate (25 points,
 // every frame, toward mid-grey both ways) made a dark scene clean but pulsed with the camera and dimmed bright scenes
 // (KCD2). This is a log average of 16x16 points of the colour, so one light barely moves it, eased over about half a
-// second, and only ever a gain: a dark scene is lifted toward lmxxf's mid-grey, at most 8x, and a scene already that
-// bright gets 1x, as with the option off.
+// second, and only ever a gain. A log average sits well below the plain mean, so a lit outdoor scene measures a stop
+// or two under mid-grey; the gain in stops is the distance below lmxxf's mid-grey through a soft knee: 1x (as with the
+// option off) down to 1 stop below, the full distance from 3.5 stops below, at most 3 stops (8x).
 static const char kAutoExposureHlsl[] = R"(
 Texture2D<float4> Colour : register(t0);
 RWTexture2D<float> Exposure : register(u0);
@@ -594,8 +595,9 @@ void main(uint3 t : SV_GroupThreadID)
     if (i == 0)
     {
         // lmxxf's white point for a mean is mean / 0.2086 (WhitePointForMean: mid-grey 0.45 encoded); as a gain on
-        // the colour, 0.2086 / mean.
-        const float target = clamp(0.2086 / exp2(logs[0] / 256.0), 1.0, 8.0);
+        // the colour, 0.2086 / mean, here in stops.
+        const float below = log2(0.2086) - logs[0] / 256.0;
+        const float target = exp2(clamp(below * smoothstep(1.0, 3.5, below), 0.0, 3.0));
         const float previous = Exposure[uint2(0, 0)];
         Exposure[uint2(0, 0)] = Reset != 0 || !(previous >= 1.0 && previous <= 8.0)
             ? target : exp2(lerp(log2(previous), log2(target), Blend));
