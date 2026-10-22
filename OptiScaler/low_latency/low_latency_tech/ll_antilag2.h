@@ -20,6 +20,10 @@ class AntiLag2 : public LowLatencyTech
     uint64_t simulation_framecount = 0;
     const uint64_t call_spot_switch_threshold = 20;
 
+    // OptiScaler's present count at the last PRESENT_START marker (0 before the first)
+    std::atomic<uint64_t> last_present_marker_framecount = 0;
+    const uint64_t present_marker_stall_threshold = 3;
+
     HRESULT al2_sleep();
 
   public:

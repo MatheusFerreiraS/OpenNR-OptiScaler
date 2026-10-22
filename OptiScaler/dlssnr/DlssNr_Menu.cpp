@@ -798,16 +798,9 @@ void RenderMenu(Config* config, float menuResScale)
                     config->DlssNrApplyAfterRR = false;
                     DlssNr::AmdBridge::InvalidateHistory();
                 }
-                HelpMarker("Sets ApplyAfterRR to false. mochizuki runs the same either way; danielblnc then"
-                           "\nruns before Super Resolution too, if you switch back to it.");
-            }
-            if (auto feature = State::Instance().currentFeature; feature != nullptr)
-            {
-                const auto upscaler = feature->GetUpscalerType();
-                if (upscaler == Upscaler::DLSSD || upscaler == Upscaler::FSR_RR)
-                    ImGui::TextColored(warning, "This title drives Ray Reconstruction, which has no seam before it:"
-                                                "\nthe model is not running. mochizuki runs before Super Resolution"
-                                                "\nonly.");
+                HelpMarker("Sets ApplyAfterRR to false. mochizuki runs before Super Resolution (and before Ray"
+                           "\nReconstruction); danielblnc then runs before Super Resolution / Ray Reconstruction too,"
+                           "\nif you switch back to it.");
             }
 
             const auto liveSlider = [](const char* label, CustomOptional<float>& option, float lo, float hi)
@@ -1068,7 +1061,7 @@ void RenderMenu(Config* config, float menuResScale)
                     config->AmdFixedSeed = fixedSeed;
                 HelpMarker("On (default): danielblnc's runtime uses the same noise every frame. With a new"
                            "\nnoise each frame, the model's temporal history shows it as flicker and"
-                           "\nshimmer under an upscaler. danielblnc 0.4.1 to 0.6.0.");
+                           "\nshimmer under an upscaler. danielblnc 0.4.1 to 0.8.0.");
             }
             float stabilizer = finalImage && !config->AmdStabilizerStrength.has_value()
                                    ? .8f
@@ -1221,14 +1214,9 @@ void RenderMenu(Config* config, float menuResScale)
                                ? "The model is handed the render-resolution frame the upscaler is about to"
                                  "\nread, so the percentage below is of that render resolution. The upscaler"
                                  "\nthen enlarges the model\'s work along with everything else."
-                                 "\n\nA game driving Ray Reconstruction never reaches this point: RR denoises"
-                                 "\nand enlarges in one dispatch, leaving no seam before it. Pick the other"
-                                 "\nplacement there, or the model will not run at all."
                                : "The model is handed the finished frame, and the percentage below is of"
                                  "\nthat frame: at 50% a 4K picture is reduced to 1080p, the model runs on"
-                                 "\nit, and its answer is enlarged back to fill the frame."
-                                 "\n\nThis is the placement Ray Reconstruction titles need, and the only one"
-                                 "\nthey can reach.");
+                                 "\nit, and its answer is enlarged back to fill the frame.");
 
                 int timing = config->AmdAsync.value_or_default() ? 1 : 0;
                 if (ImGui::Combo("Timing", &timing, "Same frame\0Async\0"))
@@ -1242,20 +1230,6 @@ void RenderMenu(Config* config, float menuResScale)
                            "\nIt takes effect the next time the game starts.");
                 if (timing == 1 != DlssNr::AmdBridge::AsyncSession())
                     ImGui::TextDisabled("Restart the game to apply.");
-
-                // A Ray Reconstruction title has no seam before the upscaler, and the pass declines the
-                // one after it unless this switch picks it, so in this placement the model does not run.
-                if (placement == 0 && !DlssNr::AmdBridge::AsyncSession())
-                {
-                    if (auto feature = State::Instance().currentFeature; feature != nullptr)
-                    {
-                        const auto kind = feature->GetUpscalerType();
-                        if (kind == Upscaler::DLSSD || kind == Upscaler::FSR_RR)
-                            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f),
-                                               "This title drives Ray Reconstruction, which has no seam before it:"
-                                               "\nthe model is not running. Choose \"After the finished frame\".");
-                    }
-                }
 
                 // One slider, bound to whichever placement is live (async runs after the finished frame). The
                 // two keep separate values, so switching back and forth does not make you retune each time.
@@ -1589,14 +1563,14 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::Checkbox("Apply after Ray Reconstruction (DX12)", &afterRR))
             config->DlssNrApplyAfterRR = afterRR;
         HelpMarker(amdBackend ? "Runs the AMD neural model over the finished frame instead of over the"
-                                "\nupscaler's input. This is the placement for FSR-RR, whose denoise and"
-                                "\nenlargement are one dispatch and cannot be split."
-                                "\n\nWith it off the model stays pre-SR and declines any frame that reaches"
-                                "\nit after Ray Reconstruction."
+                                "\nupscaler's or Ray Reconstruction's render-resolution input."
+                                "\n\nWith it off the model stays pre-SR (running on the render-resolution Color"
+                                "\ninput before Super Resolution or Ray Reconstruction)."
                                 "\n\nThe model history is rebuilt when the placement changes, so expect a few"
                                 "\nframes of warm-up after toggling it."
-                              : "Requires the game's native Ray Reconstruction option. RR denoises and upscales"
-                                "\nfirst; NR then processes its output before frame generation."
+                              : "When enabled, RR denoises and upscales first; NR then processes its output"
+                                "\nbefore frame generation. When disabled with 'Run NR before Super Resolution'"
+                                "\nenabled, NR processes the render-resolution Color input before RR."
                                 "\nThis does not add RR to games without the required rendering buffers."
                                 "\nIndependent controls below prevent inheriting the cost of the SR configuration."
                                 "\nNative Vulkan does not use these DX12 controls.");

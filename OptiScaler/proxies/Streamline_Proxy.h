@@ -94,6 +94,14 @@ class StreamlineProxy
             State::Instance().optiSlInterposer = _dll;
             auto slCommonPath = localSlPath / L"sl.common.dll";
             State::Instance().optiSlCommon = NtdllProxy::LoadLibraryExW_Ldr(slCommonPath.c_str(), NULL, NULL);
+            // Loaded and hooked ahead of slInit: slInit loads its plugins with the library checks off, and sl.dlss_g
+            // runs its hardware check (the architecture OptiScaler spoofs, AMD with NeuralHub's DLSS-FG) as it loads.
+            auto slDlssgPath = localSlPath / L"sl.dlss_g.dll";
+            if (auto slDlssg = NtdllProxy::LoadLibraryExW_Ldr(slDlssgPath.c_str(), NULL, NULL))
+            {
+                State::Instance().optiSlDLSSG = slDlssg;
+                StreamlineHooks::hookLocalDlssg(slDlssg);
+            }
             auto dlssgPath = localSlPath / L"nvngx_dlssg.dll"; // TODO: maybe some search?
             State::Instance().optiDLSSG = NtdllProxy::LoadLibraryExW_Ldr(dlssgPath.c_str(), NULL, NULL);
 

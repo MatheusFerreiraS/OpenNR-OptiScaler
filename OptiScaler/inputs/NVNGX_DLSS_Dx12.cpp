@@ -14,6 +14,7 @@
 
 #include <upscalers/FeatureProvider_Dx12.h>
 #include "upscalers/dlss/DLSSFeature_Dx12.h"
+#include "upscalers/dlssd/DLSSDFeature.h"
 
 #include <framegen/nvngx/Nvngx_FG.h>
 #include "FG/FSR3_Dx12_FG.h"
@@ -172,6 +173,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_Ext(unsigned long long InApp
     State::Instance().NVNGX_FeatureInfo = &localFeatureInfo;
     State::Instance().NVNGX_Version = InSDKVersion;
 
+    DlssNr::AmdBridge::EnsureNgxHost(InDevice, State::Instance().currentCommandQueue);
     if (Config::Instance()->DLSSEnabled.value_or_default() && !_skipInit)
     {
         if (Config::Instance()->UseGenericAppIdWithDlss.value_or_default())
@@ -241,6 +243,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init(unsigned long long InApplica
     if (!_skipInit)
         UpdateInitPaths(&localFeatureInfo);
 
+    DlssNr::AmdBridge::EnsureNgxHost(InDevice, State::Instance().currentCommandQueue);
     if (Config::Instance()->DLSSEnabled.value_or_default() && !_skipInit)
     {
         if (Config::Instance()->UseGenericAppIdWithDlss.value_or_default())
@@ -299,6 +302,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_Init_ProjectID(const char* InProj
     if (!_skipInit)
         UpdateInitPaths(&localFeatureInfo);
 
+    DlssNr::AmdBridge::EnsureNgxHost(InDevice, State::Instance().currentCommandQueue);
     if (Config::Instance()->DLSSEnabled.value_or_default() && !_skipInit)
     {
         if (Config::Instance()->UseGenericAppIdWithDlss.value_or_default())
@@ -603,7 +607,9 @@ static Upscaler GetUpscalerBackend()
 
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
 
-    if (NVNGXProxy::IsDx12Inited() && primaryGpu.dlssCapable)
+    // The AmdPreSr NeuralHub host arms NGX DLSS on an AMD GPU as well, once its
+    // present publish and evaluate gates are written (AmdPreSr::ArmDlssNgx).
+    if (NVNGXProxy::IsDx12Inited() && (primaryGpu.dlssCapable || State::Instance().NeuralHubArmOk))
         upscaler = Upscaler::DLSS;
 
     if (primaryGpu.fsr4Support != FSR4Support::None)
@@ -652,6 +658,9 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
     const uint32_t handleId = IFeature::GetNextHandleId();
     LOG_INFO("Creating OptiScaler feature, HandleId: {}", handleId);
 
+    if (EnsureD3D12Device(InCmdList))
+        DlssNr::AmdBridge::EnsureNgxHost(D3D12Device, state.currentCommandQueue);
+
     // Determine backend name
     Upscaler upscalerBackend;
     if (InFeatureID == NVSDK_NGX_Feature_SuperSampling)
@@ -661,7 +670,18 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
     }
     else
     {
-        if (IdentifyGpu::getPrimaryGpu().vendorId == VendorId::Nvidia)
+        DLSSDFeature::SyncCreateParams(InParameters);
+
+        const auto primaryGpu = IdentifyGpu::getPrimaryGpu();
+        const bool dlssdCapable =
+            (primaryGpu.vendorId == VendorId::Nvidia || state.NeuralHubArmOk) && state.NVNGX_DLSSD_Path.has_value();
+        const Upscaler preferredUpscaler = GetUpscalerBackend();
+        const bool preferDlssd =
+            primaryGpu.vendorId == VendorId::Nvidia ||
+            (dlssdCapable && (preferredUpscaler == Upscaler::DLSS || preferredUpscaler == Upscaler::DLSSD ||
+                              !FfxApiProxy::IsDenoiserApiImplementedDx12()));
+
+        if (preferDlssd)
         {
             upscalerBackend = Upscaler::DLSSD;
             LOG_INFO("Creating DLSSD (Ray Reconstruction) feature");
@@ -935,7 +955,10 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_GetFeatureRequirements(
 
     const bool isUpscaling = FeatureDiscoveryInfo->FeatureID == NVSDK_NGX_Feature_SuperSampling;
     const bool isFG = FeatureDiscoveryInfo->FeatureID == NVSDK_NGX_Feature_FrameGeneration;
-    const bool dlssgAdjacent = Nvngx_FG::isDx12Available() || State::Instance().activeFgInput == FGInput::DLSSG;
+    const bool neuralHubFg =
+        (State::Instance().NeuralHubArmOk && State::Instance().NVNGX_DLSSG_Path.has_value()) ||
+        DlssNr::AmdBridge::NeuralHubFgInstalled();
+    const bool dlssgAdjacent = Nvngx_FG::isDx12Available() || State::Instance().activeFgInput == FGInput::DLSSG || neuralHubFg;
 
     if (isUpscaling || (isFG && dlssgAdjacent))
     {
@@ -987,13 +1010,15 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_GetFeatureRequirements(
             LOG_DEBUG("DLSSD -> FSR Ray Regeneration not supported");
     }
 
-    if (Config::Instance()->DLSSEnabled.value_or_default() && IdentifyGpu::getPrimaryGpu().dlssCapable &&
+    if (Config::Instance()->DLSSEnabled.value_or_default() &&
+        (IdentifyGpu::getPrimaryGpu().dlssCapable || State::Instance().NeuralHubArmOk) &&
         NVNGXProxy::NVNGXModule() == nullptr)
     {
         NVNGXProxy::InitNVNGX();
     }
 
-    if (Config::Instance()->DLSSEnabled.value_or_default() && IdentifyGpu::getPrimaryGpu().dlssCapable &&
+    if (Config::Instance()->DLSSEnabled.value_or_default() &&
+        (IdentifyGpu::getPrimaryGpu().dlssCapable || State::Instance().NeuralHubArmOk) &&
         NVNGXProxy::D3D12_GetFeatureRequirements() != nullptr)
     {
         LOG_DEBUG("D3D12_GetFeatureRequirements for ({0})", (int) FeatureDiscoveryInfo->FeatureID);
@@ -1275,9 +1300,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
 
             LOG_DEBUG("Passthrough to native DLSS EvaluateFeature for handle {}", handleId);
 
-            // Pre-SR placement is valid only for Super Resolution. Ray Reconstruction carries a
-            // different set of inputs and stays on the post-upscale path.
-            if (feature == NVSDK_NGX_Feature_SuperSampling)
+            // Pre-SR placement runs on the render-resolution colour of Super Resolution and of Ray Reconstruction.
+            if (feature == NVSDK_NGX_Feature_SuperSampling || feature == NVSDK_NGX_Feature_RayReconstruction)
                 DlssNr::EvaluateBeforeUpscale(InCmdList, InParameters);
 
             NVSDK_NGX_Result result =
@@ -1318,7 +1342,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     if (lastDlssgCameraFar.has_value())
         InParameters->Set("DLSSG.CameraFar", lastDlssgCameraFar.value());
 
-    if (feature == NVSDK_NGX_Feature_SuperSampling)
+    if (feature == NVSDK_NGX_Feature_SuperSampling || feature == NVSDK_NGX_Feature_RayReconstruction)
         DlssNr::EvaluateBeforeUpscale(InCmdList, InParameters);
 
     // OptiScaler internal handling

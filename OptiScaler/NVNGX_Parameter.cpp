@@ -9,6 +9,8 @@
 #include <misc/IdentifyGpu.h>
 #include <proxies/FfxApi_Proxy.h>
 #include <framegen/nvngx/Nvngx_FG.h>
+#include <dlssnr/amd/AmdBridge.h>
+#include <dlssnr/amd/AmdPreSr.h>
 
 /// @brief Calculates the resolution scaling ratio override based on the provided quality level and current
 /// configuration.
@@ -866,8 +868,13 @@ void InitNGXParameters(NVSDK_NGX_Parameter* InParams, API api)
         InParams->Set("SuperSamplingDenoising.FeatureInitResult", ssDenoiseAvailable);
     }
 
+    const bool neuralHubFg =
+        (State::Instance().NeuralHubArmOk && State::Instance().NVNGX_DLSSG_Path.has_value()) ||
+        DlssNr::AmdBridge::NeuralHubFgInstalled();
+
     if ((api == API::DX12 || api == API::Vulkan) && (State::Instance().activeFgInput == FGInput::DLSSG ||
-                                                     State::Instance().activeFgNvngx != FGNvngxReplacement::None))
+                                                     State::Instance().activeFgNvngx != FGNvngxReplacement::None ||
+                                                     neuralHubFg))
     {
         InParams->Set("FrameGeneration.Available", 1);
         InParams->Set("FrameGeneration.NeedsUpdatedDriver", 0);
@@ -893,6 +900,13 @@ void InitNGXParameters(NVSDK_NGX_Parameter* InParams, API api)
                 lastReported = countMax;
                 LOG_DEBUG("Reporting NGX DLSSG.MultiFrameCountMax {} for XeFG", countMax);
             }
+        }
+
+        // NeuralHub's DLSS-FG generates up to its own ceiling ([DLSS-FG] MaxMultiplier, Auto 3: 4x); 1 until the
+        // host is armed
+        else if (neuralHubFg)
+        {
+            countMax = std::max(1u, AmdPreSr::NgxFgMultiFrameCountMax());
         }
 
         InParams->Set("DLSSG.MultiFrameCountMax", countMax);

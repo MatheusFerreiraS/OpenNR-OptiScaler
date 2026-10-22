@@ -2,8 +2,8 @@
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
   Default product: OptiScaler-0.5.6-opennr, the version in OptiScaler/resource.h.
-  The danielblnc runtime it drives is 0.5.1 (0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1, 0.3.0 and the 0.6.0 supporter build
-  still accepted), supplied by the user.
+  The danielblnc runtime it drives is 0.8.0 (NeuralHub's neuralhub_host.dll; 0.6.0, 0.5.1, 0.5.0, 0.4.3, 0.4.2, 0.4.1,
+  0.4.0, 0.3.1 and 0.3.0 still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
   installer or a local build supplies it, and its model is never in this package.
 
@@ -179,10 +179,11 @@ $ini = [regex]::Replace($ini, '(?ms)(\[FrameGen\].*?^Enabled=)[^\r\n]*', '$1fals
 $ini = [regex]::Replace($ini, '(?ms)^\[DlssNr\].*?(?=^\[|\z)', @"
 [DlssNr]
 ; Product $Version - NR slots default 3 (2-5 in-game, 1-5 here).
-; Requires DLSS-NR-on-AMD 0.6.0 (0.5.1, 0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1 and 0.3.0 still work;
-; https://github.com/danielblnc/DLSS-NR-on-AMD)
-; as dlssnr_amd_pass1-3.dll (Setup copies version.dll from the package folder, or takes it
-; out of dlssnr_on_amd_setup.exe).
+; Requires DLSS-NR-on-AMD 0.8.0 (NeuralHub; 0.6.0, 0.5.1, 0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1 and
+; 0.3.0 still work; https://github.com/danielblnc/DLSS-NR-on-AMD)
+; as dlssnr_amd_pass1.dll (0.8.0, one module, hosted from dlssnr_amd_host\) or dlssnr_amd_pass1-3.dll
+; (Setup finds an installed NeuralHub, copies version.dll or neuralhub_host.dll from the package
+; folder, or takes it out of neuralhub.exe or dlssnr_on_amd_setup.exe).
 ; AmdEveryFrame=false keeps the model's temporal history (Ins menu: "Disable temporal
 ; stabilization", off by default).
 ; AmdGraphicsWait=1 is New wait mode (1-pixel draw of 0.3.1 and later; still testing).
@@ -551,9 +552,13 @@ Copy-Item $readme (Join-Path $stage 'README.md') -Force
 # Keep this filename-only and case-insensitive: the same expression validates the
 # staged tree and every entry in the finished archive.
 # version-<ver>.dll is an older author runtime that Setup renamed next to Setup.bat.
-$forbidden = '(?i)^(nvngx.*\.dll|dlssnr_amd_pass.*\.dll|dlssnr_on_amd_weights\.bin|version(-[0-9.]+)?\.dll|dlssnr_on_amd_setup\.exe)$'
+# NeuralHub (0.8.0): neuralhub_host.dll (the runtime), neuralhub_stub.dll, neuralhub.exe and
+# NeuralHub_v*_setup.exe. dlssnr_amd_host\ is what OptiScaler makes in a game folder for 0.8.0
+# (runtime copy, nvngx copy, built weights): nothing under it may ship, whatever its name.
+$forbidden = '(?i)^(nvngx.*\.dll|dlssnr_amd_pass.*\.dll|dlssnr_on_amd_weights\.bin|version(-[0-9.]+)?\.dll|dlssnr_on_amd_setup\.exe|neuralhub_host\.dll|neuralhub_stub\.dll|neuralhub.*\.exe)$'
+$forbiddenDir = '(?i)(^|[\\/])dlssnr_amd_host([\\/]|$)'
 $badAll = Get-ChildItem -LiteralPath $stage -Recurse -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match $forbidden }
+    Where-Object { $_.Name -match $forbidden -or $_.FullName.Substring($stage.Length) -match $forbiddenDir }
 if ($badAll) {
     throw "Refusing to package proprietary/user-supplied file: $(($badAll | ForEach-Object { $_.FullName.Substring($stage.Length+1) }) -join ', ')"
 }
@@ -601,7 +606,8 @@ try {
     $archive = [IO.Compression.ZipFile]::OpenRead($zip)
     try {
         $badZip = @($archive.Entries |
-            Where-Object { -not [string]::IsNullOrEmpty($_.Name) -and $_.Name -match $forbidden } |
+            Where-Object { ($_.FullName -match $forbiddenDir) -or
+                (-not [string]::IsNullOrEmpty($_.Name) -and $_.Name -match $forbidden) } |
             ForEach-Object { $_.FullName })
     } finally {
         $archive.Dispose()

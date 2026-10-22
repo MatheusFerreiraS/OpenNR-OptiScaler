@@ -227,6 +227,11 @@ class State
     std::optional<std::wstring> NVNGX_DLSSD_Path;
     std::optional<std::wstring> NVNGX_DLSSG_Path;
 
+    // NeuralHub host (AmdPreSr 0.8.0): the dlssnr_amd_host module was armed as an NGX provider
+    // on this AMD GPU (present published, SR/RR gates written, its NGX exports routed into
+    // NVNGXProxy). Lets DLSS be selectable without NVIDIA hardware; NVIDIA paths never set this.
+    bool NeuralHubArmOk = false;
+
     // optis dlls
     HMODULE optiSlInterposer = nullptr;
     HMODULE optiSlCommon = nullptr;

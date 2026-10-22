@@ -5,9 +5,11 @@
 
 .DESCRIPTION
   Removes identified OptiScaler proxies, named passes/config/logs, listed dependencies,
+  the dlssnr_amd_host folder OptiScaler makes for runtime 0.8.0 (its neuralhub_host.dll copy,
+  neuralhub.ini, the runtime's log/ini, the nvngx_dlssnr.dll copy and the weights built there),
   and this uninstaller. Asks whether to keep backup-amd-presr-* folders, then lists
   planned deletions, then asks Y/N. Does NOT delete nvngx_dlssnr.dll, weights,
-  danielblnc setup/log, other proxies, or user-added plugins and unknown files.
+  danielblnc setup/log, other proxies, or user-added plugins and unknown files in the game folder.
 
 .EXAMPLE
   .\Uninstall_OptiScaler_NR.bat
@@ -82,6 +84,8 @@ $projectLeafNames = @(
     'Uninstall_OptiScaler_NR.bat','Uninstall_OptiScaler_NR.ps1',
     'Uninstall.bat','Uninstall.ps1'
 )
+# Made by OptiScaler beside the passes for runtime 0.8.0 (AmdPreSr PrepareHostModule).
+$hostDirName = 'dlssnr_amd_host'
 $selfLeafNames = @('Uninstall_OptiScaler_NR.bat','Uninstall_OptiScaler_NR.ps1','Uninstall.bat','Uninstall.ps1')
 $projectLogPatterns = @('OptiScaler.log*','amd_bridge.log*','amd_presr.log*')
 $dependencyPaths = @(
@@ -248,6 +252,16 @@ foreach ($root in $roots) {
     if ((Test-UninstallPath $flagsFile) -and (Test-Path -LiteralPath $flagsFile -PathType Leaf)) {
         Add-PlannedFile $flagsFile 'lmxxf-flags'
     }
+
+    # OptiScaler's own folder for runtime 0.8.0: everything in it is a copy or was written there.
+    $hostDir = Join-Path $root $hostDirName
+    if ((Test-UninstallPath $hostDir) -and (Test-Path -LiteralPath $hostDir -PathType Container)) {
+        if (Test-TreeReparse $hostDir) {
+            $kept.Add("linked path: $hostDir")
+        } else {
+            $planned.Add("$hostDir  (OptiScaler's runtime 0.8.0 host folder: neuralhub_host.dll, neuralhub.ini, logs, nvngx copy, built weights)")
+        }
+    }
 }
 
 foreach ($name in @('nvngx_dlssnr.dll','dlssnr_on_amd_weights.bin','dlssnr_on_amd_setup.exe','dlssnr_on_amd.log')) {
@@ -284,6 +298,7 @@ Write-Host 'This uninstall script is still being tested.' -ForegroundColor Yello
 Write-Host 'It cannot guarantee it will never remove a game file or another mod.' -ForegroundColor Yellow
 Write-Host 'It only deletes files that look like THIS project (OptiScaler / pass / project logs).' -ForegroundColor Yellow
 Write-Host 'It will NOT delete: nvngx_dlssnr.dll, weights.bin, native-game-tiled-assets, danielblnc setup.' -ForegroundColor Yellow
+Write-Host '(The copies OptiScaler made in dlssnr_amd_host for runtime 0.8.0 go with that folder.)' -ForegroundColor Yellow
 Write-Host ''
 
 if ($backupDirs.Count -gt 0) {
@@ -448,6 +463,20 @@ foreach ($root in $roots) {
     if ((Test-UninstallPath $flagsFile) -and (Test-Path -LiteralPath $flagsFile -PathType Leaf)) {
         Remove-SafeFile $flagsFile 'lmxxf-flags'
         Remove-EmptyDirectory (Join-Path $root 'DLSS5-AMD')
+    }
+
+    $hostDir = Join-Path $root $hostDirName
+    if ((Test-UninstallPath $hostDir) -and (Test-Path -LiteralPath $hostDir -PathType Container)) {
+        if (Test-TreeReparse $hostDir) {
+            $errors.Add("$hostDir : contains a linked path, not deleted")
+        } else {
+            try {
+                Remove-Item -LiteralPath $hostDir -Recurse -Force
+                $deleted.Add("$hostDir  (runtime 0.8.0 host folder)")
+            } catch {
+                $errors.Add("$hostDir : $($_.Exception.Message)")
+            }
+        }
     }
 }
 foreach ($root in $roots) {

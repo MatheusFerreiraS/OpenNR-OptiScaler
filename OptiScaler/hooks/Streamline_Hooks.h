@@ -343,6 +343,10 @@ class StreamlineHooks
     // GameRequestedInterpolationCount() has nothing to answer with and always reports "no request".
     static void RecordGameDlssgOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options);
 
+    static sl::Result dummy_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
+                                            const sl::DLSSGOptions* options);
+    static sl::Result dummy_slDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options);
+
   private:
     inline static sl::RenderAPI renderApi = sl::RenderAPI::eCount;
     inline static std::mutex setConstantsMutex {};
