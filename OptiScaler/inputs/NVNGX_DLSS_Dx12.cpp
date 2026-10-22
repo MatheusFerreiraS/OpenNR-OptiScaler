@@ -1340,7 +1340,13 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
     if (lastDlssgCameraFar.has_value())
         InParameters->Set("DLSSG.CameraFar", lastDlssgCameraFar.value());
 
-    if (feature == NVSDK_NGX_Feature_SuperSampling || feature == NVSDK_NGX_Feature_RayReconstruction)
+    // FSR-RR runs the before-SR pass itself, between its denoise and its upscale (FSRDFeatureDx12::EvaluateInternal).
+    const auto ctxIt = Dx12Contexts.find(InFeatureHandle->Id);
+    const bool nrInsideFeature = ctxIt != Dx12Contexts.end() && ctxIt->second.feature != nullptr &&
+                                 ctxIt->second.feature->GetUpscalerType() == Upscaler::FSR_RR;
+
+    if ((feature == NVSDK_NGX_Feature_SuperSampling || feature == NVSDK_NGX_Feature_RayReconstruction) &&
+        !nrInsideFeature)
         DlssNr::EvaluateBeforeUpscale(InCmdList, InParameters);
 
     // OptiScaler internal handling

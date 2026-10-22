@@ -1564,8 +1564,9 @@ void RenderMenu(Config* config, float menuResScale)
             config->DlssNrApplyAfterRR = afterRR;
         HelpMarker(amdBackend ? "Runs the AMD neural model over the finished frame instead of over the"
                                 "\nupscaler's or Ray Reconstruction's render-resolution input."
-                                "\n\nWith it off the model stays pre-SR (running on the render-resolution Color"
-                                "\ninput before Super Resolution or Ray Reconstruction)."
+                                "\n\nWith it off the model stays pre-SR, on the render-resolution Color input"
+                                "\nbefore Super Resolution or DLSS-RR. Under FSR-RR it runs between the"
+                                "\ndenoise and the upscale, on the denoised colour."
                                 "\n\nThe model history is rebuilt when the placement changes, so expect a few"
                                 "\nframes of warm-up after toggling it."
                               : "When enabled, RR denoises and upscales first; NR then processes its output"
