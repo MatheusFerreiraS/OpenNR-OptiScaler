@@ -1105,7 +1105,8 @@ bool Config::Reload(std::filesystem::path iniPath)
                 std::filesystem::path library(readWString("Libraries", "OptiDllPath").value_or(L"OptiScaler"));
                 if (library.is_relative())
                     library = Util::DllPath().parent_path() / library;
-                const bool neuralHubFg = DlssNr::AmdBridge::NeuralHubFgInstalled(library);
+                const bool neuralHubFg =
+                    DlssNr::AmdBridge::NeuralHubFgInstalled(library, HostComputeBackend.value_or_default());
                 SpoofHAGS.set_volatile_value(FGInput.value_or_default() == FGInput::NvngxFG ||
                                              FGInput.value_or_default() == FGInput::DLSSG ||
                                              neuralHubFg);
@@ -1796,7 +1797,7 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "AmdAsync", GetBoolValue(Instance()->AmdAsync.value_for_config()).c_str());
         ini.SetValue("DlssNr", "NrBackend", Instance()->NrBackend.value_for_config().value_or("auto").c_str());
         ini.SetValue("DlssNr", "HostComputeBackend",
-                     Instance()->HostComputeBackend.value_for_config().value_or("HIP").c_str());
+                     Instance()->HostComputeBackend.value_for_config().value_or("auto").c_str());
         ini.SetValue("DlssNr", "HostZeroCopy", GetBoolValue(Instance()->HostZeroCopy.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LmxxfDiagnostic",
                      Instance()->LmxxfDiagnostic.value_for_config().value_or("auto").c_str());

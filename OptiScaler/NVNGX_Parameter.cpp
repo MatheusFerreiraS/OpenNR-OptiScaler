@@ -868,9 +868,7 @@ void InitNGXParameters(NVSDK_NGX_Parameter* InParams, API api)
         InParams->Set("SuperSamplingDenoising.FeatureInitResult", ssDenoiseAvailable);
     }
 
-    const bool neuralHubFg =
-        (State::Instance().NeuralHubArmOk && State::Instance().NVNGX_DLSSG_Path.has_value()) ||
-        DlssNr::AmdBridge::NeuralHubFgInstalled();
+    const bool neuralHubFg = DlssNr::AmdBridge::NeuralHubFgServed();
 
     if ((api == API::DX12 || api == API::Vulkan) && (State::Instance().activeFgInput == FGInput::DLSSG ||
                                                      State::Instance().activeFgNvngx != FGNvngxReplacement::None ||

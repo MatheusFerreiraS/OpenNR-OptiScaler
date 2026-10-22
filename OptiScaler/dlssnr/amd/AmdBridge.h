@@ -14,11 +14,15 @@ AmdPreSr::Settings SettingsFromConfig(const Config& cfg, float modelScale);
 bool HasFiles();
 // NeuralHub 0.8.0 serves DLSS Frame Generation: its host module sits in dlssnr_amd_host\ beside this DLL and an
 // nvngx_dlssg.dll beside the host or the game. Only files are checked, so it answers before the host loads (slInit,
-// the INI); a game that ships nvngx_dlssg.dll without the host is not taken for one.
+// the INI); a game that ships nvngx_dlssg.dll without the host is not taken for one. Never with the host kept on HIP.
 bool NeuralHubFgInstalled();
-// The same with OptiScaler's library folder given: Config's own load asks this way, since LibraryFolder() reads Config
-// and would construct it again from inside its constructor.
-bool NeuralHubFgInstalled(const std::filesystem::path& library);
+// The same with OptiScaler's library folder and HostComputeBackend given: Config's own load asks this way, since
+// LibraryFolder() reads Config and would construct it again from inside its constructor.
+bool NeuralHubFgInstalled(const std::filesystem::path& library, const std::string& backend);
+// The armed host found an nvngx_dlssg.dll, or NeuralHubFgInstalled(): DLSS-FG is offered on AMD.
+bool NeuralHubFgServed();
+// [DlssNr] HostComputeBackend=HIP: the 0.8.0 host stays on HIP for danielblnc's NR, and its DLSS-FG (D3D12 only) is off.
+bool HostKeptOnHip();
 // OptiScaler's library folder ([Libraries] OptiDllPath, OptiScaler\ beside this DLL by default). NVIDIA's
 // nvngx_dlss(.d/.g).dll placed there feed NeuralHub ahead of the game's own copies.
 std::filesystem::path LibraryFolder();

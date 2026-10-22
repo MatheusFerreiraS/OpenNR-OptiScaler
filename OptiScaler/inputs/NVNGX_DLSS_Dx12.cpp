@@ -955,9 +955,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_GetFeatureRequirements(
 
     const bool isUpscaling = FeatureDiscoveryInfo->FeatureID == NVSDK_NGX_Feature_SuperSampling;
     const bool isFG = FeatureDiscoveryInfo->FeatureID == NVSDK_NGX_Feature_FrameGeneration;
-    const bool neuralHubFg =
-        (State::Instance().NeuralHubArmOk && State::Instance().NVNGX_DLSSG_Path.has_value()) ||
-        DlssNr::AmdBridge::NeuralHubFgInstalled();
+    const bool neuralHubFg = DlssNr::AmdBridge::NeuralHubFgServed();
     const bool dlssgAdjacent = Nvngx_FG::isDx12Available() || State::Instance().activeFgInput == FGInput::DLSSG || neuralHubFg;
 
     if (isUpscaling || (isFG && dlssgAdjacent))

@@ -934,11 +934,7 @@ void StreamlineHooks::streamlineLogCallback(sl::LogType type, const char* msg)
         o_logCallback(type, msg);
 }
 
-static bool IsNeuralHubFgArmed()
-{
-    return (State::Instance().NeuralHubArmOk && State::Instance().NVNGX_DLSSG_Path.has_value()) ||
-           DlssNr::AmdBridge::NeuralHubFgInstalled();
-}
+static bool IsNeuralHubFgArmed() { return DlssNr::AmdBridge::NeuralHubFgServed(); }
 
 sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVersion)
 {

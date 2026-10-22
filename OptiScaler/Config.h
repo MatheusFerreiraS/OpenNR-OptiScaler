@@ -382,10 +382,10 @@ class Config
     CustomOptional<bool> AmdAsync { false };
     // NR host: daniel (default), lmxxf, mochizuki, off. Missing key = daniel. Restart to change.
     CustomOptional<std::string> NrBackend { "daniel" };
-    // Host compute runtime written to dlssnr_amd_host\neuralhub.ini ([Compute] Backend): HIP (default) runs the
-    // addon's kernels on AMD's HIP runtime with the inline wait on the game's queue; D3D12 runs them as pipelines
-    // in the game's command list (no second queue, no inline wait); Auto lets the host try D3D12 first. Restart.
-    CustomOptional<std::string> HostComputeBackend { "HIP" };
+    // Host compute runtime written to dlssnr_amd_host\neuralhub.ini ([Compute] Backend). auto: D3D12 when an
+    // nvngx_dlssg.dll is there for NeuralHub's DLSS-FG (D3D12 only), HIP otherwise. HIP: danielblnc's NR runs (HIP
+    // only on our path) and the FG stays off. D3D12: the kernels run as pipelines in the game's list. Restart.
+    CustomOptional<std::string> HostComputeBackend { "auto" };
     // Host zero-copy interop ([Debug] HipZeroCopy): true (default) shares the game's textures with HIP and runs the
     // network inline on the game's queue (the inline wait); false copies the inputs and runs the network
     // asynchronously (no inline wait, no same-frame result, but no spin/staging deadlock either). Restart.

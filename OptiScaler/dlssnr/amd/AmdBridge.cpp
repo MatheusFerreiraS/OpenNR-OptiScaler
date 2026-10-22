@@ -482,8 +482,12 @@ std::filesystem::path LibraryFolder()
     }
     return Directory() / L"OptiScaler";
 }
-bool NeuralHubFgInstalled(const std::filesystem::path& library)
+bool HostKeptOnHip(const std::string& backend) { return _stricmp(backend.c_str(), "HIP") == 0; }
+bool HostKeptOnHip() { return HostKeptOnHip(Config::Instance()->HostComputeBackend.value_or_default()); }
+bool NeuralHubFgInstalled(const std::filesystem::path& library, const std::string& backend)
 {
+    if (HostKeptOnHip(backend))
+        return false;
     std::error_code ec;
     const auto dir = Directory();
     const auto host = dir / L"dlssnr_amd_host";
@@ -492,7 +496,15 @@ bool NeuralHubFgInstalled(const std::filesystem::path& library)
             std::filesystem::exists(library / L"nvngx_dlssg.dll", ec) ||
             std::filesystem::exists(dir / L"nvngx_dlssg.dll", ec));
 }
-bool NeuralHubFgInstalled() { return NeuralHubFgInstalled(LibraryFolder()); }
+bool NeuralHubFgInstalled()
+{
+    return NeuralHubFgInstalled(LibraryFolder(), Config::Instance()->HostComputeBackend.value_or_default());
+}
+bool NeuralHubFgServed()
+{
+    return (State::Instance().NeuralHubArmOk && State::Instance().NVNGX_DLSSG_Path.has_value() && !HostKeptOnHip()) ||
+           NeuralHubFgInstalled();
+}
 bool HasFiles()
 {
     // Proxy names such as winmm.dll can load before Util::DllPath is finalized.

@@ -575,7 +575,7 @@ bool ArmDlssNgx(HMODULE hostModule, const AmdLayout* L, const char* tag,
             State::Instance().NVNGX_DLSS_Path = dlss.wstring();
         if (std::filesystem::exists(dlssd, ec))
             State::Instance().NVNGX_DLSSD_Path = dlssd.wstring();
-        if (std::filesystem::exists(dlssg, ec))
+        if (std::filesystem::exists(dlssg, ec) && !DlssNr::AmdBridge::HostKeptOnHip())
             State::Instance().NVNGX_DLSSG_Path = dlssg.wstring();
         if (State::Instance().NVNGX_DLSS_Path.has_value() || State::Instance().NVNGX_DLSSD_Path.has_value() ||
             State::Instance().NVNGX_DLSSG_Path.has_value())
@@ -1232,8 +1232,9 @@ struct Backend::Impl
         // (a DLSS evaluate crashed on the game's FFX 2.3.0: exception 0xc0000005 after
         // "replaced by FSR provider"), so Passthrough stays the fallback.
         const bool armNgx = std::filesystem::exists(folder / L"nvngx_dlss.dll", ec);
-        const bool armFg = std::filesystem::exists(folder / L"nvngx_dlssg.dll", ec) ||
-                           std::filesystem::exists(directory / L"nvngx_dlssg.dll", ec);
+        const bool hip = DlssNr::AmdBridge::HostKeptOnHip();
+        const bool armFg = !hip && (std::filesystem::exists(folder / L"nvngx_dlssg.dll", ec) ||
+                                    std::filesystem::exists(directory / L"nvngx_dlssg.dll", ec));
         std::ofstream ini(folder / L"neuralhub.ini", std::ios::binary | std::ios::trunc);
         ini << "; Written by OptiScaler on every load: the runtime is hosted";
         if (armNgx)
@@ -1256,20 +1257,12 @@ struct Backend::Impl
         {
             ini << "[FrameGeneration]\r\nProvider=Off\r\n";
         }
-        std::string hostBackend = "D3D12";
-        if (auto requested = Config::Instance()->HostComputeBackend.value_or_default(); !requested.empty())
-        {
-            if (_stricmp(requested.c_str(), "D3D12") == 0)
-                hostBackend = "D3D12";
-            else if (_stricmp(requested.c_str(), "HIP") == 0)
-                hostBackend = armFg ? "D3D12" : "HIP";
-            else
-                hostBackend = requested;
-        }
-        else
-        {
+        // auto follows the FG: D3D12 for it, HIP for danielblnc's NR. HIP and D3D12 are taken as asked.
+        std::string hostBackend = Config::Instance()->HostComputeBackend.value_or_default();
+        if (_stricmp(hostBackend.c_str(), "auto") == 0)
             hostBackend = armFg ? "D3D12" : "HIP";
-        }
+        else if (hip)
+            Log("AMD runtime: HostComputeBackend=HIP keeps danielblnc's NR running; NeuralHub's DLSS-FG stays off");
         ini << "[Enhancement]\r\nProvider=Off\r\n[Compute]\r\nBackend="
             << hostBackend << "\r\n";
         if (armFg)
@@ -1637,7 +1630,7 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
     {
         static const std::string refused =
             "AMD runtime: danielblnc's NR does not run while its host is on D3D12 for DLSS-FG; choose lmxxf or "
-            "mochizuki for NR, or remove nvngx_dlssg.dll for danielblnc's NR";
+            "mochizuki for NR, or set [DlssNr] HostComputeBackend=HIP for danielblnc's NR without NeuralHub's FG";
         if (p->status != refused)
         {
             p->status = refused;
