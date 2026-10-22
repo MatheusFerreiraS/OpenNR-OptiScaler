@@ -278,7 +278,7 @@ class Config
     CustomOptional<bool> DlssNrRunBeforeSr { false };
     CustomOptional<bool> DlssNrApplyAfterRR { false };
     CustomOptional<unsigned int> DlssNrRRPasses { 1 };
-    CustomOptional<float> DlssNrRRWorkingScale { 0.5f };
+    CustomOptional<float> DlssNrRRWorkingScale { 1.0f };
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.
     CustomOptional<int> DlssNrToggleKey { VK_NUMPAD5 };
@@ -382,6 +382,18 @@ class Config
     CustomOptional<bool> AmdAsync { false };
     // NR host: daniel (default), lmxxf, mochizuki, off. Missing key = daniel. Restart to change.
     CustomOptional<std::string> NrBackend { "daniel" };
+    // Host compute runtime written to dlssnr_amd_host\neuralhub.ini ([Compute] Backend): HIP (default) runs the
+    // addon's kernels on AMD's HIP runtime with the inline wait on the game's queue; D3D12 runs them as pipelines
+    // in the game's command list (no second queue, no inline wait); Auto lets the host try D3D12 first. Restart.
+    CustomOptional<std::string> HostComputeBackend { "HIP" };
+    // Host zero-copy interop ([Debug] HipZeroCopy): true (default) shares the game's textures with HIP and runs the
+    // network inline on the game's queue (the inline wait); false copies the inputs and runs the network
+    // asynchronously (no inline wait, no same-frame result, but no spin/staging deadlock either). Restart.
+    CustomOptional<bool> HostZeroCopy { true };
+    // Experimental: arm the host's DLSS-FG addon ([FrameGeneration] Provider=DLSS-FG). DLSS-FG only runs on the
+    // host's D3D12 compute runtime, and in host mode that runtime aborts the process at load on this build
+    // ("hipMemcpyToSymbol: g_e4m3_lut belongs to a code unit with no code object"). Off by default. Restart.
+    CustomOptional<bool> HostFrameGeneration { false };
     // lmxxf diagnostics: original/copy-current/staging-current/staging-previous,
     // proxy-original/split-original (NO NR). off requires a same-frame boundary. Restart to change.
     CustomOptional<std::string> LmxxfDiagnostic { "off" };

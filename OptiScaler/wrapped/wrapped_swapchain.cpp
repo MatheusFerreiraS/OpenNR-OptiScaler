@@ -10,6 +10,7 @@
 #include <hooks/D3D12_Hooks.h>
 #include <dlssnr/backend/Selector.h>
 #include <dlssnr/amd/AmdBridge.h>
+#include <dlssnr/amd/AmdPreSr.h>
 #include <dlssnr/submission/SubmissionHooks.h>
 
 #include <menu/menu_overlay_dx.h>
@@ -541,11 +542,19 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     LOG_DEBUG("Calling original present");
 
+    // NeuralHub 0.8.0 as NGX host: its present stage, which its own Present detour would run (every present, the
+    // generated frames included: its frame counters and DLSS-FG pacing follow them).
+    if (willPresent)
+        AmdPreSr::NgxPresentBefore(pSwapChain);
+
     // swapchain present
     if (pPresentParameters == nullptr)
         presentResult = pSwapChain->Present(SyncInterval, Flags);
     else
         presentResult = ((IDXGISwapChain1*) pSwapChain)->Present1(SyncInterval, Flags, pPresentParameters);
+
+    if (willPresent)
+        AmdPreSr::NgxPresentAfter(pSwapChain, presentResult);
 
     if (presentResult == S_OK)
     {

@@ -3745,7 +3745,7 @@ void EvaluateAtSeam(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* par
                 ReportSkipOnce(forcePost ? "Ray Reconstruction is active; this AMD NR runtime runs before Super "
                                            "Resolution only"
                                          : "AMD neural: this NR runtime runs before Super Resolution only");
-            else if (postPlacement)
+            else if (postPlacement && !forcePost)
                 ReportSkipOnce(forcePost ? "Ray Reconstruction is active; choose \"After the finished frame\" to "
                                            "process its output"
                                          : "AMD neural: choose \"After the finished frame\" to run over it");
@@ -3790,7 +3790,10 @@ void EvaluateAtSeam(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* par
     // RR already reconstructs and upscales; never edit its noisy input or inherit SR's multipass cost.
     if (forcePost && !cfg.DlssNrApplyAfterRR.value_or_default())
     {
-        ReportSkipOnce("Ray Reconstruction is active; enable ApplyAfterRR to process its output");
+        // With a pre-upscale placement the model already ran at the seam before RR (forcePost is
+        // false there), so declining the post seam is routine and stays quiet.
+        if (!cfg.DlssNrRunBeforeSr.value_or_default() && !cfg.DlssNrPreUpscale.value_or_default())
+            ReportSkipOnce("Ray Reconstruction is active; enable ApplyAfterRR to process its output");
         return;
     }
 

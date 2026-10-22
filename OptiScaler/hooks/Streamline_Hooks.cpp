@@ -10,6 +10,7 @@
 #include <hooks/Reflex_Hooks.h>
 #include <menu/menu_overlay_base.h>
 #include <framegen/nvngx/Nvngx_FG.h>
+#include <dlssnr/amd/AmdBridge.h>
 #include <framegen/dlssg/MfgUnlock.h>
 #include <proxies/KernelBase_Proxy.h>
 #include <imgui/ImGuiNotify.hpp>
@@ -933,6 +934,12 @@ void StreamlineHooks::streamlineLogCallback(sl::LogType type, const char* msg)
         o_logCallback(type, msg);
 }
 
+static bool IsNeuralHubFgArmed()
+{
+    return (State::Instance().NeuralHubArmOk && State::Instance().NVNGX_DLSSG_Path.has_value()) ||
+           DlssNr::AmdBridge::NeuralHubFgInstalled();
+}
+
 sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVersion)
 {
     LOG_FUNC();
@@ -1068,13 +1075,32 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
         }
     }
 
-    if (State::Instance().activeFgInput == FGInput::DLSSG || State::Instance().activeFgOutput == FGOutput::DLSSG)
+    const bool neuralHubFg = IsNeuralHubFgArmed();
+    const bool useNativeDlssg = neuralHubFg &&
+                                State::Instance().activeFgOutput != FGOutput::XeFG &&
+                                State::Instance().activeFgOutput != FGOutput::FSRFG;
+
+    if (useNativeDlssg)
+    {
+        std::vector<sl::Feature> localFeaturesToLoad(pref.featuresToLoad, pref.featuresToLoad + pref.numFeaturesToLoad);
+        if (std::find(localFeaturesToLoad.begin(), localFeaturesToLoad.end(), sl::kFeatureDLSS_G) == localFeaturesToLoad.end())
+        {
+            localFeaturesToLoad.push_back(sl::kFeatureDLSS_G);
+            LOG_INFO("hkslInit: added sl::kFeatureDLSS_G to featuresToLoad for NeuralHub DLSS-FG");
+        }
+
+        localPref.featuresToLoad = localFeaturesToLoad.data();
+        localPref.numFeaturesToLoad = (uint32_t) localFeaturesToLoad.size();
+
+        return o_slInit(localPref, sdkVersion);
+    }
+    else if (State::Instance().activeFgInput == FGInput::DLSSG || State::Instance().activeFgOutput == FGOutput::DLSSG)
     {
         std::vector<sl::Feature> localFeaturesToLoad(pref.featuresToLoad, pref.featuresToLoad + pref.numFeaturesToLoad);
         std::erase(localFeaturesToLoad, sl::kFeatureDLSS_G);
 
         localPref.featuresToLoad = localFeaturesToLoad.data();
-        localPref.numFeaturesToLoad = localFeaturesToLoad.size();
+        localPref.numFeaturesToLoad = (uint32_t) localFeaturesToLoad.size();
 
         // return so that localFeaturesToLoad is valid
         return o_slInit(localPref, sdkVersion);
@@ -1163,9 +1189,18 @@ static uint32_t GameFacingInterpolationCountMax()
     return maxCount;
 }
 
-static sl::Result dummy_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
-                                        const sl::DLSSGOptions* options)
+sl::Result StreamlineHooks::dummy_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
+                                                  const sl::DLSSGOptions* options)
 {
+    if (o_slDLSSGGetState != nullptr &&
+        State::Instance().activeFgOutput != FGOutput::XeFG &&
+        State::Instance().activeFgOutput != FGOutput::FSRFG)
+    {
+        auto res = o_slDLSSGGetState(viewport, state, options);
+        if (res == sl::Result::eOk)
+            return res;
+    }
+
     state.numFramesActuallyPresented = 1; // TODO: can do better
     if (state.structVersion >= 2)
     {
@@ -1177,12 +1212,19 @@ static sl::Result dummy_slDLSSGGetState(const sl::ViewportHandle& viewport, sl::
     return sl::Result::eOk;
 }
 
-static sl::Result dummy_slDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options)
+sl::Result StreamlineHooks::dummy_slDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options)
 {
     // Still a dummy as far as the provider is concerned - the game is told the call succeeded and
     // OptiScaler keeps driving frame generation itself. But the request is the game's own, and it is
     // the only copy of it that exists on this path, so it has to be kept.
-    StreamlineHooks::RecordGameDlssgOptions(viewport, options);
+    RecordGameDlssgOptions(viewport, options);
+
+    if (o_slDLSSGSetOptions != nullptr &&
+        State::Instance().activeFgOutput != FGOutput::XeFG &&
+        State::Instance().activeFgOutput != FGOutput::FSRFG)
+    {
+        return hkslDLSSGSetOptions(viewport, options);
+    }
 
     return sl::Result::eOk;
 }
@@ -1854,9 +1896,11 @@ bool StreamlineHooks::hkdlssg_slOnPluginLoad(sl::param::IParameters* params, con
     // TODO: do it better than "static" and hoping for the best
     static std::string config;
 
+    const bool neuralHubFg = IsNeuralHubFgArmed();
+
     bool shouldSpoofArch =
         Config::Instance()->StreamlineSpoofing.value_or_default() &&
-        (State::Instance().activeFgInput == FGInput::NvngxFG || State::Instance().activeFgInput == FGInput::DLSSG);
+        (State::Instance().activeFgInput == FGInput::NvngxFG || State::Instance().activeFgInput == FGInput::DLSSG || neuralHubFg);
 
     uint32_t currentArch = 0;
     if (shouldSpoofArch)
@@ -1873,8 +1917,12 @@ bool StreamlineHooks::hkdlssg_slOnPluginLoad(sl::param::IParameters* params, con
 
     nlohmann::json configJson = nlohmann::json::parse(*pluginJSON);
 
+    const bool useNativeDlssg = neuralHubFg &&
+                                State::Instance().activeFgOutput != FGOutput::XeFG &&
+                                State::Instance().activeFgOutput != FGOutput::FSRFG;
+
     // Kill the DLSSG streamline swapchain hooks
-    if (State::Instance().activeFgInput == FGInput::DLSSG || State::Instance().activeFgOutput == FGOutput::DLSSG)
+    if (!useNativeDlssg && (State::Instance().activeFgInput == FGInput::DLSSG || State::Instance().activeFgOutput == FGOutput::DLSSG))
     {
         if (configJson.contains("/hooks"_json_pointer))
             configJson["hooks"].clear();
@@ -1898,7 +1946,7 @@ bool StreamlineHooks::hkdlssg_slOnPluginLoad(sl::param::IParameters* params, con
             configJson["external"]["vk"]["device"]["1.3_features"].clear();
     }
 
-    if (State::Instance().activeFgInput == FGInput::DLSSG || State::Instance().activeFgInput == FGInput::NvngxFG)
+    if (State::Instance().activeFgInput == FGInput::DLSSG || State::Instance().activeFgInput == FGInput::NvngxFG || neuralHubFg)
     {
         if (configJson.contains("/vsync/supported"_json_pointer))
             configJson["vsync"]["supported"] = true; // disable eVSyncOffRequired
@@ -1988,6 +2036,17 @@ bool StreamlineHooks::hklocal_dlssg_slOnPluginLoad(sl::param::IParameters* param
             spoofArch(currentArch, sl::kFeatureDLSS_G, localSystemCaps);
         }
     }
+
+    // Once per load: whether the architecture the plugin is about to check was spoofed (the DLSSG output on AMD
+    // depends on it).
+    if (localSystemCaps)
+        LOG_INFO("local sl.dlss_g slOnPluginLoad: {} GPU(s), adapter 0 vendor {:x} arch {:x} (real {:x}), driver {}, hws {}",
+                 localSystemCaps->gpuCount, (uint32_t) localSystemCaps->adapters[0].vendor,
+                 localSystemCaps->adapters[0].architecture, currentArch, localSystemCaps->driverVersionMajor,
+                 localSystemCaps->hwsSupported);
+    else
+        LOG_WARN("local sl.dlss_g slOnPluginLoad: no system caps (spoofing {}), its hardware check sees the real GPU",
+                 shouldSpoofArch);
 
     auto result = o_local_dlssg_slOnPluginLoad(params, loaderJSON, pluginJSON);
 
@@ -2502,7 +2561,10 @@ void* StreamlineHooks::hklocal_dlssg_slGetPluginFunction(const char* functionNam
 {
     // LOG_DEBUG("{}", functionName);
 
-    if (strcmp(functionName, "slOnPluginLoad") == 0 && State::Instance().activeFgNvngx != FGNvngxReplacement::None)
+    // An NGX FG replacement, or NeuralHub's DLSS-FG on AMD: either way the plugin's hardware check has to see the
+    // spoofed architecture. Real DLSSG on NVIDIA is left alone.
+    if (strcmp(functionName, "slOnPluginLoad") == 0 &&
+        (State::Instance().activeFgNvngx != FGNvngxReplacement::None || IsNeuralHubFgArmed()))
     {
         o_local_dlssg_slOnPluginLoad = (PFN_slOnPluginLoad) o_local_dlssg_slGetPluginFunction(functionName);
         return &hklocal_dlssg_slOnPluginLoad;
@@ -3265,7 +3327,7 @@ void StreamlineHooks::hookLocalDlssg(HMODULE slDlssg)
 
     if (o_local_dlssg_slGetPluginFunction != nullptr)
     {
-        LOG_TRACE("Hooking slGetPluginFunction in local sl.dlssg");
+        LOG_INFO("Hooking slGetPluginFunction in local sl.dlss_g ({:X})", (size_t) slDlssg);
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
 

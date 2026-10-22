@@ -2079,19 +2079,21 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             LOG_INFO("External frame generation: leaving Streamline/Reflex and MFG control to the game or unlocker; "
                      "NR/SR remain available");
         }
-        if (Config::Instance()->DlssNrPresent.value_or_default() &&
-            Config::Instance()->FGOutput.value_or_default() == FGOutput::XeFG &&
+        // XeFG and the DLSSG output (OptiScaler's own Streamline; on AMD served by NeuralHub's DLSS-FG) take the final
+        // image's optical-flow guides as their input.
+        const auto finalImageFgOutput = Config::Instance()->FGOutput.value_or_default();
+        const bool finalImageFgCapable = finalImageFgOutput == FGOutput::XeFG || finalImageFgOutput == FGOutput::DLSSG;
+        if (Config::Instance()->DlssNrPresent.value_or_default() && finalImageFgCapable &&
             Config::Instance()->FGInput.value_or_default() == FGInput::NoFG)
         {
             Config::Instance()->FGInput.set_volatile_value(FGInput::Upscaler);
-            LOG_INFO("Final-image NR: using optical-flow guides as XeFG input");
+            LOG_INFO("Final-image NR: using optical-flow guides as {} input", magic_enum::enum_name(finalImageFgOutput));
         }
         // XeFG keeps the INI's motion vector and depth setup, the one a game's upscaler needs: the final image's
         // optical flow is at output size, which is its render size (as under native AA), and its synthetic depth is a
         // constant 0.5 either way round. Forcing high-res MVs here locked XeFG out once the game turned an upscaler on.
         if (Config::Instance()->DlssNrPresent.value_or_default() &&
-            Config::Instance()->FGInput.value_or_default() == FGInput::Upscaler &&
-            Config::Instance()->FGOutput.value_or_default() != FGOutput::XeFG)
+            Config::Instance()->FGInput.value_or_default() == FGInput::Upscaler && !finalImageFgCapable)
         {
             // Final-image NR has no upscaler evaluation to supply OptiFG's motion/depth inputs.
             Config::Instance()->FGInput.set_volatile_value(FGInput::NoFG);

@@ -1,6 +1,7 @@
 #pragma once
 #include <d3d12.h>
 #include <nvsdk_ngx.h>
+#include <filesystem>
 #include <string>
 class Config;
 namespace AmdPreSr
@@ -11,8 +12,19 @@ namespace DlssNr::AmdBridge
 {
 AmdPreSr::Settings SettingsFromConfig(const Config& cfg, float modelScale);
 bool HasFiles();
+// NeuralHub 0.8.0 serves DLSS Frame Generation: its host module sits in dlssnr_amd_host\ beside this DLL and an
+// nvngx_dlssg.dll beside the host or the game. Only files are checked, so it answers before the host loads (slInit,
+// the INI); a game that ships nvngx_dlssg.dll without the host is not taken for one.
+bool NeuralHubFgInstalled();
+// The same with OptiScaler's library folder given: Config's own load asks this way, since LibraryFolder() reads Config
+// and would construct it again from inside its constructor.
+bool NeuralHubFgInstalled(const std::filesystem::path& library);
+// OptiScaler's library folder ([Libraries] OptiDllPath, OptiScaler\ beside this DLL by default). NVIDIA's
+// nvngx_dlss(.d/.g).dll placed there feed NeuralHub ahead of the game's own copies.
+std::filesystem::path LibraryFolder();
 // Install submission expansion before the first wrapped list is exposed. No runtime/HIP initialization.
 bool EnsureSubmissionHook(ID3D12CommandQueue*);
+bool EnsureNgxHost(ID3D12Device*, ID3D12CommandQueue* = nullptr);
 bool Before(ID3D12GraphicsCommandList*, NVSDK_NGX_Parameter*, ID3D12CommandQueue*);
 // Post-upscale placement: runs the model over the frame the upscaler (or Ray Reconstruction) has
 // already finished, and hands its answer back instead of substituting the upscaler's input. The

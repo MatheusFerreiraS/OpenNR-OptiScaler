@@ -16,7 +16,12 @@ binary whose size and SHA-256 it names:
     containing function and, where it matters, the call that follows);
   * seedCounter is the int Record zeroes at its pinned site, and seedSelfCheck the engine member the
     worker's one compare against seedCounter's engine member reads (SEED_SITES);
-  * the bootstrap entry's call bytes, thread start, prologue and CreateThread import match.
+  * the bootstrap entry's call bytes, thread start, prologue and CreateThread import match (abi 1 only:
+    an abi 2 host module is loaded as neuralhub_host.dll, whose DllMain starts nothing);
+  * abi 2 (0.8.0 and later, NeuralHub's host module): every option is the store that follows its
+    settings-registry key in the settings copy, formatEnum is the leaf with the pinned bytes, and
+    detourAttachEx, requestStage, processInit and onceFlag are what DetourAttach, the stage-request
+    log, NeuralHub_HostStart and its xchg say they are (check_host).
 
 Header-level checks make sure every table except 0.2.17 (no binary at hand) gives each non-zero
 data field one of those per-field checks, so a new field or table cannot go in unpinned.
@@ -39,9 +44,14 @@ LAYOUT_H = ROOT / "OptiScaler/dlssnr/amd/AmdLayout.h"
 HOSTLOAD_H = ROOT / "OptiScaler/dlssnr/amd/RuntimeHostLoad.h"
 
 # Members that are .pdata function starts, and fields that are not data slots.
-CODE = ("init", "record", "notify", "shutdown", "graphicsWaitBegin")
+CODE = ("init", "record", "notify", "shutdown", "graphicsWaitBegin",
+        "processInit", "detourAttachEx", "requestStage", "prepareWeights", "initCallbackFn")
+# Code members that are leaf functions: no .pdata entry of their own, so they are pinned by their
+# first bytes instead (formatEnum: add ecx,-2; cmp ecx,0x59, the DXGI_FORMAT range switch).
+LEAF = {"formatEnum": "83 c1 fe 83 f9 59"}
 DISPATCH = ("waitDispatchInit", "waitDispatchFallback", "waitDispatchSlices", "waitDispatchFinish")
-NOT_DATA = set(CODE) | set(DISPATCH) | {"name", "size", "sha256", "d3dCompileIat", "graphicsWaitEnd"}
+NOT_DATA = set(CODE) | set(DISPATCH) | set(LEAF) | {"name", "size", "sha256", "d3dCompileIat", "graphicsWaitEnd",
+                                                     "abi"}
 # [DlssNrOnAmd] key -> layout member, for the options the runtime's INI reader stores directly.
 INI_KEYS = {
     "Enabled": "enabled", "Temporal": "temporal", "UseFsrInputs": "fsrInputs", "UseDepth": "depthPresent",
@@ -49,6 +59,18 @@ INI_KEYS = {
     "UseAutoMask": "charMask", "ToneChannels": "toneChannels", "Scale": "scale", "SpinDraw": "spinDraw",
     "Async": "configuredInline", "Interop": "interop", "Style": "style", "ToneCurve": "toneCurve",
     "ToneLift": "toneLift", "UseGameExposure": "useGameExposure", "Quality": "quality",
+}
+# abi 2 has no [DlssNrOnAmd] reader: a settings registry holds the keys ("Section.Name" rows in .rdata) and
+# one function copies their values into the option globals (0x1b770 on 0.8.0), each getter call taking the
+# key's string just before the store. SpinDraw and Async left the settings, so spinDraw and
+# configuredInline have only pinned sites. Registry key -> layout member.
+SETTINGS_KEYS = {
+    "Enhancement.Provider": "enabled", "Debug.DlssNrTemporal": "temporal", "Debug.DlssNrDepth": "depthPresent",
+    "Debug.DlssNrTonemap": "tonemap", "DLSS-NR.ToneIntensity": "tone", "DLSS-NR.StructureIntensity": "structure",
+    "DLSS-NR.SkinStructureIntensity": "skin", "Debug.DlssNrAutoMask": "charMask",
+    "Debug.DlssNrToneChannel12": "toneChannels", "Debug.DlssNrResidualScale": "scale", "DLSS-NR.Style": "style",
+    "DLSS-NR.ToneCurve": "toneCurve", "DLSS-NR.BlackLift": "toneLift", "Compatibility.GameExposure": "useGameExposure",
+    "DLSS-NR.Quality": "quality", "Debug.HipZeroCopy": "interop",
 }
 # Fields the checks in check_layout pin by what the code does with them (besides INI_KEYS).
 BEHAVIOUR_CHECKED = {"enabled", "nativeFailure", "initDone", "trampoline"}
@@ -58,6 +80,9 @@ BEHAVIOUR_CHECKED = {"enabled", "nativeFailure", "initDone", "trampoline"}
 SEED_SITES = {
     "0.4.1": (0x172c6, 0x35142), "0.4.2": (0x176e1, 0x372d3), "0.4.3": (0x17e91, 0x37f03),
     "0.5.0": (0x17ce1, 0x37f65), "0.5.1": (0x17ce1, 0x38a07), "0.6.0": (0x19d37, 0x3bdd8),
+    # 0.8.0 moved the warm-up out of Record into the network run 0x22bf0, which Record calls directly, so
+    # the zero is pinned in that callee (third element) rather than in Record itself.
+    "0.8.0": (0x230e2, 0xbdb17, 0x22bf0),
 }
 
 # Pinned reference sites for every other data field: (field, site RVA, opcode bytes before the
@@ -73,7 +98,98 @@ SEED_SITES = {
 # The 0.3.1 and 0.3.0 rows are the same instructions in the same order, found by shape (daniel-runtime/analysis-opti/implement/anchors/derive_anchors.py and
 # anchors.txt, which prints each site with its neighbours). 0.3.0 has no Notify-side jobDone wait
 # and no mapped wait helper, so it lacks those rows.
+# The 0.8.0 rows follow the 0.6.0 ones where the instruction survived (the evidence column of the
+# danielblnc-0.8.0 notes beside this repository), and were read off the 0.8.0 binary's rip references
+# where the host rewrite moved it. A containing function or callee given as a number is a .pdata start
+# that is not a layout member: Record's work is split over the network run 0x22bf0 and the HIP job
+# builder/worker 0x1dd00, the inline wait became the host table's 0xaad0, the option globals are written by
+# the settings copy 0x1b770 only, and the first-present device event 0x2bd90 does the init sequence.
 ANCHORS = {
+    "0.8.0": [
+        ('device', 0x123c0, '48 83 3d', '00', 'notify', None),  # cmp qword [device],0 after call [trampoline]
+        ('queue', 0x123b2, '48 83 3d', '00', 'notify', None),  # cmp qword [queue],0
+        ('queue', 0x12431, '48 89 35', '', 'notify', None),  # mov [queue],rsi; 'present queue %p'
+        ('engine', 0x2bfe9, '48 8d 0d', '', 0x2bd90, 'init'),  # lea rcx,[engine]; lea rdx,weights; call init
+        ('engine', 0x24aca, '48 8d 1d', '', 'record', None),  # lea rbx,[engine]
+        ('engine', 0x23082, '48 8d 0d', '', 0x22bf0, None),  # warm-up job: lea rcx,[engine]
+        ('historyView', 0x1fca1, '4c 8b 05', '', 0x1dd00, None),  # worker: mov r8,[historyView]; 'dlssnr_hist'
+        ('historyValid', 0x230db, 'c6 05', '00', 0x22bf0, None),  # mov byte [historyValid],0 after the warm-up
+        ('historyValid', 0x1e4bb, 'c6 05', '00', 0x1dd00, None),
+        ('jobDone', 0x244fc, '8b 05', '', 'record', None),  # mov eax,[jobDone]; cmp eax,[jobId]
+        ('jobDone', 0x244bd, '44 8b 05', '', 'record', None),  # 're-create has waited ... (done %d, submitted %d)'
+        ('jobDone', 0x20189, '87 05', '', 0x1dd00, None),  # worker: xchg [jobDone],eax
+        ('timeoutCount', 0x22ae8, 'c7 05', '00 00 00 00', 'shutdown', None),  # timeoutCount = 0
+        ('timeoutCount', 0x20c4e, '3b 05', '', 0x1dd00, None),  # worker: cmp eax,[timeoutCount]
+        ('watchdog', 0x24bdd, '44 8b 05', '', 'record', None),  # mov r8d,[watchdog] for the wait
+        ('watchdog', 0x20c42, '87 05', '', 0x1dd00, None),  # worker: xchg [watchdog],eax
+        ('pendingList', 0x12515, 'f0 48 0f b1 0d', '', 'notify', None),  # lock cmpxchg [pendingList],rcx
+        ('pendingList', 0xacce, '48 87 05', '', 0xaad0, None),  # staging release: xchg [pendingList],rax
+        ('jobId', 0x24502, '3b 05', '', 'record', None),  # cmp eax,[jobId]
+        ('jobId', 0x24b53, '44 89 2d', '', 'record', None),  # mov [jobId],r13d before the publish
+        ('jobId', 0x24e90, '44 89 2d', '', 'record', None),
+        ('depthInverted', 0x1d969, '44 89 0d', '', 0x1d950, None),  # FSR flag hook: mov [depthInverted],r9d
+        ('depthInverted', 0x2e933, '89 05', '', 0x2e8a0, None),  # event 0 sub 0x20: '... depth inverted %d%s ...'
+        ('depthInverted', 0x22ebb, '8b 05', '', 0x22bf0, None),
+        ('explicitDepth', 0x1d959, 'c6 05', '01', 0x1d950, None),  # mov byte [explicitDepth],1
+        ('explicitDepth', 0x2e92c, 'c6 05', '01', 0x2e8a0, None),
+        ('hipOrdinal', 0x24474, '8b 0d', '', 'record', None),  # mov ecx,[hipOrdinal] for hipSetDevice
+        ('hipOrdinal', 0xdec4, '89 3d', '', 0xd8b0, None),  # device pick: mov [hipOrdinal],edi
+        ('recreate', 0x2437e, '80 3d', '01', 'record', None),  # cmp byte [recreate],1
+        ('recreate', 0x24544, 'c6 05', '00', 'record', None),  # mov byte [recreate],0 after the join/reset
+        ('recreate', 0x1bc2a, 'c6 05', '01', 0x1b770, None),  # the settings copy requests a re-create
+        ('recordLock', 0x2451b, '48 8d 0d', '', 'record', None),  # lea rcx,[recordLock]; call lock
+        ('recordLock', 0x2452f, '81 3d', 'ff ff ff 7f', 'record', 'shutdown', 0x4c),  # cmp [lock+0x4c],0x7fffffff
+        ('gate4c', 0x24398, '83 3d', '00', 'record', None),  # cmp dword [gate4c],0
+        ('gate4c', 0x24804, '83 3d', '00', 'record', None),  # cmp dword [gate4c],0; jns
+        ('gate4c', 0x22b7c, '87 0d', '', 'shutdown', None),
+        ('gate68', 0x12529, '87 3d', '', 'notify', None),  # xchg [gate68],edi after the pendingList cmpxchg
+        ('gate68', 0xacda, '87 05', '', 0xaad0, None),
+        ('counter78', 0x246eb, 'ff 05', '', 'record', None),  # inc dword [counter78]
+        ('graphicsPso', 0x92cc, '48 83 3d', '00', 'graphicsWaitBegin', None),  # cmp qword [graphicsPso],0
+        ('graphicsPso', 0x92ed, '48 8b 15', '', 'graphicsWaitBegin', None),  # mov rdx,[graphicsPso] for SetPSO
+        ('predicateReady', 0x8fd6, '80 3d', '01', 'graphicsWaitBegin', None),  # cmp byte [predicateReady],1
+        ('spinDraw', 0x92bf, '83 3d', '00', 'graphicsWaitBegin', None),  # cmp dword [spinDraw],0
+        ('spinDraw', 0x82f35, 'c7 05', '01 00 00 00', 0x82bf0, None),  # static init: spinDraw = 1 (no setting)
+        ('configuredInline', 0x22902, '0f b6 05', '', 0x228b0, None),  # DEVICE REMOVED log, 'inline %d'
+        ('configuredInline', 0x22e40, '0f b6 0d', '', 0x22bf0, None),
+        ('interop', 0x22e36, '0f b6 0d', '', 0x22bf0, None),  # staging desc+0x34
+        # The settings copy's stores, one per option (SETTINGS_KEYS ties each to its registry key).
+        ('enabled', 0x1b834, '0f 94 05', '', 0x1b770, None),  # sete: Provider == "DLSS-NR"
+        ('temporal', 0x1b98f, '0f 95 05', '', 0x1b770, None),
+        ('depthPresent', 0x1b9a4, '0f 95 05', '', 0x1b770, None),
+        ('tonemap', 0x1ba05, '89 05', '', 0x1b770, None),
+        ('interop', 0x1ba19, '0f 95 05', '', 0x1b770, None),
+        ('tone', 0x1baf0, 'f3 0f 11 05', '', 0x1b770, None),
+        ('structure', 0x1bb04, 'f3 0f 11 05', '', 0x1b770, None),
+        ('skin', 0x1bb18, 'f3 0f 11 05', '', 0x1b770, None),
+        ('charMask', 0x1bb33, '89 0d', '', 0x1b770, None),
+        ('scale', 0x1bb45, 'f3 0f 11 05', '', 0x1b770, None),
+        ('style', 0x1bc8a, '89 05', '', 0x1b770, None),
+        ('toneCurve', 0x1c6b1, '89 05', '', 0x1b770, None),
+        ('toneLift', 0x1c6d2, 'f3 0f 11 05', '', 0x1b770, None),
+        ('useGameExposure', 0x1c74a, '0f 94 05', '', 0x1b770, None),
+        ('toneChannels', 0x1c76b, '89 0d', '', 0x1b770, None),
+        ('quality', 0x1c7e7, '0f 94 05', '', 0x1b770, None),
+        # Host-module fields.
+        ('onceFlag', 0x693ba, '86 15', '', 0x69370, None),  # NeuralHub_HostStart: xchg byte [onceFlag],dl
+        ('onceFlag', 0x6b9b8, '86 05', '', 0x6b900, None),  # DllMain, direct mode: xchg byte [onceFlag],al
+        ('onceFlag', 0x6ba45, 'f6 05', '01', 0x6b900, None),  # DllMain, DLL_PROCESS_DETACH: test byte [onceFlag],1
+        ('weightsOnce', 0x2bf10, '80 3d', '00', 0x2bd90, 'prepareWeights'),  # cmp byte [weightsOnce],0
+        ('weightsOnce', 0x2bf1d, 'c6 05', '01', 0x2bd90, 'prepareWeights'),  # mov byte [weightsOnce],1
+        ('initCallbackFn', 0x2bf29, '48 8d 05', '', 0x2bd90, None),  # lea rax,[initCallbackFn]
+        ('initCallback', 0x2bf30, '48 89 05', '', 0x2bd90, None),  # mov [initCallback],rax
+        # The runtime's own multipass: the settings copy stores entry 0 of each, the HIP job builder reads the count
+        # and entries 1 of the arrays (passes 2) for the job.
+        ('passCount', 0x1bcdc, '89 05', '', 0x1b770, None),
+        ('passCount', 0x1ec12, '8b 15', '', 0x1dd00, None),
+        ('passStyle', 0x1bce8, '89 05', '', 0x1b770, None),
+        ('passStyle', 0x1ec27, 'f3 0f 2a 05', '', 0x1dd00, None, 4),
+        ('passStructure', 0x1bcf6, 'f3 0f 11 05', '', 0x1b770, None),
+        ('passStructure', 0x1ec4c, 'f3 0f 10 15', '', 0x1dd00, None, 4),
+        ('passSkin', 0x1bd2b, 'f3 0f 11 15', '', 0x1b770, None),
+        ('passTone', 0x1bd06, 'f3 0f 11 0d', '', 0x1b770, None),
+        ('passTone', 0x1ec3c, 'f3 0f 10 05', '', 0x1dd00, None, 4),
+    ],
     "0.5.0": [
         ('device', 0xa032, '48 83 3d', '00', 'notify', None),
         ('queue', 0xa028, '48 83 3d', '00', 'notify', None),
@@ -379,9 +495,14 @@ def strip_comments(text):
 def parse_layouts():
     text = strip_comments(LAYOUT_H.read_text(encoding="utf-8"))
     body = re.search(r"struct AmdLayout\s*\{(.*?)\};", text, re.S).group(1)
-    members = []
+    members, defaults = [], {}
     for decl in re.findall(r"^\s*(?:const char\*|std::size_t|Sha256|std::uint32_t)\s+([^;]+);", body, re.M):
-        members += [re.match(r"\s*(\w+)", part).group(1) for part in decl.split(",")]
+        for part in decl.split(","):
+            # A default member initializer (abi = 1) is what a table that omits the member gets.
+            m = re.match(r"\s*(\w+)\s*(?:=\s*(\S+))?", part)
+            members.append(m.group(1))
+            if m.group(2):
+                defaults[m.group(1)] = m.group(2)
     layouts = {}
     for var, init in re.findall(r"inline constexpr AmdLayout (\w+)\s*\{(.*?)\};", text, re.S):
         sha = re.search(r'Sha256FromHex\("([0-9a-fA-F]{64})"\)', init).group(1).lower()
@@ -399,7 +520,7 @@ def parse_layouts():
         name = values.pop("name").strip('"')
         size = int(values.pop("size"))
         values.pop("sha256")
-        fields = {m: int(values.get(m, "0"), 0) for m in members if m not in ("name", "size", "sha256")}
+        fields = {m: int(values.get(m, defaults.get(m, "0")), 0) for m in members if m not in ("name", "size", "sha256")}
         layouts[var] = {"name": name, "size": size, "sha": sha, "fields": fields}
     listed = re.search(r"kAmdLayouts\[\]\s*=\s*\{([^}]*)\}", text).group(1)
     listed = re.findall(r"&(\w+)", listed)
@@ -444,6 +565,17 @@ class Image:
             begin, end, _ = struct.unpack_from("<III", self.img, off)
             if begin:
                 self.funcs[begin] = end
+        # Export directory: its own DLL name and name -> RVA (forwarders included, the host checks none).
+        self.export_name, self.exports = "", {}
+        eva, _ = dirs[0]
+        if eva:
+            name_rva, _, count_funcs, count_names, funcs_rva, names_rva, ords_rva = struct.unpack_from(
+                "<IIIIIII", self.img, eva + 12)
+            self.export_name = self.cstr(name_rva)
+            for i in range(count_names):
+                name = self.cstr(struct.unpack_from("<I", self.img, names_rva + 4 * i)[0])
+                ordinal = struct.unpack_from("<H", self.img, ords_rva + 2 * i)[0]
+                self.exports[name] = struct.unpack_from("<I", self.img, funcs_rva + 4 * ordinal)[0]
         self.imports = {}
         for directory, delay in ((dirs[1], False), (dirs[13], True)):
             va, _ = directory
@@ -498,6 +630,12 @@ def check_layout(image, layout, bootstrap, start_bytes, check):
         if f[name]:
             check(image.section(f[name]) == ".text" and f[name] in image.funcs,
                   f"{name} {f[name]:#x} is a .pdata function start in .text")
+    for name, head in LEAF.items():
+        if f[name]:
+            rva, head = f[name], bytes.fromhex(head)
+            inside = [b for b, e in image.funcs.items() if b <= rva < e]
+            check(image.section(rva) == ".text" and not inside and image.img[rva:rva + len(head)] == head,
+                  f"{name} {rva:#x} is a leaf in .text outside every .pdata range, starting {head.hex(' ')}")
     if f["graphicsWaitBegin"]:
         end = image.funcs.get(f["graphicsWaitBegin"])
         check(f["graphicsWaitEnd"] == end, f"graphicsWaitEnd {f['graphicsWaitEnd']:#x} is the helper's .pdata end")
@@ -542,44 +680,50 @@ def check_layout(image, layout, bootstrap, start_bytes, check):
     calls = [image.rip(at, 6) for at in image.find_all(b"\xff\x15", f["notify"], f["notify"] + 0x40)]
     check(f["trampoline"] in calls, f"Notify calls through trampoline {f['trampoline']:#x}")
 
-    # INI reader: lea rdx,"<Key>" ... store to the field, before the next lea rcx,"DlssNrOnAmd".
-    section_strings = {at for at in image.find_all(b"DlssNrOnAmd\0")}
-    lea_rcx = sorted(at for at in image.find_all(b"\x48\x8d\x0d", text_va, text_va + text_size)
-                     if image.rip(at, 7) in section_strings)
-    lea_rdx = {}
-    for at in image.find_all(b"\x48\x8d\x15", text_va, text_va + text_size):
-        lea_rdx.setdefault(image.rip(at, 7), []).append(at)
-    if not lea_rcx:
-        check(False, "found the [DlssNrOnAmd] reader")
-    for key, member in INI_KEYS.items():
-        field = f.get(member, 0)
-        if not field:
-            continue
-        stored = False
-        for string in image.find_all(key.encode() + b"\0"):
-            for site in lea_rdx.get(string, []):
-                stop = next((r for r in lea_rcx if r > site), site + 0x80)
-                stop = min(stop, site + 0x80)
-                # A store to [rip+disp32]: ModRM 00 xxx 101 right before the disp32, after a
-                # mov r/m,reg (88/89), a movss/movsd/movups store (0f 11), a setcc (0f 9x), or a
-                # mov r/m,imm (c6 imm8, c7 imm32). The target must be the field itself.
-                for p in range(site + 7, stop - 3):
-                    if image.img[p - 1] & 0xC7 != 0x05:
-                        continue
-                    op = image.img[p - 2]
-                    if op in (0x88, 0x89) or (image.img[p - 3] == 0x0F and (op == 0x11 or 0x90 <= op <= 0x9F)):
-                        end = p + 4
-                    elif op in (0xC6, 0xC7):
-                        end = p + (5 if op == 0xC6 else 8)
-                    else:
-                        continue
-                    if end + struct.unpack_from("<i", image.img, p)[0] == field:
-                        stored = True
-        check(stored, f"[DlssNrOnAmd] {key} is stored at {member} {field:#x}")
+    if f["abi"] >= 2:
+        # No INI reader: the settings copy takes each registry key's string (lea rcx or rdx) and
+        # stores the value it gets back.
+        lea_key = {}
+        for opcode in (b"\x48\x8d\x0d", b"\x48\x8d\x15"):
+            for at in image.find_all(opcode, text_va, text_va + text_size):
+                lea_key.setdefault(image.rip(at, 7), []).append(at)
+        for key, member in SETTINGS_KEYS.items():
+            field = f.get(member, 0)
+            if not field:
+                continue
+            # The key string itself, NUL-led so "X.Name" cannot match the tail of "X.Pass2Name".
+            sites = [site for string in image.find_all(b"\0" + key.encode() + b"\0")
+                     for site in lea_key.get(string + 1, [])]
+            stored = any(stores_to(image, site + 7, site + 0x80, field) for site in sites)
+            check(stored, f"setting {key} is stored at {member} {field:#x}")
+    else:
+        # INI reader: lea rdx,"<Key>" ... store to the field, before the next lea rcx,"DlssNrOnAmd".
+        section_strings = {at for at in image.find_all(b"DlssNrOnAmd\0")}
+        lea_rcx = sorted(at for at in image.find_all(b"\x48\x8d\x0d", text_va, text_va + text_size)
+                         if image.rip(at, 7) in section_strings)
+        lea_rdx = {}
+        for at in image.find_all(b"\x48\x8d\x15", text_va, text_va + text_size):
+            lea_rdx.setdefault(image.rip(at, 7), []).append(at)
+        if not lea_rcx:
+            check(False, "found the [DlssNrOnAmd] reader")
+        for key, member in INI_KEYS.items():
+            field = f.get(member, 0)
+            if not field:
+                continue
+            stored = False
+            for string in image.find_all(key.encode() + b"\0"):
+                for site in lea_rdx.get(string, []):
+                    stop = next((r for r in lea_rcx if r > site), site + 0x80)
+                    stored = stored or stores_to(image, site + 7, min(stop, site + 0x80), field)
+            check(stored, f"[DlssNrOnAmd] {key} is stored at {member} {field:#x}")
 
     check_anchors(image, layout, check)
     check_seed(image, layout, check)
 
+    if f["abi"] >= 2:
+        check_host(image, layout, check)
+        print("  note abi 2: no bootstrap thread to isolate (neuralhub_host.dll's DllMain starts nothing)")
+        return
     if bootstrap is None:
         check(False, "bootstrap isolation entry exists")
         return
@@ -593,9 +737,85 @@ def check_layout(image, layout, bootstrap, start_bytes, check):
           f"thread start {start:#x} is a .pdata start with the pinned prologue")
 
 
+def stores_to(image, start, stop, field):
+    """Whether an instruction in [start, stop) stores to [rip+disp32] == field."""
+    # A store to [rip+disp32]: ModRM 00 xxx 101 right before the disp32, after a mov r/m,reg (88/89),
+    # a movss/movsd/movups store (0f 11), a setcc (0f 9x), or a mov r/m,imm (c6 imm8, c7 imm32). The
+    # target must be the field itself.
+    for p in range(start, stop - 3):
+        if image.img[p - 1] & 0xC7 != 0x05:
+            continue
+        op = image.img[p - 2]
+        if op in (0x88, 0x89) or (image.img[p - 3] == 0x0F and (op == 0x11 or 0x90 <= op <= 0x9F)):
+            end = p + 4
+        elif op in (0xC6, 0xC7):
+            end = p + (5 if op == 0xC6 else 8)
+        else:
+            continue
+        if end + struct.unpack_from("<i", image.img, p)[0] == field:
+            return True
+    return False
+
+
+def direct_calls(image, begin):
+    """Targets of the `call rel32`s in the .pdata function at begin, in order. A byte scan, so a stray
+    e8 inside another instruction may add a target, never remove one."""
+    end = image.funcs.get(begin, begin)
+    return [at + 5 + struct.unpack_from("<i", image.img, at + 1)[0] for at in image.find_all(b"\xe8", begin, end - 4)]
+
+
+def check_host(image, layout, check):
+    """abi 2: the host module's entry points are what its exports, Detours and its log say they are."""
+    f = layout["fields"]
+    text_va, text_size = image.sections[".text"]
+    check(image.export_name.lower() == "version.dll",
+          f"export directory name is {image.export_name!r} (the module ships as version.dll)")
+    # DllMain compares its own basename with this name and, when it matches, returns without the
+    # proxy, the process init or any thread: the mode the host loads it in.
+    names = list(image.find_all(b"\0neuralhub_host.dll\0"))
+    leas = [at for at in image.find_all(b"\x48\x8d", text_va, text_va + text_size)
+            if image.img[at + 2] & 0xC7 == 0x05 and image.rip(at, 7) in {n + 1 for n in names}]
+    check(bool(names) and bool(leas), f"\"neuralhub_host.dll\" is present and referenced from code ({len(leas)} lea)")
+
+    start = image.exports.get("NeuralHub_HostStart")
+    check(start in image.funcs, f"NeuralHub_HostStart is exported at a .pdata start ({start:#x})" if start
+          else "NeuralHub_HostStart is exported")
+    if start in image.funcs:
+        check(f["processInit"] in direct_calls(image, start),
+              f"NeuralHub_HostStart {start:#x} calls processInit {f['processInit']:#x}")
+        # xchg byte [rip+disp32],r8: 86 /r with ModRM 00 reg 101.
+        xchg = [at + 6 + struct.unpack_from("<i", image.img, at + 2)[0]
+                for at in image.find_all(b"\x86", start, image.funcs[start] - 5) if image.img[at + 1] & 0xC7 == 0x05]
+        check(f["onceFlag"] in xchg, f"onceFlag {f['onceFlag']:#x} is the byte NeuralHub_HostStart xchg's: "
+              + ", ".join(f"{x:#x}" for x in xchg))
+
+    # Detours: DetourAttach(ppPointer, pDetour) is an 11-instruction wrapper that calls
+    # DetourAttachEx(ppPointer, pDetour, NULL, NULL, NULL). The host patches AttachEx to a success
+    # return, so it must be the real one, not a look-alike with the same prologue.
+    head = bytes.fromhex("4c 89 4c 24 20")
+    check(image.img[f["detourAttachEx"]:f["detourAttachEx"] + len(head)] == head,
+          f"detourAttachEx {f['detourAttachEx']:#x} starts {head.hex(' ')} (mov [rsp+0x20],r9)")
+    wrapper = bytes.fromhex("48 89 54 24 10 48 89 4c 24 08 48 83 ec 38 48 c7 44 24 20 00 00 00 00"
+                            " 45 33 c9 45 33 c0 48 8b 54 24 48 48 8b 4c 24 40 e8")
+    sites = [at for at in image.find_all(wrapper, text_va, text_va + text_size)
+             if at in image.funcs and image.img[at + len(wrapper) + 4:at + len(wrapper) + 9] == bytes.fromhex("48 83 c4 38 c3")]
+    targets = [at + len(wrapper) + 4 + struct.unpack_from("<i", image.img, at + len(wrapper))[0] for at in sites]
+    check(targets == [f["detourAttachEx"]], "the one DetourAttach wrapper ("
+          + ", ".join(f"{s:#x}" for s in sites) + f") calls detourAttachEx {f['detourAttachEx']:#x}")
+
+    # RequestStage arms the interceptors for a stage an add-on asked for, and logs it.
+    begin = f["requestStage"]
+    check(image.img[begin:begin + 3] == bytes.fromhex("55 41 57"), f"requestStage {begin:#x} starts 55 41 57")
+    log = {n + 1 for n in image.find_all(b"\0host: stage %s requested by an addon")}
+    refs = [at for at in image.find_all(b"\x48\x8d", begin, image.funcs.get(begin, begin))
+            if image.img[at + 2] & 0xC7 == 0x05 and image.rip(at, 7) in log]
+    check(bool(log) and bool(refs), f"requestStage logs \"host: stage %s requested by an addon\" ({len(refs)} lea)")
+
+
 def unpinned_fields(layout):
-    """Non-zero data fields that no INI store, behaviour check or pinned site covers."""
-    covered = set(INI_KEYS.values()) | BEHAVIOUR_CHECKED | {a[0] for a in ANCHORS.get(layout["name"], [])}
+    """Non-zero data fields that no INI or settings store, behaviour check or pinned site covers."""
+    keys = SETTINGS_KEYS if layout["fields"].get("abi", 1) >= 2 else INI_KEYS
+    covered = set(keys.values()) | BEHAVIOUR_CHECKED | {a[0] for a in ANCHORS.get(layout["name"], [])}
     if layout["name"] in SEED_SITES:
         covered |= {"seedCounter", "seedSelfCheck"}
     return sorted(n for n, v in layout["fields"].items() if v and n not in NOT_DATA and n not in covered)
@@ -625,11 +845,16 @@ def check_seed(image, layout, check):
     if not sites:
         check(not f["seedCounter"] and not f["seedSelfCheck"], "no seed fields without pinned sites")
         return
-    zero, compare = sites
+    zero, compare = sites[:2]
+    # The function that zeroes it: Record, or (third element) a function Record calls directly.
+    owner = sites[2] if len(sites) > 2 else f["record"]
     end = zero + 10
-    check(image.img[zero:zero + 2] == bytes.fromhex("c7 05") and image.img[end - 4:end] == bytes(4)
-          and image.rip(zero, 6) + 4 == f["seedCounter"] and f["record"] <= zero < image.funcs.get(f["record"], 0),
-          f"seedCounter {f['seedCounter']:#x}: Record zeroes it at {zero:#x}")
+    ok = (image.img[zero:zero + 2] == bytes.fromhex("c7 05") and image.img[end - 4:end] == bytes(4)
+          and image.rip(zero, 6) + 4 == f["seedCounter"] and owner <= zero < image.funcs.get(owner, 0))
+    if owner != f["record"]:
+        ok = ok and owner in direct_calls(image, f["record"])
+    check(ok, f"seedCounter {f['seedCounter']:#x}: Record " + (f"zeroes it at {zero:#x}" if owner == f["record"]
+          else f"calls {owner:#x}, which zeroes it at {zero:#x}"))
     counter, self_check = f["seedCounter"] - f["engine"], f["seedSelfCheck"] - f["engine"]
     found = list(seed_compares(image, counter, self_check)) if 0 < counter < 0x80 else []
     check(found == [compare], f"seedSelfCheck {f['seedSelfCheck']:#x}: the worker compares engine+{counter:#x} "
@@ -649,15 +874,16 @@ def check_anchors(image, layout, check):
         said = f"{field} {f[field]:#x}: site {site:#x} [{pre.hex(' ')} disp32 {suf.hex(' ')}]".replace(" ]", "]")
         said += f" reaches {target:#x}" + (f" = {field}+{add:#x}" if add else "")
         if where:
-            begin = f[where]
+            # A member name, or the RVA of a .pdata function that is not a layout member.
+            begin = f[where] if isinstance(where, str) else where
             ok = ok and begin <= site < image.funcs.get(begin, begin)
-            said += f", inside {where}"
+            said += f", inside {where}" if isinstance(where, str) else f", inside {where:#x}"
         if callee:
             # A direct call to the callee follows within 0x40 bytes.
             calls = [at + 5 + struct.unpack_from("<i", image.img, at + 1)[0]
                      for at in range(end, end + 0x40) if image.img[at] == 0xE8]
-            ok = ok and f[callee] in calls
-            said += f", then call {callee}"
+            ok = ok and (f[callee] if isinstance(callee, str) else callee) in calls
+            said += f", then call {callee}" if isinstance(callee, str) else f", then call {callee:#x}"
         check(ok, said)
 
 
@@ -675,7 +901,9 @@ def main(argv):
     check(sorted(listed) == sorted(layouts), "every table is in kAmdLayouts: " + ", ".join(listed))
     check(len({l["name"] for l in layouts.values()}) == len(layouts), "runtime names are unique")
     check(len({(l["size"], l["sha"]) for l in layouts.values()}) == len(layouts), "size+SHA pairs are unique")
-    check(sorted(bootstraps) == sorted(layouts), "every table has one bootstrap entry")
+    # abi 2 host modules start no thread from DllMain, so only abi 1 tables have a bootstrap entry.
+    isolated = sorted(var for var, l in layouts.items() if l["fields"]["abi"] < 2)
+    check(sorted(bootstraps) == isolated, "every abi 1 table has one bootstrap entry, and only those")
     for var, layout in layouts.items():
         check(len(layout["fields"]) == len(members) - 3, f"{var}: {len(layout['fields'])} fields parsed")
         f = layout["fields"]

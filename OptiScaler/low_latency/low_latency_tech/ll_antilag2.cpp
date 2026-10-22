@@ -178,6 +178,7 @@ void AntiLag2::set_marker(IUnknown* pDevice, const MarkerParams& marker_params)
 
     case MarkerType::PRESENT_START:
         AMD::AntiLag2DX12::MarkEndOfFrameRendering(&dx12_ctx);
+        last_present_marker_framecount = State::Instance().frameCount;
         break;
     }
 }
@@ -187,7 +188,15 @@ void AntiLag2::set_async_marker(IUnknown* pCommandQueue, const MarkerParams& mar
     if (marker_params.marker_type == MarkerType::OUT_OF_BAND_PRESENT_START)
     {
         static uint64_t previous_frame_id = marker_params.frame_id;
-        set_fg_type(previous_frame_id == marker_params.frame_id, marker_params.frame_id);
+
+        // A repeated frame id means an interpolated frame only while the game's markers advance it. When frame generation
+        // stops, the game's markers can stop with it (DLSSG output's Reflex) and the id freezes: every present was then
+        // marked interpolated and the driver held each one about 100 ms (The Sims 4, RX 9070 XT).
+        const bool presentMarkersStalled =
+            last_present_marker_framecount != 0 &&
+            State::Instance().frameCount > last_present_marker_framecount + present_marker_stall_threshold;
+
+        set_fg_type(previous_frame_id == marker_params.frame_id && !presentMarkersStalled, marker_params.frame_id);
         previous_frame_id = marker_params.frame_id;
     }
 }

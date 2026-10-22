@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 
 #include "Config.h"
 
@@ -7,6 +7,7 @@
 #include "nvapi/fakenvapi.h"
 #include <hooks/Streamline_Hooks.h>
 #include <misc/IdentifyGpu.h>
+#include <dlssnr/amd/AmdBridge.h>
 #include <menu/input/shortcut_keys.h>
 
 #include <SimpleIni.h>
@@ -577,6 +578,9 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdStallStandDownMs.set_from_config(readInt("DlssNr", "AmdStallStandDownMs"));
             AmdAsync.set_from_config(readBool("DlssNr", "AmdAsync"));
             NrBackend.set_from_config(readString("DlssNr", "NrBackend", true));
+            HostComputeBackend.set_from_config(readString("DlssNr", "HostComputeBackend"));
+            HostZeroCopy.set_from_config(readBool("DlssNr", "HostZeroCopy"));
+        HostFrameGeneration.set_from_config(readBool("DlssNr", "HostFrameGeneration"));
             LmxxfDiagnostic.set_from_config(readString("DlssNr", "LmxxfDiagnostic", true));
             // true/false only; missing or "auto" => false (do not enable FitLarge by accident).
             {
@@ -1096,8 +1100,14 @@ bool Config::Reload(std::filesystem::path iniPath)
             // Enable HAGS when DLSS-G will be used
             if (!SpoofHAGS.has_value())
             {
+                // The library folder as the INI names it: Config::Instance() is still being constructed here.
+                std::filesystem::path library(readWString("Libraries", "OptiDllPath").value_or(L"OptiScaler"));
+                if (library.is_relative())
+                    library = Util::DllPath().parent_path() / library;
+                const bool neuralHubFg = DlssNr::AmdBridge::NeuralHubFgInstalled(library);
                 SpoofHAGS.set_volatile_value(FGInput.value_or_default() == FGInput::NvngxFG ||
-                                             FGInput.value_or_default() == FGInput::DLSSG);
+                                             FGInput.value_or_default() == FGInput::DLSSG ||
+                                             neuralHubFg);
             }
         }
 
@@ -1784,6 +1794,11 @@ bool Config::SaveIni()
                      GetIntValue(Instance()->AmdStallStandDownMs.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdAsync", GetBoolValue(Instance()->AmdAsync.value_for_config()).c_str());
         ini.SetValue("DlssNr", "NrBackend", Instance()->NrBackend.value_for_config().value_or("auto").c_str());
+        ini.SetValue("DlssNr", "HostComputeBackend",
+                     Instance()->HostComputeBackend.value_for_config().value_or("HIP").c_str());
+        ini.SetValue("DlssNr", "HostZeroCopy", GetBoolValue(Instance()->HostZeroCopy.value_for_config()).c_str());
+    ini.SetValue("DlssNr", "HostFrameGeneration",
+                 GetBoolValue(Instance()->HostFrameGeneration.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LmxxfDiagnostic",
                      Instance()->LmxxfDiagnostic.value_for_config().value_or("auto").c_str());
         ini.SetValue("DlssNr", "LmxxfFitLarge", GetBoolValue(Instance()->LmxxfFitLarge.value_for_config()).c_str());

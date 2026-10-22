@@ -17,6 +17,7 @@
 #include <misc/IdentifyGpu.h>
 #include <hooks/Reflex_Hooks.h>
 #include <menu/menu_overlay_dx.h>
+#include <dlssnr/amd/AmdPreSr.h>
 
 #include <d3d12.h>
 #include <detours/detours.h>
@@ -1338,10 +1339,16 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
 
     HRESULT result;
     const auto presentStart = Util::MillisecondsNow();
+    // NeuralHub 0.8.0 as NGX host (its DLSS-FG behind OptiScaler's own Streamline, or the D3D11 bridge): its present
+    // stage, as in wrapped_swapchain.cpp. A present reaching both counts once.
+    if (willPresent)
+        AmdPreSr::NgxPresentBefore(This);
     if (pPresentParameters == nullptr)
         result = o_FGSCPresent(This, SyncInterval, Flags);
     else
         result = o_FGSCPresent1((IDXGISwapChain1*) This, SyncInterval, Flags, pPresentParameters);
+    if (willPresent)
+        AmdPreSr::NgxPresentAfter(This, result);
 
     if (finalImage)
         MenuOverlayDx::FrameGenerationPresent(true);

@@ -25,6 +25,8 @@ bool FeatureProvider_Dx11::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
     State& state = State::Instance();
     Config& cfg = *Config::Instance();
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
+    // AmdPreSr NeuralHub host: the armed host module serves DLSS on an AMD GPU too.
+    const bool dlssCapableForThisProcess = primaryGpu.dlssCapable || state.NeuralHubArmOk;
 
     switch (upscaler)
     {
@@ -59,7 +61,7 @@ bool FeatureProvider_Dx11::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
     case Upscaler::DLSS_on12:
         // DLSS across the bridge. The only way a D3D11 game can have both DLSS and Neural
         // Rendering, because the model will not initialise on a D3D11 device.
-        if (primaryGpu.dlssCapable && state.NVNGX_DLSS_Path.has_value())
+        if (dlssCapableForThisProcess && state.NVNGX_DLSS_Path.has_value())
         {
             *feature = std::make_unique<DLSSFeatureDx11on12>(handleId, parameters);
             break;
@@ -68,7 +70,7 @@ bool FeatureProvider_Dx11::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
         [[fallthrough]];
 
     case Upscaler::DLSS:
-        if (primaryGpu.dlssCapable && state.NVNGX_DLSS_Path.has_value())
+        if (dlssCapableForThisProcess && state.NVNGX_DLSS_Path.has_value())
         {
             *feature = std::make_unique<DLSSFeatureDx11>(handleId, parameters);
             break;
@@ -81,7 +83,7 @@ bool FeatureProvider_Dx11::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
         }
 
     case Upscaler::DLSSD:
-        if (primaryGpu.dlssCapable && state.NVNGX_DLSSD_Path.has_value())
+        if (dlssCapableForThisProcess && state.NVNGX_DLSSD_Path.has_value())
         {
             *feature = std::make_unique<DLSSDFeatureDx11>(handleId, parameters);
             break;
@@ -126,7 +128,8 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
     State& state = State::Instance();
     Config& cfg = *Config::Instance();
 
-    const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && state.newBackend == Upscaler::DLSS;
+    const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && !state.NeuralHubArmOk
+                                  && state.newBackend == Upscaler::DLSS;
     if (state.newBackend == Upscaler::Reset || dlssOnNonCapable)
         state.newBackend = cfg.Dx11Upscaler.value_or_default();
 
@@ -159,6 +162,7 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
                                        state.newBackend == Upscaler::DLSS_on12;
 
             contextData->createParams = isPassthrough ? parameters : GetNGXParameters(API::DX11, false);
+            contextData->createParamsOwned = !isPassthrough;
             contextData->createParams->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, dc->GetFeatureFlags());
             contextData->createParams->Set(NVSDK_NGX_Parameter_Width, dc->RenderWidth());
             contextData->createParams->Set(NVSDK_NGX_Parameter_Height, dc->RenderHeight());
@@ -251,12 +255,13 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
             state.changeBackend[handleId] = false;
         }
 
-        // if opti nvparam release it
-        int optiParam = 0;
-        if (contextData->createParams->Get("OptiScaler", &optiParam) == NVSDK_NGX_Result_Success && optiParam == 1)
+        // Delete only the temporary table this provider created. The game's own table is
+        // still referenced by the feature during Evaluate and must outlive ChangeFeature.
+        if (contextData->createParamsOwned && contextData->createParams != nullptr)
         {
             TryDestroyNGXParameters(contextData->createParams, NVNGXProxy::D3D11_DestroyParameters());
             contextData->createParams = nullptr;
+            contextData->createParamsOwned = false;
         }
     }
 

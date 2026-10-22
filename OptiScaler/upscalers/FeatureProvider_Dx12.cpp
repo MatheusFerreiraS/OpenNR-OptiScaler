@@ -23,6 +23,9 @@ bool FeatureProvider_Dx12::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
     State& state = State::Instance();
     Config& cfg = *Config::Instance();
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
+    // AmdPreSr NeuralHub host: DLSS-SR/DLSS-RR become providers on an AMD GPU once the host
+    // module's present publish and gate arm succeeded; NVIDIA keeps its own dlssCapable path.
+    const bool dlssCapableForThisProcess = primaryGpu.dlssCapable || state.NeuralHubArmOk;
     ScopedSkipHeapCapture skipHeapCapture {};
 
     switch (upscaler)
@@ -44,7 +47,7 @@ bool FeatureProvider_Dx12::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
         break;
 
     case Upscaler::DLSS:
-        if (primaryGpu.dlssCapable && state.NVNGX_DLSS_Path.has_value())
+        if (dlssCapableForThisProcess && state.NVNGX_DLSS_Path.has_value())
         {
             *feature = std::make_unique<DLSSFeatureDx12>(handleId, parameters);
             break;
@@ -57,7 +60,7 @@ bool FeatureProvider_Dx12::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
         }
 
     case Upscaler::DLSSD:
-        if (primaryGpu.dlssCapable && state.NVNGX_DLSSD_Path.has_value())
+        if (dlssCapableForThisProcess && state.NVNGX_DLSSD_Path.has_value())
         {
             *feature = std::make_unique<DLSSDFeatureDx12>(handleId, parameters);
             break;
@@ -120,15 +123,33 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
     if (!state.changeBackend[handleId])
         return false;
 
-    const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && state.newBackend == Upscaler::DLSS;
+    const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && !state.NeuralHubArmOk
+                                  && (state.newBackend == Upscaler::DLSS || state.newBackend == Upscaler::DLSSD);
     if (state.newBackend == Upscaler::Reset || dlssOnNonCapable)
         state.newBackend = cfg.Dx12Upscaler.value_or_default();
 
     if (contextData->featureID == NVSDK_NGX_Feature_RayReconstruction)
     {
-        // RR features are not allowed to change. They can only init/reinit.
-        if (state.newBackend != contextData->featureKey)
+        const auto primaryGpu = IdentifyGpu::getPrimaryGpu();
+        const bool dlssdCapable =
+            (primaryGpu.dlssCapable || state.NeuralHubArmOk) && state.NVNGX_DLSSD_Path.has_value();
+        const bool fsrRrCapable =
+            primaryGpu.vendorId != VendorId::Nvidia && FfxApiProxy::IsDenoiserApiImplementedDx12();
+
+        if ((state.newBackend == Upscaler::DLSS || state.newBackend == Upscaler::DLSSD) && dlssdCapable)
+        {
+            state.newBackend = Upscaler::DLSSD;
+            contextData->featureKey = Upscaler::DLSSD;
+        }
+        else if ((state.newBackend == Upscaler::FFX || state.newBackend == Upscaler::FSR_RR) && fsrRrCapable)
+        {
+            state.newBackend = Upscaler::FSR_RR;
+            contextData->featureKey = Upscaler::FSR_RR;
+        }
+        else if (state.newBackend != contextData->featureKey)
+        {
             state.newBackend = contextData->featureKey;
+        }
     }
 
     contextData->changeBackendCounter++;
@@ -153,12 +174,15 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
             const bool isPassthrough = state.newBackend == Upscaler::DLSSD || state.newBackend == Upscaler::DLSS;
 
             contextData->createParams = isPassthrough ? parameters : GetNGXParameters(API::DX12, false);
+            contextData->createParamsOwned = !isPassthrough;
             contextData->createParams->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, dc->GetFeatureFlags());
             contextData->createParams->Set(NVSDK_NGX_Parameter_Width, dc->RenderWidth());
             contextData->createParams->Set(NVSDK_NGX_Parameter_Height, dc->RenderHeight());
             contextData->createParams->Set(NVSDK_NGX_Parameter_OutWidth, dc->DisplayWidth());
             contextData->createParams->Set(NVSDK_NGX_Parameter_OutHeight, dc->DisplayHeight());
             contextData->createParams->Set(NVSDK_NGX_Parameter_PerfQualityValue, dc->PerfQualityValue());
+            if (contextData->featureID == NVSDK_NGX_Feature_RayReconstruction)
+                DLSSDFeature::SyncCreateParams(contextData->createParams);
 
             dc = nullptr;
 
@@ -179,9 +203,14 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
             state.newBackend = Upscaler::Reset;
             state.changeBackend[handleId] = false;
 
-            if (contextData->createParams != nullptr)
+            if (contextData->createParamsOwned && contextData->createParams != nullptr)
             {
                 TryDestroyNGXParameters(contextData->createParams, NVNGXProxy::D3D12_DestroyParameters());
+                contextData->createParams = nullptr;
+                contextData->createParamsOwned = false;
+            }
+            else
+            {
                 contextData->createParams = nullptr;
             }
 
@@ -250,13 +279,13 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
             state.changeBackend[handleId] = false;
         }
 
-        // If this is an OptiScaler fake NVNGX param table, delete it
-        int optiParam = 0;
-
-        if (contextData->createParams->Get("OptiScaler", &optiParam) == NVSDK_NGX_Result_Success && optiParam == 1)
+        // Delete only the temporary table this provider created. The game's own table is
+        // still referenced by the feature during Evaluate and must outlive ChangeFeature.
+        if (contextData->createParamsOwned && contextData->createParams != nullptr)
         {
             TryDestroyNGXParameters(contextData->createParams, NVNGXProxy::D3D12_DestroyParameters());
             contextData->createParams = nullptr;
+            contextData->createParamsOwned = false;
         }
     }
 

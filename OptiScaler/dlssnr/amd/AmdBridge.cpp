@@ -37,6 +37,9 @@ namespace
 std::mutex standDownMutex;
 std::string standDown;
 std::atomic<DlssNr::Backend::Host*> backend { nullptr };
+// danielblnc 0.8.0's host loaded only as the NGX DLSS-SR/DLSS-RR provider, when NrBackend is another runtime (lmxxf,
+// mochizuki) or off. It never records NR; the bridge only forwards the host's NGX lists to it. Process lifetime.
+std::atomic<AmdPreSr::Backend*> ngxHostOnly { nullptr };
 // COM identity and adapter of the device the backend was built on (guarded by initMutex). The backend lives for
 // the process, so this reference is never released either.
 IUnknown* backendDevice = nullptr;
@@ -214,11 +217,18 @@ void ExecuteBatch(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* c)
     }
     if (b)
         b->Submitted(q, n, c);
+    else
+        AmdPreSr::NgxSubmitted(q, n, c);
+    // Another runtime's backend does not know the NGX host's lists: notify them here.
+    if (b && ngxHostOnly.load(std::memory_order_acquire))
+        AmdPreSr::NgxSubmitted(q, n, c);
 }
 void STDMETHODCALLTYPE Execute(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* c)
 {
     auto b = backend.load();
-    int index = b ? b->PendingListIndex(n, c) : -1;
+    int index = b ? b->PendingListIndex(n, c) : AmdPreSr::NgxPendingListIndex(n, c);
+    if (index < 0 && b && ngxHostOnly.load(std::memory_order_acquire))
+        index = AmdPreSr::NgxPendingListIndex(n, c);
     if (n > 1 && index >= 0)
     {
         // Separate Execute calls establish an execution boundary around the
@@ -247,6 +257,8 @@ void NTAPI Exit(LONG code)
     s_awaitingTracker.Clear();
     if (auto b = backend.load())
         b->OnProcessExit();
+    if (auto h = ngxHostOnly.load(std::memory_order_acquire))
+        h->Shutdown();
     exitOriginal(code);
 }
 // Caller holds initMutex. Install once, before any proxy can escape into game submission.
@@ -460,6 +472,27 @@ AmdPreSr::Settings SettingsFromConfig(const Config& cfg, float modelScale)
     return s;
 }
 
+std::filesystem::path LibraryFolder()
+{
+    // Before DllMain resolves OptiDllPath (the INI's first read) the default stands in for it.
+    if (Config::Instance()->MainDllPath.has_value())
+    {
+        std::filesystem::path folder(Config::Instance()->MainDllPath.value());
+        return folder.is_relative() ? Directory() / folder : folder;
+    }
+    return Directory() / L"OptiScaler";
+}
+bool NeuralHubFgInstalled(const std::filesystem::path& library)
+{
+    std::error_code ec;
+    const auto dir = Directory();
+    const auto host = dir / L"dlssnr_amd_host";
+    return std::filesystem::exists(host / L"neuralhub_host.dll", ec) &&
+           (std::filesystem::exists(host / L"nvngx_dlssg.dll", ec) ||
+            std::filesystem::exists(library / L"nvngx_dlssg.dll", ec) ||
+            std::filesystem::exists(dir / L"nvngx_dlssg.dll", ec));
+}
+bool NeuralHubFgInstalled() { return NeuralHubFgInstalled(LibraryFolder()); }
 bool HasFiles()
 {
     // Proxy names such as winmm.dll can load before Util::DllPath is finalized.
@@ -514,6 +547,117 @@ const char* RuntimeName()
         cached = true;
     }
     return cachedName;
+}
+bool EnsureNgxHost(ID3D12Device* device, ID3D12CommandQueue* q)
+{
+    if (State::Instance().NeuralHubArmOk)
+        return true;
+    if (Exiting() || !device)
+        return false;
+    const auto active = DlssNr::Backend::ActiveKindFromConfig();
+    // Another NR runtime (or none) is selected: danielblnc 0.8.0's host still provides DLSS-SR/DLSS-RR on its own,
+    // without its NR, as long as its pass file is installed.
+    const bool hostOnly = active != DlssNr::Backend::Kind::Daniel;
+    if (hostOnly)
+    {
+        std::error_code ec;
+        if (!std::filesystem::exists(Directory() / L"dlssnr_amd_pass1.dll", ec))
+            return false;
+    }
+    else if (!HasFiles())
+        return false;
+    const char* build = RuntimeName();
+    if (!build || std::strcmp(build, "0.8.0") != 0)
+        return false;
+    if (!IsAmd(device))
+        return false;
+
+    ID3D12CommandQueue* confirmedQ = nullptr;
+    if (!q)
+    {
+        confirmedQ = s_confirmedRenderQueue.Get();
+        q = confirmedQ;
+    }
+    if (!q)
+        q = reinterpret_cast<ID3D12CommandQueue*>(State::Instance().currentCommandQueue);
+
+    ID3D12CommandQueue* fallbackQ = nullptr;
+    if (!q)
+    {
+        D3D12_COMMAND_QUEUE_DESC queueDesc {};
+        if (SUCCEEDED(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&fallbackQ))))
+            q = fallbackQ;
+    }
+    if (!q)
+    {
+        if (confirmedQ)
+            confirmedQ->Release();
+        return false;
+    }
+
+    std::lock_guard initGuard(initMutex);
+    if (hostOnly)
+    {
+        // Once per process: a host that failed to load or arm stays loaded and cannot be loaded again.
+        static bool attempted = false;
+        if (!attempted && InstallSubmissionHook(device, q))
+        {
+            attempted = true;
+            if (DlssNr::Backend::SubmissionHooksWanted() && DlssNr::Submission::Hooks::IsArmed())
+                DlssNr::Submission::Hooks::SetProxyWrap(true);
+            auto* host = new AmdPreSr::Backend(device, q, Directory());
+            ngxHostOnly.store(host, std::memory_order_release);
+            const auto raw = Config::Instance()->NrBackend.value_or_default();
+            LOG_INFO("AMD neural: NrBackend={}; danielblnc {} host loaded for NGX DLSS-SR/DLSS-RR only (armed: {})",
+                     raw, build, State::Instance().NeuralHubArmOk);
+            if (!State::Instance().NeuralHubArmOk)
+                LOG_WARN("AMD neural: danielblnc host for NGX: {}", host->Status());
+        }
+        if (fallbackQ)
+            fallbackQ->Release();
+        if (confirmedQ)
+            confirmedQ->Release();
+        return State::Instance().NeuralHubArmOk;
+    }
+    auto b = backend.load();
+    if (!b)
+    {
+        if (!InstallSubmissionHook(device, q))
+        {
+            if (fallbackQ)
+                fallbackQ->Release();
+            if (confirmedQ)
+                confirmedQ->Release();
+            return false;
+        }
+        if (DlssNr::Backend::SubmissionHooksWanted() && DlssNr::Submission::Hooks::IsArmed())
+            DlssNr::Submission::Hooks::SetProxyWrap(true);
+        b = new DlssNr::Backend::DanielBackend(device, q, Directory());
+        std::string label = build ? std::string("danielblnc ") + build : std::string("danielblnc");
+        {
+            const auto raw = Config::Instance()->NrBackend.value_or_default();
+            LOG_INFO("AMD neural: NrBackend={} runs {} (pre-armed for NGX DLSS-SR/DLSS-RR)", raw, label);
+        }
+        {
+            std::lock_guard guard(runtimeLabelMutex);
+            runtimeLabel = std::move(label);
+        }
+        const auto adapter = device->GetAdapterLuid();
+        device->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&backendDevice));
+        backendAdapter = adapter;
+        stabilizer = std::make_unique<AmdPreSr::ResidualStabilizer>(device);
+        composition = std::make_unique<AmdPreSr::RenoComposition>(device);
+        person = std::make_unique<DlssNr::Person::Partition>(device);
+        backend.store(b);
+        neuralTimer = std::make_unique<GpuTime_Dx12>(device);
+    }
+
+    if (fallbackQ)
+        fallbackQ->Release();
+    if (confirmedQ)
+        confirmedQ->Release();
+
+    return State::Instance().NeuralHubArmOk;
 }
 static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3D12CommandQueue* q, bool afterUpscale,
                 ID3D12Resource** outResult)
@@ -776,6 +920,11 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         return true;
     }
     auto haveFlags = params->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &flags) == NVSDK_NGX_Result_Success;
+    if (!haveFlags && State::Instance().currentFeature != nullptr)
+    {
+        flags = static_cast<UINT>(State::Instance().currentFeature->GetFeatureFlags());
+        haveFlags = true;
+    }
     // NGX applies the exposure texture to HDR input only. An SDR colour (no IsHDR, or an 8- or 10-bit UNORM one) is
     // already exposed: Watch Dogs: Legion hands an R8G8B8A8 colour with an exposure that grows huge in the dark, and
     // applied again it overflowed the network into a green frame.

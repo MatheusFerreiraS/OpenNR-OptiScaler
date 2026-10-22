@@ -28,6 +28,15 @@ inline static std::string toLower(std::string s)
 
 inline static bool iequals(const std::string& a, const std::string& b) { return toLower(a) == toLower(b); }
 
+// The graphics runtimes, and the AMD neural runtimes (danielblnc's host neuralhub_host.dll and its dlssnr_amd_* passes),
+// which pick their kernels by the real GPU: told "RTX 5090" the 0.8.0 host found no gfx target and opened no compute.
+inline static bool IsUnspoofedCaller(const std::string& caller)
+{
+    const auto lower = toLower(caller);
+    return lower == "vulkan-1.dll" || lower == "amdvlk64.dll" || lower == "dxgi.dll" || lower == "d3d12.dll" ||
+           lower == "d3d12core.dll" || lower == "neuralhub_host.dll" || lower.starts_with("dlssnr_amd_");
+}
+
 #pragma region DXGI Adapter methods
 
 HRESULT DxgiSpoofing::hkGetDesc3(IDXGIAdapter4* This, DXGI_ADAPTER_DESC3* pDesc)
@@ -38,8 +47,7 @@ HRESULT DxgiSpoofing::hkGetDesc3(IDXGIAdapter4* This, DXGI_ADAPTER_DESC3* pDesc)
     LOG_INFO("GetDesc3 caller={} vendor={:x} name={}", caller, (UINT) pDesc->VendorId,
              wstring_to_string(pDesc->Description));
 
-    if (iequals(caller, "vulkan-1.dll") || iequals(caller, "amdvlk64.dll") || iequals(caller, "dxgi.dll") ||
-        iequals(caller, "d3d12.dll") || iequals(caller, "d3d12Core.dll"))
+    if (IsUnspoofedCaller(caller))
     {
         return result;
     }
@@ -88,8 +96,7 @@ HRESULT DxgiSpoofing::hkGetDesc2(IDXGIAdapter2* This, DXGI_ADAPTER_DESC2* pDesc)
     auto caller = Util::WhoIsTheCaller(_ReturnAddress());
     LOG_INFO("hkGetDesc2 caller={} vendor={:x}", caller, (UINT) pDesc->VendorId);
 
-    if (iequals(caller, "vulkan-1.dll") || iequals(caller, "amdvlk64.dll") || iequals(caller, "dxgi.dll") ||
-        iequals(caller, "d3d12.dll") || iequals(caller, "d3d12Core.dll"))
+    if (IsUnspoofedCaller(caller))
     {
         return result;
     }
@@ -140,8 +147,7 @@ HRESULT DxgiSpoofing::hkGetDesc1(IDXGIAdapter1* This, DXGI_ADAPTER_DESC1* pDesc)
     auto caller = Util::WhoIsTheCaller(_ReturnAddress());
     LOG_INFO("hkGetDesc1 caller={} vendor={:x}", caller, (UINT) pDesc->VendorId);
 
-    if (iequals(caller, "vulkan-1.dll") || iequals(caller, "amdvlk64.dll") || iequals(caller, "dxgi.dll") ||
-        iequals(caller, "d3d12.dll") || iequals(caller, "d3d12Core.dll"))
+    if (IsUnspoofedCaller(caller))
     {
         return result;
     }
@@ -203,8 +209,7 @@ HRESULT DxgiSpoofing::hkGetDesc(IDXGIAdapter* This, DXGI_ADAPTER_DESC* pDesc)
     auto caller = Util::WhoIsTheCaller(_ReturnAddress());
     LOG_INFO("hkGetDesc caller={} vendor={:x}", caller, (UINT) pDesc->VendorId);
 
-    if (iequals(caller, "vulkan-1.dll") || iequals(caller, "amdvlk64.dll") || iequals(caller, "dxgi.dll") ||
-        iequals(caller, "d3d12.dll") || iequals(caller, "d3d12Core.dll"))
+    if (IsUnspoofedCaller(caller))
     {
         return result;
     }

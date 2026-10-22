@@ -426,7 +426,10 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     const bool neural = Config::Instance()->DlssNrEnabled.value_or_default();
     // Entered with NR and frame generation both off as well: EvaluateState below is what turns XeFG off (as on D3D12),
     // and skipping it left XeFG generating, and the pacing hooks on, after Active was unticked.
-    if (fgHookedPresenter && State::Instance().activeFgOutput == FGOutput::XeFG && !State::Instance().currentFeature &&
+    // The DLSSG output (OptiScaler's own Streamline; NeuralHub's DLSS-FG on AMD) takes the same guides as XeFG.
+    const bool dlssg = State::Instance().activeFgOutput == FGOutput::DLSSG;
+    if (fgHookedPresenter && (State::Instance().activeFgOutput == FGOutput::XeFG || dlssg) &&
+        !State::Instance().currentFeature &&
         AmdPresentExperimental::IsTarget() && DlssNr::Backend::PresentRuntimeSupported())
     {
         bool ready = false;
@@ -471,8 +474,10 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
             if (ready && _fg->IsActive() && !_fg->IsPaused())
             {
                 // As on D3D12: OptiScaler spaces XeFG's presents and the pacing hooks only forward. Their period, fed
-                // back as XeFG's frame time, held the game at it above 2X (Cities: Skylines, 68 fps to 18).
-                MenuOverlayDx::SpaceFrameGeneration();
+                // back as XeFG's frame time, held the game at it above 2X (Cities: Skylines, 68 fps to 18). Streamline
+                // paces DLSSG's presents itself.
+                if (!dlssg)
+                    MenuOverlayDx::SpaceFrameGeneration();
                 _fg->SetCameraValues(0.1f, 1000.0f, 1.5707963f, float(guides.width) / float(guides.height));
                 _fg->SetMVScale(1.0f, 1.0f);
                 _fg->SetJitter(0.0f, 0.0f);
@@ -1338,7 +1343,13 @@ bool Dx11wDx12SC::_WaitForInteropCopyOnPresentQueue()
     if (_lastInteropCopyFenceValue == 0)
         return true;
 
-    auto result = _fg->GetCommandQueue()->Wait(_copyFence, _lastInteropCopyFenceValue);
+    // A frame generation feature whose swapchain could not be made has no queue: the bridge then presents a plain D3D12
+    // swapchain made on its own queue.
+    auto queue = _fg->GetCommandQueue() ? _fg->GetCommandQueue() : _dx12CommandQueue;
+    if (queue == nullptr)
+        return false;
+
+    auto result = queue->Wait(_copyFence, _lastInteropCopyFenceValue);
     if (FAILED(result))
     {
         LOG_ERROR("present queue Wait on interop copy fence failed: {:X}", (UINT) result);
