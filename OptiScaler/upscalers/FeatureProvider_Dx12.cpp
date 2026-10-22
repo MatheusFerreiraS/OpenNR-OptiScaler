@@ -113,6 +113,20 @@ bool FeatureProvider_Dx12::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
     return loaded;
 }
 
+// The old feature's sizes, flags and quality, written into the block the new feature is created from.
+static void ApplyCreateSize(ContextData<IFeature_Dx12>* contextData)
+{
+    auto* params = contextData->createParams;
+    params->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, contextData->createFlags);
+    params->Set(NVSDK_NGX_Parameter_Width, contextData->createWidth);
+    params->Set(NVSDK_NGX_Parameter_Height, contextData->createHeight);
+    params->Set(NVSDK_NGX_Parameter_OutWidth, contextData->createOutWidth);
+    params->Set(NVSDK_NGX_Parameter_OutHeight, contextData->createOutHeight);
+    params->Set(NVSDK_NGX_Parameter_PerfQualityValue, contextData->createQuality);
+    if (contextData->featureID == NVSDK_NGX_Feature_RayReconstruction)
+        DLSSDFeature::SyncCreateParams(params);
+}
+
 bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device, ID3D12GraphicsCommandList* cmdList,
                                          UINT handleId, NVSDK_NGX_Parameter* parameters,
                                          ContextData<IFeature_Dx12>* contextData)
@@ -175,14 +189,13 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
 
             contextData->createParams = isPassthrough ? parameters : GetNGXParameters(API::DX12, false);
             contextData->createParamsOwned = !isPassthrough;
-            contextData->createParams->Set(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, dc->GetFeatureFlags());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_Width, dc->RenderWidth());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_Height, dc->RenderHeight());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_OutWidth, dc->DisplayWidth());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_OutHeight, dc->DisplayHeight());
-            contextData->createParams->Set(NVSDK_NGX_Parameter_PerfQualityValue, dc->PerfQualityValue());
-            if (contextData->featureID == NVSDK_NGX_Feature_RayReconstruction)
-                DLSSDFeature::SyncCreateParams(contextData->createParams);
+            contextData->createFlags = dc->GetFeatureFlags();
+            contextData->createWidth = dc->RenderWidth();
+            contextData->createHeight = dc->RenderHeight();
+            contextData->createOutWidth = dc->DisplayWidth();
+            contextData->createOutHeight = dc->DisplayHeight();
+            contextData->createQuality = dc->PerfQualityValue();
+            ApplyCreateSize(contextData);
 
             dc = nullptr;
 
@@ -228,6 +241,11 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
         LOG_INFO("Creating new {} upscaler", UpscalerDisplayName(state.newBackend));
         contextData->feature.reset();
 
+        // The game's block was refilled by the evaluates since: a Ray Reconstruction switched back from FSR-RR was
+        // created at display size (1920x1080 for a 1280x720 frame in Cyberpunk) and the GPU hung.
+        if (!contextData->createParamsOwned)
+            ApplyCreateSize(contextData);
+
         if (!GetFeature(state.newBackend, handleId, contextData->createParams, &contextData->feature))
         {
             LOG_ERROR("Upscaler can't created");
@@ -240,6 +258,9 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
     // init feature
     if (contextData->changeBackendCounter == 3)
     {
+        if (!contextData->createParamsOwned)
+            ApplyCreateSize(contextData);
+
         auto initResult = contextData->feature->Init(device, cmdList, contextData->createParams);
 
         contextData->changeBackendCounter = 0;
