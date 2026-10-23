@@ -37,7 +37,7 @@
 // This fork's own version, which is what the menu title, the log and the DLL's product version
 // show. VER_MAJOR/MINOR/HOTFIX above stay the upstream base: the update check compares them with
 // upstream's latest release, and they are the DLL's file version.
-#define VER_FORK_VERSION "0.5.6"
+#define VER_FORK_VERSION "0.5.7"
 #ifndef VER_FORK_TAG
 #define VER_FORK_TAG "-opennr"
 #endif
