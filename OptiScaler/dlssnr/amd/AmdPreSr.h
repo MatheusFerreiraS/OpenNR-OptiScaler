@@ -25,7 +25,7 @@ int NgxPendingListIndex(UINT count, ID3D12CommandList* const* lists);
 void NgxSubmitted(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* const* lists);
 // 0.8.0 host present stage (AmdLayout.h, presentBefore): what the host's own Present detour runs around every present
 // of the real swapchain, generated frames included. Nothing before the host is armed.
-void NgxPresentBefore(IUnknown* swapchain);
+void NgxPresentBefore(IUnknown* swapchain, IUnknown* queueHint = nullptr);
 void NgxPresentAfter(IUnknown* swapchain, HRESULT result);
 // The host's DLSS-FG generated-frame ceiling (DLSSG.MultiFrameCountMax), 0 before the host is armed.
 unsigned int NgxFgMultiFrameCountMax();

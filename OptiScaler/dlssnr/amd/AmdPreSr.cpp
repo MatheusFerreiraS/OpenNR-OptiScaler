@@ -28,6 +28,7 @@
 #include <bcrypt.h>
 #include <array>
 #include <atomic>
+#include <dxgi.h>
 #include <chrono>
 #include <algorithm>
 #include <functional>
@@ -402,7 +403,7 @@ static void ReportSlowNgxStage(const char* stage, std::chrono::steady_clock::tim
     }
 }
 
-void NgxPresentBefore(IUnknown* swapchain)
+void NgxPresentBefore(IUnknown* swapchain, IUnknown* queueHint)
 {
     if (ngxPresentDepth++ != 0)
         return;
@@ -412,11 +413,46 @@ void NgxPresentBefore(IUnknown* swapchain)
     if (!swapchain || !h || !L || !L->presentBefore || !L->presentCounter ||
         g_ngxArm.load(std::memory_order_acquire) != 1)
         return;
+    // The host finds a swapchain's queue in the map its CreateSwapChain detour fills, then asks the swapchain itself;
+    // host mode has no such detour, and under Streamline the swapchain answers no GetDevice(ID3D12CommandQueue), so every
+    // present was turned away ("not on our device") and the FG's frame counters never moved. Tell it once per
+    // swapchain, with the queue the game made it on (or the game's render queue).
+    static IUnknown* registered = nullptr;
+    if (L->swapchainCreated && swapchain != registered)
+    {
+        // A D3D11 game's swapchain hands its D3D11 device instead: the bridge's render queue then.
+        ID3D12CommandQueue* queue = nullptr;
+        if (!queueHint || FAILED(queueHint->QueryInterface(IID_PPV_ARGS(&queue))))
+            if (auto* render = State::Instance().currentCommandQueue)
+                render->QueryInterface(IID_PPV_ARGS(&queue));
+        if (queue)
+        {
+            reinterpret_cast<void (*)(IUnknown*, IUnknown*)>(reinterpret_cast<std::uintptr_t>(h) +
+                                                            L->swapchainCreated)(queue, swapchain);
+            queue->Release();
+            registered = swapchain;
+        }
+    }
     const auto counter = At<volatile std::uint64_t>(h, L->presentCounter);
     const auto start = std::chrono::steady_clock::now();
     reinterpret_cast<void (*)(IUnknown*)>(reinterpret_cast<std::uintptr_t>(h) + L->presentBefore)(swapchain);
     ReportSlowNgxStage("before", start);
     ngxPresentTaken = At<volatile std::uint64_t>(h, L->presentCounter) != counter;
+    // Still turned away: the queue's device is not the one the host was seeded with. Said once.
+    static bool reported = false;
+    if (!ngxPresentTaken && !reported)
+    {
+        reported = true;
+        ID3D12Device* queueDevice = nullptr;
+        if (auto* queue = At<ID3D12CommandQueue*>(h, L->queue))
+            queue->GetDevice(IID_PPV_ARGS(&queueDevice));
+        LOG_WARN("NeuralHub's present stage turned swapchain {:X} away: host queue {:X} on device {:X}, host seeded with "
+                 "device {:X}",
+                 (size_t) swapchain, (size_t) At<ID3D12CommandQueue*>(h, L->queue), (size_t) queueDevice,
+                 (size_t) At<ID3D12Device*>(h, L->device));
+        if (queueDevice)
+            queueDevice->Release();
+    }
 }
 
 void NgxPresentAfter(IUnknown* swapchain, HRESULT result)

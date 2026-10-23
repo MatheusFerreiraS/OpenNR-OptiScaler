@@ -220,6 +220,11 @@ struct AmdLayout
     std::uint32_t presentCounter = 0;
     std::uint32_t stageDispatch = 0;
     std::uint32_t fgMultiFrameCountMax = 0;
+    // swapchainCreated (0x11f10, void(IUnknown* queue, IDXGISwapChain*)) is what the host's CreateSwapChain detour runs:
+    // it maps the swapchain to its queue, which presentBefore's device check (0x12140) looks up first, and tells the
+    // addons (stage 0 phase 4). Host mode has no such detour, and the game's swapchain under Streamline answers no
+    // GetDevice(ID3D12CommandQueue), so every present was turned away ("not on our device") until the client called it.
+    std::uint32_t swapchainCreated = 0;
 };
 
 // 0.2.17 pass DLL, SHA256 bc97f3b0...
@@ -864,6 +869,7 @@ inline constexpr AmdLayout kAmd080 {
     .presentCounter = 0x1a04e48,
     .stageDispatch = 0x849e0,
     .fgMultiFrameCountMax = 0x1a04654,
+    .swapchainCreated = 0x11f10,
 };
 
 inline constexpr const AmdLayout* kAmdLayouts[] = { &kAmd0217, &kAmd03,  &kAmd031, &kAmd040, &kAmd041, &kAmd042,

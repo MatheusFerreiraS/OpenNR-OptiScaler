@@ -46,7 +46,7 @@ HOSTLOAD_H = ROOT / "OptiScaler/dlssnr/amd/RuntimeHostLoad.h"
 # Members that are .pdata function starts, and fields that are not data slots.
 CODE = ("init", "record", "notify", "shutdown", "graphicsWaitBegin",
         "processInit", "detourAttachEx", "requestStage", "prepareWeights", "initCallbackFn",
-        "computeOpen", "nrStageCallback", "presentBefore", "stageDispatch")
+        "computeOpen", "nrStageCallback", "presentBefore", "stageDispatch", "swapchainCreated")
 # Code members that are leaf functions: no .pdata entry of their own, so they are pinned by their
 # first bytes instead (formatEnum: add ecx,-2; cmp ecx,0x59, the DXGI_FORMAT range switch; ngxPublishFn:
 # mov rax,[rip+...], the publish leaf, whose address the services init also stores in the GetState slot).

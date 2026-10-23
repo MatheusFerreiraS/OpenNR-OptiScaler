@@ -545,7 +545,7 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     // NeuralHub 0.8.0 as NGX host: its present stage, which its own Present detour would run (every present, the
     // generated frames included: its frame counters and DLSS-FG pacing follow them).
     if (willPresent)
-        AmdPreSr::NgxPresentBefore(pSwapChain);
+        AmdPreSr::NgxPresentBefore(pSwapChain, pDevice);
 
     // swapchain present
     if (pPresentParameters == nullptr)
