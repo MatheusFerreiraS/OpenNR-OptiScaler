@@ -532,7 +532,13 @@ struct Context {
         VkMemoryAllocateFlagsInfo flags{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
         flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
         if (device_address) alloc.pNext = &flags;
-        NRVK_CHECK(vkAllocateMemory(device, &alloc, nullptr, &b.memory));
+        // Which allocation failed says more than the bare VkResult: an out of memory with VRAM
+        // to spare is a size, a type or a heap, not the budget.
+        if (const VkResult r = vkAllocateMemory(device, &alloc, nullptr, &b.memory); r != VK_SUCCESS)
+            ::nrvk::check(r, ("vkAllocateMemory (buffer of " + std::to_string(req.size >> 20) + " MB, type " +
+                              std::to_string(type) + ", heap " + std::to_string(mem.memoryTypes[type].heapIndex) +
+                              (host_visible ? ", host visible" : ", device local") +
+                              (device_address ? ", device address)" : ")")).c_str());
         NRVK_CHECK(vkBindBufferMemory(device, b.handle, b.memory, 0));
         if (device_address) {
             VkBufferDeviceAddressInfo ai{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
