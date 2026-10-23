@@ -1,7 +1,7 @@
 # lmxxf runtime source pin
 
 - Upstream: https://github.com/lmxxf/dlss5-on-amd-9070xt-porting
-- Commit: `c24e3a97cdf596d0c997cee7deda91c981d520ce` (synced 2026-10-19)
+- Commit: `8181b5f2ffd2c085ad2e05d4309a0c8d06b672cc` (0.45, synced 2026-10-24)
 - License: MIT, Copyright (c) 2026 Kien (`LICENSE`)
 - `hip_api.h` also carries the AMD HIP runtime API MIT notice from ROCm 7.1.1
 
@@ -185,6 +185,32 @@ and writes the network's. The sync script re-applies both.
   kinds) at 720p and 1080p. Small vs 71-block, frame time: 720p 5.9 -> 3.8 ms, 900p 7.5 -> 5.4, 1080p 10.3 -> 6.5, 1440p 10.3 ->
   6.5, 4K 10.8 -> 7.2, 1707x960 8.4 -> 5.4. Small is 34 dB from the 71-block model on one frame and edits less
   (28.6 dB from the input against 24.3).
+
+### Sync to 0.45 (2026-10-24)
+- Upstream `8181b5f2` (0.45 release; the code is `cde4cc6a`). Only `hip/deep_fast.hip`, `hip/vit_stream.inc`,
+  `hip/c512_qkv_attention_compact.inc`, `hip/build-modules.ps1`, `hip/SHA256SUMS` and
+  `Development/HIP/hip_reference_network.h` changed in the vendored set. The bridge, `src/` and the shaders are
+  unchanged; nothing to merge. Upstream's header already includes `<algorithm>`, so Patch A is a no-op.
+- What came in (speed only, same output): the compact ViT tail (contract/projection byte paths) for more processing
+  shapes (Original 1600x960 and 1920x1088, Small 1600x1024, 1344x768 and 1920x1088, besides 1920x1152); paired
+  producer/consumer ViT V fragments in head-major layout (`*_vfrag` kernels, `DLSS5_HIP_VIT_VFRAG=0` turns them off);
+  the Q/K fragment layout on top of it for Original 1600x960 and Small 1600x1024 / 1920x1152 only
+  (`DLSS5_HIP_VIT_QKFRAG=0` turns it off); C512 paired FP8 packing (`C512_PAIR_PACK 1` in the `c512-m32-mh` row).
+  Both switches default on when unset; the runtime does not set them. The compact tail stays limited to gfx1201 boards
+  named "9070 XT", as before.
+- Modules: still 40 per architecture, rebuilt here with the driver's COMGR. 8 changed on each architecture:
+  `c512-m32-mh`, `deep_fast-packed`, `deep_fast-packed-fast`, `vit-stream`, `vit-stream-fast` (new kernels or new
+  defines) and `deep_fast`, `c512-m32-deep`, `vit-wide-deep` (same code; only the `__hip_cuid` source hash differs,
+  since they compile `deep_fast.hip`). The other 32 rebuild byte-identical to the 0.44 set. `hip/SHA256SUMS`,
+  `modules/SHA256SUMS` and `modules-gfx1200/SHA256SUMS` hold the local hashes. `modules-gfx1200/modules.json` was
+  stale before and now matches its files.
+- e2e harness (RX 9070 XT, temporal on, 80 frames), against the 0.44 runtime and modules: byte-identical for the
+  71-block model and Small, 1 and 3 passes, at 1280x720, 1600x900, 1920x1080, 2560x1440, 3840x2160, 1707x960,
+  1920x1072 and 1600x1000. The V fragments ran at 720p (Small), the 900/1080 tiers and the larger sizes (both models),
+  1920x1072 and 1600x1000 (Small); Q/K at the 900 and 1080 tiers. Frame time, best of 4 ABBA medians, 0.44 -> 0.45 ms:
+  71-block 720p 6.19 -> 5.84, 900p 7.59 -> 7.52, 1080p 10.41 -> 10.30, 1440p 10.39 -> 10.32; Small 720p 4.31 -> 4.12,
+  900p 5.28 -> 5.23, 1080p 6.67 -> 6.57, 1440p 6.60 -> 6.53.
+- gfx1200 modules built but not run here (no RX 9060).
 
 ## Shipping modules (`.hsaco`)
 
