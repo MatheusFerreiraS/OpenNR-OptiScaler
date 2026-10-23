@@ -54,6 +54,7 @@ class CommandListProxy final : public ID3D12GraphicsCommandList10, public ILogic
     bool splitIneligible = false;
     std::atomic<bool> rawInterfaceEscaped { false }; // Lifetime-wide; an alias can outlive Reset.
     const char* splitIneligibleReason = nullptr;
+    char openQueryReason[80] {};
 
     void MarkSplitIneligible(const char* reason)
     {
@@ -240,11 +241,13 @@ class CommandListProxy final : public ID3D12GraphicsCommandList10, public ILogic
             MarkSplitIneligible(why ? why : "resource_state");
             return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
         }
+        queryBook.EndOpen(Cur());
         const HRESULT hr = logical.Split();
         if (FAILED(hr))
             return hr;
         // Seed continuation with captured producer bindings (IA/SO/VRS included).
         contState.ApplyTo(logical.Current());
+        queryBook.BeginOpen(logical.Current());
         // Producer Execute introduces a promotion/decay boundary: keep tracked
         // resources but apply Microsoft decay so continuation starts from the
         // post-Execute expectation (plan D / M3), not a wipe.
@@ -275,7 +278,10 @@ class CommandListProxy final : public ID3D12GraphicsCommandList10, public ILogic
         if (splitIneligibleReason)
             return splitIneligibleReason;
         if (!queryBook.CanSplit())
-            return "open_query";
+        {
+            queryBook.Describe(openQueryReason, sizeof(openQueryReason));
+            return openQueryReason;
+        }
         const char* reason = nullptr;
         resBook.CanSplit(&reason);
         return reason ? reason : "eligible";

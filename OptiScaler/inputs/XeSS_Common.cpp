@@ -159,6 +159,14 @@ xess_result_t hk_xessSetVelocityScale(xess_context_handle_t hContext, float x, f
     return XESS_RESULT_SUCCESS;
 }
 
+// The upscaler OptiScaler runs takes no such limit; accepted so the call never reaches the real library.
+xess_result_t hk_xessSetMaxResponsiveMaskValue(xess_context_handle_t hContext, float value)
+{
+    LOG_DEBUG("hContext: {}, value: {}", (size_t) hContext, value);
+
+    return XESS_RESULT_SUCCESS;
+}
+
 xess_result_t hk_xessForceLegacyScaleFactors(xess_context_handle_t hContext, bool force)
 {
     LOG_DEBUG("");

@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.5.6-opennr, the version in OptiScaler/resource.h.
+  Default product: OptiScaler-0.5.7-opennr, the version in OptiScaler/resource.h.
   The danielblnc runtime it drives is 0.8.0 (NeuralHub's neuralhub_host.dll; 0.6.0, 0.5.1, 0.5.0, 0.4.3, 0.4.2, 0.4.1,
   0.4.0, 0.3.1 and 0.3.0 still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
@@ -9,11 +9,11 @@
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.5.6-opennr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.5.7-opennr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.5.6-opennr',
+    [string]$Version = '0.5.7-opennr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',
@@ -257,7 +257,8 @@ MochizukiDynamicResolution=auto
 ; Off by default. Exposure 0 off, 1 auto (for games that do not hand their exposure over), 2 fixed
 ; (bias alone), either replacing the RenoDX stage's divisor; bias -8..8 EV; curve 0 none, 1 neutral,
 ; 2 reinhard, 3 filmic, 4 gt, 5 aces, 6 agx, in place of the stage's; contrast 0.5-2; saturation 0.05-2.
-MochizukiPreprocess=false
+; auto is off unless the game is one that needs it (Crimson Desert); true or false is kept as chosen.
+MochizukiPreprocess=auto
 MochizukiPreprocessExposure=1
 MochizukiPreprocessBias=0
 MochizukiPreprocessCurve=3
@@ -348,7 +349,7 @@ MochizukiRenoProxyAnchor=4
 MochizukiRenoPaperWhiteScale=2.5375
 MochizukiRenoDiffuseWhiteNits=203
 MochizukiRenoPQCalibration=1
-MochizukiRenoFeedMode=0
+MochizukiRenoFeedMode=auto
 MochizukiRenoNormGovernor=2
 MochizukiRenoNormCutAware=true
 MochizukiRenoNormAttackStops=4
@@ -371,9 +372,6 @@ AmdGraphicsWait=1
 AmdGraphicsUnsafe=0
 ; One danielblnc job the GPU holds this long (ms) switches NR off; switch it on again to retry. 0 turns it off.
 AmdStallStandDownMs=2000
-; danielblnc async: the game's queue does not wait for the network, the result lands a frame later (after the
-; finished frame, one pass). Read when the game starts.
-AmdAsync=false
 AmdNeuralLighting=true
 AmdNeuralLightingStrength=0.5
 ; auto: 0 and 2 with an upscaler, 0.8 and 4 on the final image (PresentWithoutUpscaler).

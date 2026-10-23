@@ -403,6 +403,15 @@ class FfxApiProxy
         }
 
         TryInstallFfxModuleHooksDx12(main_dx12);
+
+        // A game that imports the loader (BeamNG) has its own copy in memory before we start and calls it through its
+        // import table: hooked only in ours, its FSR never reached the inputs. The switchboard calls on through ours.
+        if (main_dx12_hooked.dll != nullptr && main_dx12_hooked.dll != main_dx12.dll)
+        {
+            TryInstallFfxModuleHooksDx12(main_dx12_hooked);
+            LOG_INFO("Hooked the game's own FFX module too: {:X}", (size_t) main_dx12_hooked.dll);
+        }
+
         InitFfxDx12_SR();
         InitFfxDx12_FG();
         InitFfxDx12_Denoiser();

@@ -913,13 +913,17 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
         return declineFrame("lmxxf: same-frame boundary unavailable (original Color; NO NR)");
     }
     const bool ineligible = logical && logical->IsSplitIneligible();
-    const char* reason = logical ? logical->SplitRejectionReason() : nullptr;
+    char status[160] {};
+    if (ineligible)
+    {
+        const char* reason = logical->SplitRejectionReason();
+        std::snprintf(status, sizeof(status), "%s: split ineligible: %s (NO NR)", Lmxxf() ? "lmxxf" : "mochizuki",
+                      reason ? reason : "unknown");
+    }
     if (logical)
         logical->Release();
     if (ineligible)
     {
-        char status[128] {};
-        std::snprintf(status, sizeof(status), "lmxxf: split ineligible: %s (NO NR)", reason ? reason : "unknown");
         static std::atomic<uint32_t> s_ineligibleCount { 0 };
         const uint32_t c = s_ineligibleCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (c <= 10 || (c <= 100 && (c % 20 == 0)) || (c <= 1000 && (c % 100 == 0)) || (c % 1000 == 0))

@@ -16,6 +16,7 @@ xess_result_t hk_xessDestroyContext(xess_context_handle_t hContext);
 xess_result_t hk_xessDestroyContextDx11(xess_context_handle_t hContext);
 xess_result_t hk_xessSetVelocityScale(xess_context_handle_t hContext, float x, float y);
 xess_result_t hk_xessForceLegacyScaleFactors(xess_context_handle_t hContext, bool force);
+xess_result_t hk_xessSetMaxResponsiveMaskValue(xess_context_handle_t hContext, float value);
 xess_result_t hk_xessGetExposureMultiplier(xess_context_handle_t hContext, float* pScale);
 xess_result_t hk_xessGetInputResolution(xess_context_handle_t hContext, const xess_2d_t* pOutputResolution,
                                         xess_quality_settings_t qualitySettings, xess_2d_t* pInputResolution);

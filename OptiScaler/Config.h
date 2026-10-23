@@ -122,6 +122,16 @@ template <class T, HasDefaultValue defaultState = WithDefault> class CustomOptio
         return this->value();
     }
 
+    // For a key a game quirk may change: what the player set is written even when it is the default, so a quirk
+    // that acts only on auto does not undo it; a quirk's own value, or none, is written as auto.
+    constexpr std::optional<T> value_as_chosen()
+    {
+        if (_volatile)
+            return _configIni;
+
+        return *this;
+    }
+
     constexpr std::optional<T> value_for_config()
         requires(defaultState != WithDefault)
     {
@@ -377,9 +387,6 @@ class Config
     CustomOptional<int> AmdGraphicsWait { 1 };
     // One danielblnc job the GPU holds this long stands NR down for the session (StallWatch.h). 0 = off.
     CustomOptional<int> AmdStallStandDownMs { 2000 };
-    // danielblnc async: the game's queue does not wait for the network, which runs after the finished frame and
-    // lands a frame late. Read once per session.
-    CustomOptional<bool> AmdAsync { false };
     // NR host: daniel (default), lmxxf, mochizuki, off. Missing key = daniel. Restart to change.
     CustomOptional<std::string> NrBackend { "daniel" };
     // Host compute runtime written to dlssnr_amd_host\neuralhub.ini ([Compute] Backend). auto: D3D12 when an

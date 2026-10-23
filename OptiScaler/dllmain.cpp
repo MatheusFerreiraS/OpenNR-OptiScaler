@@ -1454,6 +1454,18 @@ static void printQuirks(flag_set<GameQuirk>& quirks)
     if (quirks & GameQuirk::UnlockPathTracingMenu)
         stringQuirks.push_back("Unlock Path Tracing / Ray Reconstruction menu options");
 
+    if (quirks & GameQuirk::MochizukiGameExposureFeed)
+        stringQuirks.push_back("mochizuki's RenoDX feed takes the game's exposure");
+
+    if (quirks & GameQuirk::HideFsr4FromGame)
+        stringQuirks.push_back("FSR 4 left out of the game's FSR version list");
+
+    if (quirks & GameQuirk::DisableXeSSInputs)
+        stringQuirks.push_back("XeSS inputs disabled by default");
+
+    if (quirks & GameQuirk::MochizukiPreprocessOn)
+        stringQuirks.push_back("mochizuki's pre-process on by default");
+
     state->detectedQuirks.append_range(stringQuirks);
     for (auto& stringQuirk : stringQuirks)
         spdlog::info("Quirk: {}", stringQuirk);
@@ -1509,6 +1521,11 @@ static void CheckQuirks(bool isNvidia)
         Config::Instance()->EnableFfxInputs.set_volatile_value(false);
     else
         quirks.reset(GameQuirk::DisableFFXInputs);
+
+    if (quirks & GameQuirk::DisableXeSSInputs && !Config::Instance()->EnableXeSSInputs.has_value())
+        Config::Instance()->EnableXeSSInputs.set_volatile_value(false);
+    else
+        quirks.reset(GameQuirk::DisableXeSSInputs);
 
     if (quirks & GameQuirk::DisableDxgiSpoofing && !Config::Instance()->DxgiSpoofing.has_value())
         Config::Instance()->DxgiSpoofing.set_volatile_value(false);
@@ -1700,6 +1717,18 @@ static void CheckQuirks(bool isNvidia)
     else
         quirks.reset(GameQuirk::DoNotLoadAmdxc64);
 
+    if (quirks & GameQuirk::MochizukiGameExposureFeed && !Config::Instance()->MochizukiRenoFeedMode.has_value())
+    {
+        Config::Instance()->MochizukiRenoFeedMode.set_volatile_value(2);
+    }
+    else
+        quirks.reset(GameQuirk::MochizukiGameExposureFeed);
+
+    if (quirks & GameQuirk::MochizukiPreprocessOn && !Config::Instance()->MochizukiPreprocess.has_value())
+        Config::Instance()->MochizukiPreprocess.set_volatile_value(true);
+    else
+        quirks.reset(GameQuirk::MochizukiPreprocessOn);
+
     // For Luma, we assume if Luma addon in game folder it's used
     const auto dir = Util::ExePath().parent_path();
     bool lumaDetected = false;
@@ -1809,6 +1838,14 @@ void CheckForExcludedProcess()
 {
     std::wstring exeLower = Util::ExePath().filename().wstring();
     std::transform(exeLower.begin(), exeLower.end(), exeLower.begin(), ::towlower);
+
+    // Chromium/CEF children (BeamNG's UI) run the game's own exe with --type=renderer/gpu-process/...: they would
+    // load us too and truncate the main process's OptiScaler.log.
+    if (wcsstr(GetCommandLineW(), L" --type=") != nullptr)
+    {
+        _passThruMode = true;
+        return;
+    }
 
     // If target process is set, only that process is hooked
     if (Config::Instance()->TargetProcess.has_value())

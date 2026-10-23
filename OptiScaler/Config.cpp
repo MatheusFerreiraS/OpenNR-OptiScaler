@@ -576,7 +576,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdSpinDraw.set_from_config(readInt("DlssNr", "AmdSpinDraw"));
             AmdGraphicsWait.set_from_config(readInt("DlssNr", "AmdGraphicsWait"));
             AmdStallStandDownMs.set_from_config(readInt("DlssNr", "AmdStallStandDownMs"));
-            AmdAsync.set_from_config(readBool("DlssNr", "AmdAsync"));
             NrBackend.set_from_config(readString("DlssNr", "NrBackend", true));
             HostComputeBackend.set_from_config(readString("DlssNr", "HostComputeBackend"));
             HostZeroCopy.set_from_config(readBool("DlssNr", "HostZeroCopy"));
@@ -1794,7 +1793,6 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "AmdGraphicsWait", GetIntValue(Instance()->AmdGraphicsWait.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdStallStandDownMs",
                      GetIntValue(Instance()->AmdStallStandDownMs.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "AmdAsync", GetBoolValue(Instance()->AmdAsync.value_for_config()).c_str());
         ini.SetValue("DlssNr", "NrBackend", Instance()->NrBackend.value_for_config().value_or("auto").c_str());
         ini.SetValue("DlssNr", "HostComputeBackend",
                      Instance()->HostComputeBackend.value_for_config().value_or("auto").c_str());
@@ -1850,7 +1848,7 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "MochizukiDynamicResolution",
                      Instance()->MochizukiDynamicResolution.value_for_config().value_or("auto").c_str());
         ini.SetValue("DlssNr", "MochizukiPreprocess",
-                     GetBoolValue(Instance()->MochizukiPreprocess.value_for_config()).c_str());
+                     GetBoolValue(Instance()->MochizukiPreprocess.value_as_chosen()).c_str());
         ini.SetValue("DlssNr", "MochizukiPreprocessExposure",
                      GetIntValue(Instance()->MochizukiPreprocessExposure.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiPreprocessBias",
@@ -1877,6 +1875,9 @@ bool Config::SaveIni()
 #undef MZR_F
 #undef MZR_U
 #undef MZR_B
+        // RE9's quirk acts on auto (GameQuirk::MochizukiGameExposureFeed): the player's Auto stays 0
+        ini.SetValue("DlssNr", "MochizukiRenoFeedMode",
+                     GetIntValue(Instance()->MochizukiRenoFeedMode.value_as_chosen()).c_str());
         ini.SetValue("DlssNr", "AmdGraphicsUnsafe",
                      GetIntValue(Instance()->AmdGraphicsUnsafe.value_for_config()).c_str());
         ini.SetValue("AmdRtgi", "Enabled", GetBoolValue(Instance()->AmdRtgiEnabled.value_for_config()).c_str());

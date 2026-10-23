@@ -332,7 +332,8 @@ int main()
         Check(device->CreateQueryHeap(&qhd, IID_PPV_ARGS(&qh)), "occlusion query heap");
         px->BeginQuery(qh, D3D12_QUERY_TYPE_OCCLUSION, 0);
         Require(px->IsSplitIneligible(), "open query blocks split");
-        Require(std::strcmp(px->SplitRejectionReason(), "open_query") == 0, "open query reason");
+        Require(std::strcmp(px->SplitRejectionReason(), "open_query(OCCLUSION index 0, 1 open)") == 0,
+                "open query reason");
         Require(FAILED(px->SplitSegments()), "split refused during query");
         px->EndQuery(qh, D3D12_QUERY_TYPE_OCCLUSION, 0);
         Require(!px->IsSplitIneligible(), "completed query permits split");
@@ -343,6 +344,29 @@ int main()
         raw->Release();
         qh->Release();
         a->Release();
+        // An open statistics query is ended before the cut and begun again after it.
+        ID3D12CommandAllocator *sa = nullptr;
+        Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&sa)), "stats_q_a");
+        ID3D12GraphicsCommandList *sraw = nullptr;
+        Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, sa, nullptr, IID_PPV_ARGS(&sraw)),
+              "stats_q_raw");
+        DlssNr::Submission::CommandListProxy *spx = nullptr;
+        Check(DlssNr::Submission::CommandListProxy::Create(device, sa, sraw, &spx), "stats_q_proxy");
+        ID3D12QueryHeap *sqh = nullptr;
+        D3D12_QUERY_HEAP_DESC sqhd {};
+        sqhd.Type = D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS;
+        sqhd.Count = 1;
+        Check(device->CreateQueryHeap(&sqhd, IID_PPV_ARGS(&sqh)), "statistics query heap");
+        spx->BeginQuery(sqh, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0);
+        Require(!spx->IsSplitIneligible(), "open statistics query permits split");
+        Check(spx->SplitSegments(), "split during statistics query");
+        spx->EndQuery(sqh, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, 0);
+        Check(spx->ExecuteOn(queue), "execute statistics query split");
+        WaitIdle(device, queue);
+        spx->Release();
+        sraw->Release();
+        sqh->Release();
+        sa->Release();
     }
 
     // Enhanced barriers (Forza Horizon 6) permit the cut; only a split barrier open across it refuses.
