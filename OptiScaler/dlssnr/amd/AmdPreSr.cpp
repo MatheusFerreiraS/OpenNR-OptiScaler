@@ -854,10 +854,6 @@ struct Backend::Impl
     UINT width = 0, height = 0, activePasses = 0, lastPasses = 0;
     // 0.8.0: the passes its one module runs inside each job (activePasses is 1 there).
     UINT runtimePasses = 1;
-    // The runtime's timing, set before the first pass loads. In async its job counter (L->jobDone) never moves:
-    // a slot is done once its list ran, since the runtime copied the inputs into its own staging there.
-    bool async = false;
-    UINT64 asyncRefusals = 0;
     HipSetFn hipSet = nullptr;
     int hipDevice = -1;
     const AmdLayout* L = nullptr;
@@ -994,7 +990,7 @@ struct Backend::Impl
         bool timedOut = false;
         // Use this slot's recorded pass count, not the global config.
         // 0 is valid (the runtime refused); only kPassUnset means "never recorded".
-        const UINT passCount = (sl.passCount == Slot::kPassUnset || async) ? 0u : sl.passCount;
+        const UINT passCount = sl.passCount == Slot::kPassUnset ? 0u : sl.passCount;
         for (UINT i = 0; i < passCount; ++i)
         {
             const auto done = static_cast<UINT>(
@@ -1152,7 +1148,7 @@ struct Backend::Impl
 #endif
         // Use THIS slot's recorded pass count, not the global activePasses
         // (the next Record may already have rewritten it).
-        const UINT slotPasses = (slots[k].passCount == Slot::kPassUnset || async) ? 0u : slots[k].passCount;
+        const UINT slotPasses = (slots[k].passCount == Slot::kPassUnset) ? 0u : slots[k].passCount;
         unsigned iterations = 0;
 #ifdef AMD_RETIRE_DIAGNOSTICS
         bool nativeAtEntry = true; // first poll result: did we wait at all?
@@ -1494,9 +1490,7 @@ struct Backend::Impl
         // routed into this module pass the gates on an AMD GPU. Idempotent, once per process.
         if (L->ngxPublishSlot)
             ArmDlssNgx(h, L, L->name, [this](const std::string& s) { Log(s); });
-        At<uint8_t>(h, L->configuredInline) = async ? 0 : 1;
-        if (async)
-            Log("AMD runtime async: the game's queue does not wait for the network; the result lands a frame late");
+        At<uint8_t>(h, L->configuredInline) = 1;
         At<uint8_t>(h, L->interop) = 1;
         At<uint8_t>(h, L->enabled) = 1;
         if (L->fsrInputs)
@@ -1527,7 +1521,7 @@ struct Backend::Impl
             throw std::runtime_error("AMD engine initialization failed");
         // 0.8.0 keeps the inline switch in the engine object, which init constructs with inline on.
         if (host)
-            At<uint8_t>(h, L->configuredInline) = async ? 0 : 1;
+            At<uint8_t>(h, L->configuredInline) = 1;
         // SpinDraw must be set before the first staging Record so A can create
         // its 1-pixel-draw PSO. AmdGraphicsWait=1 requests new wait; otherwise original wait.
         if (L->spinDraw)
@@ -1626,10 +1620,7 @@ Backend::Backend(ID3D12Device* d, ID3D12CommandQueue* q, const std::filesystem::
         const auto pass1 = dir / (std::wstring(modules) + L"1.dll");
         const AmdLayout* layout = IdentifyRuntime(pass1);
         if (layout && layout->abi >= 2 && layout->ngxPublishSlot)
-        {
-            p->async = Config::Instance()->AmdAsync.value_or_default();
             p->InitPass(0);
-        }
     }
     catch (const std::exception& e)
     {
@@ -1935,9 +1926,7 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         }
         if (f.motion->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
             throw std::runtime_error("Unsupported depth-stencil motion buffer: " + Layout(f.motion));
-        if (!p->runtime[0])
-            p->async = cfg.async;
-        p->activePasses = p->async ? 1u : std::clamp(cfg.passes, 1u, 3u);
+        p->activePasses = std::clamp(cfg.passes, 1u, 3u);
         // 0.8.0 is one module whatever the pass count, and runs the passes itself; pass 1 tells which runtime this is.
         if (p->activePasses > 1 && !p->runtime[0])
             p->InitPass(0);
@@ -2571,10 +2560,6 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                 p->Log("AMD pass native failure: " + std::to_string(i + 1) + " job=" + std::to_string(sl->jobs[i]));
                 break;
             }
-            // Async declines every frame that arrives while the network is still on an earlier one, so there a
-            // refusal is routine and only a sample is logged.
-            if (!recorded && p->async && ++p->asyncRefusals % 600 != 1)
-                break;
             if (!recorded)
             {
                 // No matching pending list means we must not claim publication.

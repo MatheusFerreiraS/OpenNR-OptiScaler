@@ -48,8 +48,6 @@ std::string Status();
 bool StandDownIfTripped();
 // Set when the stall watch switched NR off, cleared once NR runs again; what the menu shows next to Enabled.
 std::string StandDownNote();
-// AmdAsync as the INI had it when the session first asked: the runtime latches its timing when it starts.
-bool AsyncSession();
 // The runtime's own status line (for mochizuki: network size and time, or the build in progress), refreshed by
 // the render thread at most twice a second; empty until a session runs. Never waits on a frame being recorded.
 std::string RuntimeStatus();

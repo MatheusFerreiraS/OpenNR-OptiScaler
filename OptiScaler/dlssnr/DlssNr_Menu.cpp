@@ -393,8 +393,8 @@ static void UnsetPerson(Config* c)
 }
 
 // Every control a runtime's page shows, except where NR runs (Enable, NR without upscaling, the placement before or
-// after SR and RR, the runtime choice), what the installer sets (AmdAsync), what needs a restart (MochizukiAco) and
-// the exposure anchors captured in this game.
+// after SR and RR, the runtime choice), what needs a restart (MochizukiAco) and the exposure anchors captured in
+// this game.
 static void ResetLmxxf(Config* c)
 {
     Unset(c->DlssNrPasses, c->DlssNrTransferStrength, c->DlssNrColourStrength, c->DlssNrDebugView, c->LmxxfTemporal,
@@ -708,9 +708,8 @@ void RenderMenu(Config* config, float menuResScale)
             HelpMarker("How much of the model's colour change reaches the frame. Above 1 it is"
                        "\nexaggerated, up to twice its size at 2.");
             RenoCompositionControls(config);
-            // Async runs one pass whatever the slider says.
             ImGui::SeparatorText("Person protection");
-            PersonProtectionControls(config, DlssNr::AmdBridge::AsyncSession() ? 1u : UINT(passes));
+            PersonProtectionControls(config, UINT(passes));
             ImGui::SeparatorText("Speed");
             bool vitReuse = config->LmxxfVitReuse.value_or_default();
             if (ImGui::Checkbox("Reuse on still scenes", &vitReuse))
@@ -1218,23 +1217,8 @@ void RenderMenu(Config* config, float menuResScale)
                                  "\nthat frame: at 50% a 4K picture is reduced to 1080p, the model runs on"
                                  "\nit, and its answer is enlarged back to fill the frame.");
 
-                int timing = config->AmdAsync.value_or_default() ? 1 : 0;
-                if (ImGui::Combo("Timing", &timing, "Same frame\0Async\0"))
-                    config->AmdAsync = timing == 1;
-                HelpMarker("Same frame: the game's GPU queue waits for the network every frame, and the result goes"
-                           "\non that frame. Async: the queue does not wait, and the result lands one frame later."
-                           "\ndanielblnc traces the freezes some players met to those waits, so Async may avoid"
-                           "\nthem; it does not promise to."
-                           "\n\nAsync runs after the finished frame, whichever point is chosen above (a correction"
-                           "\none frame late would build up in the upscaler's history), with one pass."
-                           "\nIt takes effect the next time the game starts.");
-                if (timing == 1 != DlssNr::AmdBridge::AsyncSession())
-                    ImGui::TextDisabled("Restart the game to apply.");
-
-                // One slider, bound to whichever placement is live (async runs after the finished frame). The
-                // two keep separate values, so switching back and forth does not make you retune each time.
-                if (DlssNr::AmdBridge::AsyncSession())
-                    placement = 1;
+                // One slider, bound to whichever placement is live. The two keep separate values, so
+                // switching back and forth does not make you retune each time.
                 auto& modelScale = placement == 0 ? config->AmdNrScale : config->DlssNrRRWorkingScale;
                 static float scale = 100.f;
                 static bool editingScale = false;
@@ -1732,9 +1716,7 @@ void RenderMenu(Config* config, float menuResScale)
                 pendingPasses = -1;
             }
 
-            if (amdPasses && DlssNr::AmdBridge::AsyncSession())
-                ImGui::TextDisabled("Async runs one pass whatever this says.");
-            else if (amdPasses)
+            if (amdPasses)
                 ImGui::TextDisabled("Three is the ceiling: one runtime module per pass.");
 
             // The lift, its tooltip and its running-cost line all describe the NVIDIA feature

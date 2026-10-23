@@ -1130,11 +1130,6 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         f.exposureState = static_cast<D3D12_RESOURCE_STATES>(cfg.ExposureResourceBarrier.value());
     auto s = SettingsFromConfig(cfg, sessionScale);
     s.fixedSeed = cfg.AmdFixedSeed.value_or_default();
-    // The upscaler path alone takes async: the present routes (PresentWithoutUpscaler) have not been run with it.
-    s.async = AsyncSession();
-    // Async chains one pass: each would hand the next a frame-old answer.
-    if (s.async)
-        s.passes = 1u;
     // Evaluate cut: Split proxy + SetBetween(EnqueueHip). Live only when SubmissionHooksWanted() (NrBackend=lmxxf
     // or mochizuki).
     DlssNr::Backend::LmxxfCut::OnEvaluateBeforeRecord(cmd);
@@ -1380,11 +1375,6 @@ bool GraphicsRestartNeeded(UINT activePasses)
     if (auto b = backend.load())
         return b->GraphicsRestartNeeded(activePasses);
     return false;
-}
-bool AsyncSession()
-{
-    static const bool async = Config::Instance()->AmdAsync.value_or_default();
-    return async;
 }
 
 bool StandDownIfTripped()
