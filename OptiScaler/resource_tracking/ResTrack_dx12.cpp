@@ -1,8 +1,6 @@
 #include "pch.h"
-
-#include <dlssnr/DlssNr_ExposureScan.h>
-
 #include "ResTrack_dx12.h"
+#include <dlssnr/DlssNr_ExposureScan.h>
 
 #include <Config.h>
 #include <State.h>
@@ -13,9 +11,10 @@
 #include <algorithm>
 #include <future>
 
+#include <d3dcommon.h>
+#include <detours/detours.h>
 #include <magic_enum_utility.hpp>
 #include <include/d3dx/d3dx12.h>
-#include <detours/detours.h>
 
 #ifndef STDMETHODCALLTYPE
 #include <Unknwn.h> // or <objbase.h> to get STDMETHODCALLTYPE
@@ -38,15 +37,6 @@ typedef void(STDMETHODCALLTYPE* PFN_CreateUnorderedAccessView)(ID3D12Device* Thi
                                                                ID3D12Resource* pCounterResource,
                                                                D3D12_UNORDERED_ACCESS_VIEW_DESC* pDesc,
                                                                D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor);
-typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateGraphicsPipelineState)(ID3D12Device* This,
-                                                                    const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc,
-                                                                    REFIID riid, void** ppPipelineState);
-typedef HRESULT(STDMETHODCALLTYPE* PFN_CreateComputePipelineState)(ID3D12Device* This,
-                                                                   const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc,
-                                                                   REFIID riid, void** ppPipelineState);
-typedef HRESULT(STDMETHODCALLTYPE* PFN_CreatePipelineState)(ID3D12Device2* This,
-                                                            const D3D12_PIPELINE_STATE_STREAM_DESC* pDesc, REFIID riid,
-                                                            void** ppPipelineState);
 typedef void(STDMETHODCALLTYPE* PFN_CreateDepthStencilView)(ID3D12Device* This, ID3D12Resource* pResource,
                                                             const D3D12_DEPTH_STENCIL_VIEW_DESC* pDesc,
                                                             D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor);
@@ -72,7 +62,7 @@ typedef void(STDMETHODCALLTYPE* PFN_CopyDescriptorsSimple)(ID3D12Device* This, U
                                                            D3D12_CPU_DESCRIPTOR_HANDLE SrcDescriptorRangeStart,
                                                            D3D12_DESCRIPTOR_HEAP_TYPE DescriptorHeapsType);
 
-// Command list hooks for FG
+// Command list hooks for HUDfix
 typedef void(STDMETHODCALLTYPE* PFN_OMSetRenderTargets)(ID3D12GraphicsCommandList* This,
                                                         UINT NumRenderTargetDescriptors,
                                                         D3D12_CPU_DESCRIPTOR_HANDLE* pRenderTargetDescriptors,
@@ -92,34 +82,14 @@ typedef void(STDMETHODCALLTYPE* PFN_DrawInstanced)(ID3D12GraphicsCommandList* Th
                                                    UINT StartInstanceLocation);
 typedef void(STDMETHODCALLTYPE* PFN_Dispatch)(ID3D12GraphicsCommandList* This, UINT ThreadGroupCountX,
                                               UINT ThreadGroupCountY, UINT ThreadGroupCountZ);
-typedef void(STDMETHODCALLTYPE* PFN_ExecuteBundle)(ID3D12GraphicsCommandList* This,
-                                                   ID3D12GraphicsCommandList* pCommandList);
-typedef void(STDMETHODCALLTYPE* PFN_ResourceBarrier)(ID3D12GraphicsCommandList* This, UINT NumBarriers,
-                                                     const D3D12_RESOURCE_BARRIER* pBarriers);
-typedef void(STDMETHODCALLTYPE* PFN_SetPipelineState)(ID3D12GraphicsCommandList* This,
-                                                      ID3D12PipelineState* pPipelineState);
 typedef HRESULT(STDMETHODCALLTYPE* PFN_Reset)(ID3D12GraphicsCommandList* This, ID3D12CommandAllocator* pAllocator,
                                               ID3D12PipelineState* pInitialState);
-typedef void(STDMETHODCALLTYPE* PFN_SetMarker)(ID3D12GraphicsCommandList* This, UINT Metadata, const void* pData,
-                                               UINT Size);
-typedef void(STDMETHODCALLTYPE* PFN_BeginEvent)(ID3D12GraphicsCommandList* This, UINT Metadata, const void* pData,
-                                                UINT Size);
-typedef void(STDMETHODCALLTYPE* PFN_EndEvent)(ID3D12GraphicsCommandList* This);
-typedef HRESULT(STDMETHODCALLTYPE* PFN_Close)(ID3D12GraphicsCommandList* This);
-
-typedef void(STDMETHODCALLTYPE* PFN_ExecuteCommandLists)(ID3D12CommandQueue* This, UINT NumCommandLists,
-                                                         ID3D12CommandList* const* ppCommandLists);
-
-typedef ULONG(STDMETHODCALLTYPE* PFN_Release)(ID3D12Resource* This);
-typedef ULONG(STDMETHODCALLTYPE* PFN_PsoRelease)(ID3D12PipelineState* This);
+typedef void(STDMETHODCALLTYPE* PFN_ClearState)(ID3D12GraphicsCommandList* This, ID3D12PipelineState* pPipelineState);
 
 // Original method calls for device
 static PFN_CreateRenderTargetView o_CreateRenderTargetView = nullptr;
 static PFN_CreateShaderResourceView o_CreateShaderResourceView = nullptr;
 static PFN_CreateUnorderedAccessView o_CreateUnorderedAccessView = nullptr;
-static PFN_CreateGraphicsPipelineState o_CreateGraphicsPipelineState = nullptr;
-static PFN_CreateComputePipelineState o_CreateComputePipelineState = nullptr;
-static PFN_CreatePipelineState o_CreatePipelineState = nullptr;
 static PFN_CreateDepthStencilView o_CreateDepthStencilView = nullptr;
 static PFN_CreateConstantBufferView o_CreateConstantBufferView = nullptr;
 static PFN_CreateSampler o_CreateSampler = nullptr;
@@ -133,24 +103,8 @@ static PFN_CopyDescriptorsSimple o_CopyDescriptorsSimple = nullptr;
 static PFN_Dispatch o_Dispatch = nullptr;
 static PFN_DrawInstanced o_DrawInstanced = nullptr;
 static PFN_DrawIndexedInstanced o_DrawIndexedInstanced = nullptr;
-static PFN_ExecuteBundle o_ExecuteBundle = nullptr;
-static PFN_ResourceBarrier o_ResourceBarrier = nullptr;
-static PFN_SetPipelineState o_SetPipelineState = nullptr;
 static PFN_Reset o_Reset = nullptr;
-static PFN_SetMarker o_SetMarker = nullptr;
-static PFN_BeginEvent o_BeginEvent = nullptr;
-static PFN_EndEvent o_EndEvent = nullptr;
-static PFN_Close o_Close = nullptr;
-
-static PFN_ExecuteCommandLists o_ExecuteCommandLists = nullptr;
-static PFN_Release o_Release = nullptr;
-static PFN_PsoRelease o_PsoRelease = nullptr;
-// Detours rewrites the function body, not the COM vtable slot. Keep the original resource
-// Release entry so a PSO that shares the same implementation can reuse hkRelease instead of
-// attempting to detour the already-detoured address a second time.
-static PVOID gResourceReleaseEntry = nullptr;
-
-static ULONG hkPsoRelease(ID3D12PipelineState* This);
+static PFN_ClearState o_ClearState = nullptr;
 
 static PFN_OMSetRenderTargets o_OMSetRenderTargets = nullptr;
 static PFN_SetGraphicsRootDescriptorTable o_SetGraphicsRootDescriptorTable = nullptr;
@@ -165,9 +119,6 @@ static ankerl::unordered_dense::map<ID3D12GraphicsCommandList*,
 
 static std::shared_mutex _heapRegistryMutex;
 static std::vector<std::shared_ptr<HeapInfo>> fgHeaps;
-
-static std::set<void*> _notFoundCmdLists;
-static std::unordered_map<FG_ResourceType, void*> _resCmdList[BUFFER_COUNT];
 
 struct HeapCacheTLS
 {
@@ -186,990 +137,82 @@ static std::atomic<unsigned> gHeapGeneration { 1 };
 static thread_local HeapCacheTLS cacheGR;
 static thread_local HeapCacheTLS cacheCR;
 
-static std::atomic<bool> gRRResourceInspectorEnabled { false };
-static std::atomic<int> gRRResourceCandidateIndex { 0 };
-static std::atomic<uintptr_t> gRRResourceCandidateAddress { 0 };
-static std::atomic<uint32_t> gRRResourceChannel { 0 };
-static std::atomic<float> gRRResourceViewScale { 1.0f };
-static std::atomic<uint64_t> gRRResourceInspectorFrame { 0 };
-static std::mutex gRRResourceCandidateMutex;
-static std::vector<RRResourceCandidate> gRRResourceCandidates;
-static std::mutex gRRResourceStateMutex;
-static std::unordered_map<ID3D12Resource*, D3D12_RESOURCE_STATES> gRRResourceStates;
-struct RRResourceActivity
+void __stdcall ResTrack_Dx12::ResourceDestroyed(void* data)
 {
-    uint64_t lastWriteFrame = 0;
-    uint64_t previousWriteFrame = 0;
-    uint64_t writtenFrameCount = 0;
-    uint64_t writeTransitionCount = 0;
-    uint64_t passWriteCount = 0;
-    std::string lastWritePass;
-    bool emissivePassMatch = false;
-    bool writeObserved = false;
-};
-static std::unordered_map<ID3D12Resource*, RRResourceActivity> gRRResourceActivity;
-struct RRTrackedResourceViews
-{
-    uint32_t srvViews = 0;
-    uint32_t uavViews = 0;
-    uint32_t rtvViews = 0;
-};
-static std::mutex gRRTrackedResourceMutex;
-static std::unordered_map<ID3D12Resource*, RRTrackedResourceViews> gRRTrackedResources;
-struct RRCommandListMarkerState
-{
-    std::vector<std::string> stack;
-    std::string lastMarker;
-};
-struct RRMarkerInventoryItem
-{
-    uint64_t count = 0;
-    uint64_t lastFrame = 0;
-};
-static std::mutex gRRMarkerMutex;
-static std::unordered_map<ID3D12GraphicsCommandList*, RRCommandListMarkerState> gRRCommandListMarkers;
-static std::unordered_map<std::string, RRMarkerInventoryItem> gRRMarkerInventory;
+    if (data == nullptr || State::Instance().isShuttingDown)
+        return;
 
-enum class RRPsoKind : uint8_t
-{
-    Unknown = 0,
-    Graphics = 1,
-    Compute = 2,
-    Stream = 3,
-};
+    auto* resource = static_cast<ID3D12Resource*>(data);
+    std::vector<TrackedResourceSlot> toClean;
 
-struct RRPsoMetadata
-{
-    uint64_t id = 0;
-    uint64_t hash = 0;
-    RRPsoKind kind = RRPsoKind::Unknown;
-};
-
-struct RRPsoProducerStats
-{
-    RRPsoMetadata metadata {};
-    uint64_t hits = 0;
-    uint64_t lastFrame = 0;
-    bool ambiguous = false;
-};
-
-struct RRCommandListPsoState
-{
-    ID3D12PipelineState* currentPso = nullptr;
-    std::vector<ID3D12Resource*> renderTargets;
-    ID3D12PipelineState* lastGraphicsPso = nullptr;
-    uint64_t renderTargetGeneration = 0;
-    uint64_t lastGraphicsGeneration = std::numeric_limits<uint64_t>::max();
-    uint64_t lastGraphicsFrame = std::numeric_limits<uint64_t>::max();
-    ID3D12PipelineState* lastComputePso = nullptr;
-    uint32_t dispatchesSinceBarrier = 0;
-};
-
-static std::atomic<uint64_t> gRRNextPsoId { 1 };
-static std::mutex gRRPsoMutex;
-static std::unordered_map<ID3D12PipelineState*, RRPsoMetadata> gRRPsoMetadata;
-static std::unordered_map<ID3D12GraphicsCommandList*, RRCommandListPsoState> gRRCommandListPsoStates;
-static std::unordered_map<ID3D12Resource*, std::unordered_map<ID3D12PipelineState*, RRPsoProducerStats>>
-    gRRResourcePsoProducers;
-
-static uint64_t HashRRBytes(const void* data, size_t size, uint64_t hash = 1469598103934665603ull)
-{
-    if (data == nullptr || size == 0)
-        return hash;
-
-    const auto* bytes = static_cast<const uint8_t*>(data);
-    for (size_t index = 0; index < size; ++index)
     {
-        hash ^= bytes[index];
-        hash *= 1099511628211ull;
-    }
-    return hash;
-}
-
-static uint64_t HashRRShader(const D3D12_SHADER_BYTECODE& shader, uint64_t hash)
-{
-    return HashRRBytes(shader.pShaderBytecode, shader.BytecodeLength, hash);
-}
-
-static uint64_t HashRRGraphicsPipeline(const D3D12_GRAPHICS_PIPELINE_STATE_DESC& desc)
-{
-    uint64_t hash = HashRRShader(desc.VS, 1469598103934665603ull);
-    hash = HashRRShader(desc.PS, hash);
-    hash = HashRRShader(desc.DS, hash);
-    hash = HashRRShader(desc.HS, hash);
-    hash = HashRRShader(desc.GS, hash);
-    hash = HashRRBytes(&desc.NumRenderTargets, sizeof(desc.NumRenderTargets), hash);
-    hash = HashRRBytes(desc.RTVFormats, sizeof(desc.RTVFormats), hash);
-    hash = HashRRBytes(&desc.DSVFormat, sizeof(desc.DSVFormat), hash);
-    hash = HashRRBytes(&desc.PrimitiveTopologyType, sizeof(desc.PrimitiveTopologyType), hash);
-    hash = HashRRBytes(&desc.SampleDesc, sizeof(desc.SampleDesc), hash);
-    return hash;
-}
-
-static uint64_t HashRRComputePipeline(const D3D12_COMPUTE_PIPELINE_STATE_DESC& desc)
-{
-    return HashRRShader(desc.CS, 1469598103934665603ull);
-}
-
-// Caller has proved the object is on its final external reference. Erasing by address is safe
-// for both the dedicated PSO hook and the shared-IUnknown path through hkRelease; a resource
-// address that has no PSO metadata exits immediately.
-static void CleanupRRPsoReferences(void* object)
-{
-    auto* pipelineState = static_cast<ID3D12PipelineState*>(object);
-    std::scoped_lock psoLock(gRRPsoMutex);
-    if (gRRPsoMetadata.erase(pipelineState) == 0)
-        return;
-
-    for (auto& [resource, producers] : gRRResourcePsoProducers)
-        producers.erase(pipelineState);
-
-    // Recorded bindings would re-register the dying pointer through later draws/dispatches on
-    // these command lists, resurrecting metadata for an address the driver may recycle.
-    for (auto& [commandList, state] : gRRCommandListPsoStates)
-    {
-        if (state.currentPso == pipelineState)
-            state.currentPso = nullptr;
-        if (state.lastGraphicsPso == pipelineState)
-            state.lastGraphicsPso = nullptr;
-        if (state.lastComputePso == pipelineState)
-            state.lastComputePso = nullptr;
-    }
-}
-
-// Metadata is keyed by raw pointer, so an entry must die with its object:
-// otherwise a new PSO on a recycled address inherits the dead PSO's id and
-// hash and dead entries pile up over a long session. The Release vtable slot
-// is detoured once, lazily, using the first PSO that reaches this point --
-// building a throwaway PSO for its vtable (like HookResource does) would need
-// valid shader blobs. Caller must hold gRRPsoMutex.
-static void EnsurePsoReleaseHook(ID3D12PipelineState* pipelineState)
-{
-    if (o_PsoRelease != nullptr)
-        return;
-
-    PVOID* pVTable = *(PVOID**) pipelineState;
-    PVOID releaseEntry = pVTable[2];
-
-    // Some D3D12 runtimes share their IUnknown implementation between resources and PSOs.
-    // HookResource has already detoured that entry; hkRelease calls the same PSO cleanup helper
-    // after its reference probe, so attaching a second detour would only create an ambiguous
-    // hook chain.
-    if (releaseEntry == gResourceReleaseEntry)
-        return;
-
-    o_PsoRelease = (PFN_PsoRelease) releaseEntry;
-
-    if (o_PsoRelease == nullptr)
-        return;
-
-    DetourTransactionBegin();
-    DetourUpdateThread(GetCurrentThread());
-    DetourAttach(&(PVOID&) o_PsoRelease, hkPsoRelease);
-
-    auto detourResult = DetourTransactionCommit();
-    if (detourResult != NO_ERROR)
-    {
-        LOG_ERROR("Failed to hook PSO Release: {:X}", detourResult);
-        o_PsoRelease = nullptr;
-    }
-}
-
-static RRPsoMetadata& EnsureRRPsoMetadata(ID3D12PipelineState* pipelineState, RRPsoKind kind = RRPsoKind::Unknown,
-                                          uint64_t hash = 0)
-{
-    EnsurePsoReleaseHook(pipelineState);
-
-    RRPsoMetadata& metadata = gRRPsoMetadata[pipelineState];
-    if (metadata.id == 0)
-        metadata.id = gRRNextPsoId.fetch_add(1, std::memory_order_relaxed);
-    if (metadata.kind == RRPsoKind::Unknown && kind != RRPsoKind::Unknown)
-        metadata.kind = kind;
-    if (metadata.hash == 0 && hash != 0)
-        metadata.hash = hash;
-    return metadata;
-}
-
-static void RecordRRPsoProducer(ID3D12Resource* resource, ID3D12PipelineState* pipelineState, bool ambiguous)
-{
-    if (resource == nullptr || pipelineState == nullptr)
-        return;
-
-    const RRPsoMetadata metadata = EnsureRRPsoMetadata(pipelineState);
-    RRPsoProducerStats& stats = gRRResourcePsoProducers[resource][pipelineState];
-    stats.metadata = metadata;
-    ++stats.hits;
-    stats.lastFrame = gRRResourceInspectorFrame.load(std::memory_order_relaxed);
-    stats.ambiguous = stats.ambiguous || ambiguous;
-}
-
-// Called only while gRRPsoMutex is held.
-static void RecordRRGraphicsOutputs(ID3D12GraphicsCommandList* commandList)
-{
-    const auto found = gRRCommandListPsoStates.find(commandList);
-    if (found == gRRCommandListPsoStates.end())
-        return;
-
-    RRCommandListPsoState& state = found->second;
-    if (state.currentPso == nullptr || state.renderTargets.empty())
-        return;
-
-    RRPsoMetadata& metadata = EnsureRRPsoMetadata(state.currentPso);
-    if (metadata.kind == RRPsoKind::Unknown || metadata.kind == RRPsoKind::Stream)
-        metadata.kind = RRPsoKind::Graphics;
-
-    const uint64_t frame = gRRResourceInspectorFrame.load(std::memory_order_relaxed);
-    if (state.lastGraphicsPso == state.currentPso && state.lastGraphicsGeneration == state.renderTargetGeneration &&
-        state.lastGraphicsFrame == frame)
-    {
-        return;
-    }
-
-    for (ID3D12Resource* resource : state.renderTargets)
-        RecordRRPsoProducer(resource, state.currentPso, false);
-
-    state.lastGraphicsPso = state.currentPso;
-    state.lastGraphicsGeneration = state.renderTargetGeneration;
-    state.lastGraphicsFrame = frame;
-}
-
-static void RecordRRComputeOutput(ID3D12GraphicsCommandList* commandList, ID3D12Resource* resource)
-{
-    if (resource == nullptr)
-        return;
-
-    std::scoped_lock psoLock(gRRPsoMutex);
-    const auto found = gRRCommandListPsoStates.find(commandList);
-    if (found == gRRCommandListPsoStates.end())
-        return;
-
-    RRCommandListPsoState& state = found->second;
-    if (state.lastComputePso == nullptr)
-        return;
-
-    RRPsoMetadata& metadata = EnsureRRPsoMetadata(state.lastComputePso);
-    if (metadata.kind == RRPsoKind::Unknown || metadata.kind == RRPsoKind::Stream)
-        metadata.kind = RRPsoKind::Compute;
-    RecordRRPsoProducer(resource, state.lastComputePso, state.dispatchesSinceBarrier > 1);
-    state.dispatchesSinceBarrier = 0;
-}
-
-static const char* GetRRPsoKindName(uint8_t kind)
-{
-    switch (static_cast<RRPsoKind>(kind))
-    {
-    case RRPsoKind::Graphics:
-        return "Graphics";
-    case RRPsoKind::Compute:
-        return "Compute";
-    case RRPsoKind::Stream:
-        return "Stream";
-    default:
-        return "Unknown";
-    }
-}
-
-static std::string DecodeRRMarkerName(const void* data, UINT size)
-{
-    if (data == nullptr || size == 0)
-        return {};
-
-    constexpr UINT kMaxMarkerBytes = 4096;
-    const auto* bytes = static_cast<const uint8_t*>(data);
-    const size_t byteCount = std::min<size_t>(size, kMaxMarkerBytes);
-    const auto printable = [](uint8_t value) { return value >= 32 && value <= 126; };
-
-    std::string best;
-    for (size_t begin = 0; begin < byteCount;)
-    {
-        while (begin < byteCount && !printable(bytes[begin]))
-            ++begin;
-        size_t end = begin;
-        while (end < byteCount && printable(bytes[end]))
-            ++end;
-        if (end - begin >= 4 && end - begin > best.size())
-            best.assign(reinterpret_cast<const char*>(bytes + begin), end - begin);
-        begin = end + 1;
-    }
-
-    for (size_t alignment = 0; alignment < 2; ++alignment)
-    {
-        for (size_t begin = alignment; begin + 1 < byteCount;)
+        std::lock_guard lock(_trackedResourcesMutex);
+        if (auto it = _trackedResources.find(resource); it != _trackedResources.end())
         {
-            while (begin + 1 < byteCount && !(printable(bytes[begin]) && bytes[begin + 1] == 0))
-            {
-                begin += 2;
-            }
-            size_t end = begin;
-            std::string candidate;
-            while (end + 1 < byteCount && printable(bytes[end]) && bytes[end + 1] == 0)
-            {
-                candidate.push_back(static_cast<char>(bytes[end]));
-                end += 2;
-            }
-            if (candidate.size() >= 4 && candidate.size() > best.size())
-                best = std::move(candidate);
-            begin = end + 2;
+            toClean = std::move(it->second);
+            _trackedResources.erase(it);
         }
     }
 
-    while (!best.empty() && std::isspace(static_cast<unsigned char>(best.front())))
-        best.erase(best.begin());
-    while (!best.empty() && std::isspace(static_cast<unsigned char>(best.back())))
-        best.pop_back();
-    return best;
-}
+    Hudfix_Dx12::RemoveResourceFromTracking(resource);
 
-static bool IsRREmissiveMarker(std::string_view name)
-{
-    return std::search(name.begin(), name.end(), "emiss", "emiss" + 5, [](char left, char right)
-                       { return std::tolower(static_cast<unsigned char>(left)) == right; }) != name.end();
-}
-
-static void ObserveRRMarker(const std::string& name)
-{
-    if (name.empty())
-        return;
-
-    constexpr size_t kMaxMarkerInventory = 2048;
-    if (!gRRMarkerInventory.contains(name) && gRRMarkerInventory.size() >= kMaxMarkerInventory)
+    // Clean descriptor slots
+    for (const auto& slot : toClean)
     {
-        return;
-    }
-
-    RRMarkerInventoryItem& item = gRRMarkerInventory[name];
-    ++item.count;
-    item.lastFrame = gRRResourceInspectorFrame.load(std::memory_order_relaxed);
-}
-
-static std::pair<std::string, bool> GetRRActivePass(ID3D12GraphicsCommandList* commandList)
-{
-    std::scoped_lock markerLock(gRRMarkerMutex);
-    const auto found = gRRCommandListMarkers.find(commandList);
-    if (found == gRRCommandListMarkers.end())
-        return {};
-
-    const RRCommandListMarkerState& markers = found->second;
-    std::string path;
-    for (const std::string& marker : markers.stack)
-    {
-        if (marker.empty())
-            continue;
-        if (!path.empty())
-            path += " > ";
-        path += marker;
-    }
-    if (path.empty())
-        path = markers.lastMarker;
-    return { path, IsRREmissiveMarker(path) };
-}
-
-static uint32_t GetRRFormatChannelCount(DXGI_FORMAT format)
-{
-    switch (format)
-    {
-    case DXGI_FORMAT_R8_UNORM:
-    case DXGI_FORMAT_R8_SNORM:
-    case DXGI_FORMAT_R16_FLOAT:
-    case DXGI_FORMAT_R16_UNORM:
-    case DXGI_FORMAT_R16_SNORM:
-    case DXGI_FORMAT_R32_FLOAT:
-    case DXGI_FORMAT_R32_TYPELESS:
-    case DXGI_FORMAT_R16_TYPELESS:
-    case DXGI_FORMAT_R8_TYPELESS:
-        return 1;
-
-    case DXGI_FORMAT_R8G8_UNORM:
-    case DXGI_FORMAT_R8G8_SNORM:
-    case DXGI_FORMAT_R16G16_FLOAT:
-    case DXGI_FORMAT_R16G16_UNORM:
-    case DXGI_FORMAT_R16G16_SNORM:
-    case DXGI_FORMAT_R32G32_FLOAT:
-    case DXGI_FORMAT_R8G8_TYPELESS:
-    case DXGI_FORMAT_R16G16_TYPELESS:
-    case DXGI_FORMAT_R32G32_TYPELESS:
-        return 2;
-
-    case DXGI_FORMAT_R8G8B8A8_UNORM:
-    case DXGI_FORMAT_R8G8B8A8_SNORM:
-    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
-    case DXGI_FORMAT_B8G8R8A8_UNORM:
-    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
-    case DXGI_FORMAT_R10G10B10A2_UNORM:
-    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
-    case DXGI_FORMAT_R16G16B16A16_FLOAT:
-    case DXGI_FORMAT_R16G16B16A16_UNORM:
-    case DXGI_FORMAT_R16G16B16A16_SNORM:
-    case DXGI_FORMAT_R16G16B16A16_TYPELESS:
-    case DXGI_FORMAT_R32G32B32A32_FLOAT:
-    case DXGI_FORMAT_R32G32B32A32_TYPELESS:
-        return 4;
-
-    default:
-        return 0;
+        if (auto heap = slot.heap.lock())
+            heap->ClearSlotIfMatches(slot.index, resource);
     }
 }
 
-// Retain the original helper names because descriptor-copy tracking uses them
-// to keep candidate views alive even when HUD tracking is disabled. "Scalar"
-// now also includes packed normalized/float formats so specular occlusion can
-// be discovered in any component.
-static bool IsRRScalarCandidateFormat(DXGI_FORMAT format) { return GetRRFormatChannelCount(format) > 0; }
-
-static bool IsRRScalarCandidateResource(ID3D12Resource* resource, DXGI_FORMAT viewFormat)
+bool ResTrack_Dx12::TrackResourceRelease(ID3D12Resource* resource)
 {
-    if (resource == nullptr)
+    if (resource == nullptr || State::Instance().isShuttingDown)
         return false;
 
-    const D3D12_RESOURCE_DESC desc = resource->GetDesc();
-    const DXGI_FORMAT effectiveFormat = viewFormat == DXGI_FORMAT_UNKNOWN ? desc.Format : viewFormat;
-    return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.SampleDesc.Count == 1 && desc.Width >= 256 &&
-           desc.Height >= 256 && !(desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) &&
-           IsRRScalarCandidateFormat(effectiveFormat);
-}
-
-static void TrackRRResourceView(ID3D12Resource* resource, DXGI_FORMAT viewFormat, ResourceType type)
-{
-    // Every other RR-inspector hook site checks this first. Without it this runs on
-    // every SRV/UAV/RTV creation in the process and grows an unbounded map for users
-    // who never open the inspector.
-    if (!gRRResourceInspectorEnabled.load(std::memory_order_relaxed))
-        return;
-
-    if (!IsRRScalarCandidateResource(resource, viewFormat))
-        return;
-
-    std::scoped_lock lock(gRRTrackedResourceMutex);
-    RRTrackedResourceViews& views = gRRTrackedResources[resource];
-    if (type == SRV)
-        ++views.srvViews;
-    else if (type == UAV)
-        ++views.uavViews;
-    else if (type == RTV)
-        ++views.rtvViews;
-}
-
-// Whether the preview can read this resource without first transitioning it.
-//
-// The preview is built by the conversion pass, which is a compute shader, so the non-pixel bit
-// is the one that matters. Accepting either shader-read bit let a resource the title had only
-// ever handed to a pixel pass reach that one, where the read is undefined - and the inspector
-// deliberately records no barrier of its own, because the resource belongs to the title and its
-// state is only ever what the tracker observed. Restoring a state that was inferred rather than
-// declared is a worse failure than a preview that declines to run, so a resource in the wrong
-// read state is reported as non-readable and left alone.
-static bool IsRRResourceComputeReadable(D3D12_RESOURCE_STATES state)
-{
-    constexpr D3D12_RESOURCE_STATES kComputeRead = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    constexpr D3D12_RESOURCE_STATES kWritable =
-        D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS | D3D12_RESOURCE_STATE_DEPTH_WRITE |
-        D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_RESOLVE_DEST;
-    return (state & kComputeRead) != 0 && (state & kWritable) == 0;
-}
-
-static bool IsRRResourceWritable(D3D12_RESOURCE_STATES state)
-{
-    constexpr D3D12_RESOURCE_STATES kWritable =
-        D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS | D3D12_RESOURCE_STATE_DEPTH_WRITE |
-        D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_RESOLVE_DEST;
-    return (state & kWritable) != 0;
-}
-
-// Called while gRRResourceStateMutex is held.
-static void RecordRRResourceWrite(ID3D12Resource* resource, const std::string& passName, bool emissivePassMatch)
-{
-    if (resource == nullptr)
-        return;
-
-    RRResourceActivity& activity = gRRResourceActivity[resource];
-    const uint64_t frame = gRRResourceInspectorFrame.load(std::memory_order_relaxed);
-    ++activity.writeTransitionCount;
-    if (!passName.empty())
     {
-        activity.lastWritePass = passName;
-        activity.emissivePassMatch = emissivePassMatch;
-        ++activity.passWriteCount;
+        std::lock_guard trackedLock(_trackedResourcesMutex);
+        if (_trackedResources.contains(resource))
+            return true;
     }
 
-    if (!activity.writeObserved || activity.lastWriteFrame != frame)
+    // Only new registrations take this mutex
+    std::lock_guard lifetimeLock(_resourceLifetimeMutex);
+
     {
-        if (activity.writeObserved)
-            activity.previousWriteFrame = activity.lastWriteFrame;
-        activity.lastWriteFrame = frame;
-        ++activity.writtenFrameCount;
-        activity.writeObserved = true;
-    }
-}
-
-void ResTrack_Dx12::SetRRResourceInspectorEnabled(bool enabled)
-{
-    gRRResourceInspectorEnabled.store(enabled, std::memory_order_release);
-
-    if (enabled)
-    {
-        // The device hook is not installed for FSR-RR at device-creation time, because
-        // this inspector is off by default and the upscaler can be switched at runtime.
-        // Install it on demand instead. HookDevice is idempotent, so this is a no-op
-        // when OptiFG's HUD fix already hooked the device. Descriptor heaps created
-        // before this point are not tracked, but every consumer null-checks the heap
-        // lookup and the candidate registry is fed by the view-creation hooks, which
-        // games exercise continuously.
-        ResTrack_Dx12::HookDevice(State::Instance().currentD3D12Device);
-    }
-    else
-    {
-        {
-            std::scoped_lock lock(gRRResourceStateMutex);
-            gRRResourceStates.clear();
-            gRRResourceActivity.clear();
-        }
-        {
-            std::scoped_lock markerLock(gRRMarkerMutex);
-            gRRCommandListMarkers.clear();
-            gRRMarkerInventory.clear();
-        }
-        {
-            std::scoped_lock psoLock(gRRPsoMutex);
-            gRRCommandListPsoStates.clear();
-            gRRResourcePsoProducers.clear();
-            // PSO metadata is only collected while the inspector is on, so it
-            // is cleared here as well instead of surviving until global
-            // teardown; ids restart on the next enable, matching teardown.
-            gRRPsoMetadata.clear();
-            gRRNextPsoId.store(1, std::memory_order_release);
-        }
-        {
-            // This map is only fed while the inspector is on and otherwise shrinks
-            // solely through hkRelease, so without this it survives every level load
-            // for the rest of the process.
-            std::scoped_lock resourceLock(gRRTrackedResourceMutex);
-            gRRTrackedResources.clear();
-        }
-    }
-}
-
-bool ResTrack_Dx12::IsRRResourceInspectorEnabled()
-{
-    return gRRResourceInspectorEnabled.load(std::memory_order_acquire);
-}
-
-void ResTrack_Dx12::NotifyRRResourceInspectorFrame(uint64_t frameIndex)
-{
-    gRRResourceInspectorFrame.store(frameIndex, std::memory_order_release);
-}
-
-void ResTrack_Dx12::SetRRResourceCandidateIndex(int index)
-{
-    std::scoped_lock candidateLock(gRRResourceCandidateMutex);
-    if (gRRResourceCandidates.empty())
-    {
-        gRRResourceCandidateIndex.store(0, std::memory_order_release);
-        return;
+        std::lock_guard trackedLock(_trackedResourcesMutex);
+        if (_trackedResources.contains(resource))
+            return true;
     }
 
-    const int selected = std::clamp(index, 0, static_cast<int>(gRRResourceCandidates.size()) - 1);
-    gRRResourceCandidateIndex.store(selected, std::memory_order_release);
-    gRRResourceCandidateAddress.store(reinterpret_cast<uintptr_t>(gRRResourceCandidates[selected].resourceAddress),
-                                      std::memory_order_release);
-}
-
-int ResTrack_Dx12::GetRRResourceCandidateIndex() { return gRRResourceCandidateIndex.load(std::memory_order_acquire); }
-
-void ResTrack_Dx12::SetRRResourceChannel(uint32_t channel)
-{
-    gRRResourceChannel.store(std::min(channel, 3u), std::memory_order_release);
-}
-
-uint32_t ResTrack_Dx12::GetRRResourceChannel() { return gRRResourceChannel.load(std::memory_order_acquire); }
-
-void ResTrack_Dx12::SetRRResourceViewScale(float scale)
-{
-    gRRResourceViewScale.store(std::clamp(scale, 0.01f, 100.0f), std::memory_order_release);
-}
-
-float ResTrack_Dx12::GetRRResourceViewScale() { return gRRResourceViewScale.load(std::memory_order_acquire); }
-
-void ResTrack_Dx12::RefreshRRResourceCandidates(uint32_t renderWidth, uint32_t renderHeight)
-{
-    std::vector<RRResourceCandidate> candidates;
-    const uint64_t currentFrame = gRRResourceInspectorFrame.load(std::memory_order_acquire);
+    ID3DDestructionNotifier* notifier = nullptr;
+    auto result = resource->QueryInterface(IID_PPV_ARGS(&notifier));
+    if (FAILED(result) || notifier == nullptr)
     {
-        // This registry is populated directly by CreateSRV/CreateUAV/CreateRTV.
-        // It intentionally does not depend on the HUD descriptor cache, whose
-        // auto settings may discard non-HUD views.
-        std::scoped_lock resourceLock(gRRTrackedResourceMutex);
-        for (const auto& [resource, views] : gRRTrackedResources)
-        {
-            if (!resource)
-                continue;
+        LOG_DEBUG("ID3DDestructionNotifier is not available for resource {:X}, result: {:X}", (size_t) resource,
+                  (UINT) result);
+        return false;
+    }
 
-            const D3D12_RESOURCE_DESC desc = resource->GetDesc();
-            if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.SampleDesc.Count != 1 ||
-                desc.Width != renderWidth || desc.Height != renderHeight ||
-                (desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE))
-            {
-                continue;
-            }
-
-            RRResourceCandidate candidate {};
-            candidate.resourceAddress = resource;
-            char debugName[256] {};
-            UINT debugNameSize = sizeof(debugName);
-            if (SUCCEEDED(resource->GetPrivateData(WKPDID_D3DDebugObjectName, &debugNameSize, debugName)) &&
-                debugNameSize > 0)
-            {
-                debugName[std::size(debugName) - 1] = '\0';
-                candidate.debugName = debugName;
-            }
-            candidate.width = desc.Width;
-            candidate.height = desc.Height;
-            candidate.format = desc.Format;
-            candidate.flags = desc.Flags;
-            candidate.channelCount = GetRRFormatChannelCount(desc.Format);
-            candidate.previewSupported = candidate.channelCount > 0;
-            candidate.srvViews = views.srvViews;
-            candidate.uavViews = views.uavViews;
-            candidate.rtvViews = views.rtvViews;
-
-            if (candidate.previewSupported && candidate.srvViews > 0)
-                candidates.push_back(candidate);
-        }
+    UINT callbackId = 0;
+    result = notifier->RegisterDestructionCallback(&ResTrack_Dx12::ResourceDestroyed, resource, &callbackId);
+    if (FAILED(result))
+    {
+        LOG_WARN("Can't register destruction callback for resource {:X}, result: {:X}", (size_t) resource,
+                 (UINT) result);
+        notifier->Release();
+        return false;
     }
 
     {
-        std::scoped_lock stateLock(gRRResourceStateMutex);
-        for (RRResourceCandidate& candidate : candidates)
-        {
-            ID3D12Resource* resource = static_cast<ID3D12Resource*>(candidate.resourceAddress);
-            const auto state = gRRResourceStates.find(resource);
-            if (state != gRRResourceStates.end())
-            {
-                candidate.stateKnown = true;
-                candidate.state = state->second;
-                candidate.computeReadable = IsRRResourceComputeReadable(candidate.state);
-            }
-
-            candidate.currentFrame = currentFrame;
-            const auto activity = gRRResourceActivity.find(resource);
-            if (activity != gRRResourceActivity.end() && activity->second.writeObserved)
-            {
-                const RRResourceActivity& observed = activity->second;
-                candidate.writeObserved = true;
-                candidate.lastWriteFrame = observed.lastWriteFrame;
-                candidate.previousWriteFrame = observed.previousWriteFrame;
-                candidate.writtenFrameCount = observed.writtenFrameCount;
-                candidate.writeTransitionCount = observed.writeTransitionCount;
-                candidate.passWriteCount = observed.passWriteCount;
-                candidate.lastWritePass = observed.lastWritePass;
-                candidate.emissivePassMatch = observed.emissivePassMatch;
-                candidate.writeAgeFrames =
-                    currentFrame >= observed.lastWriteFrame ? currentFrame - observed.lastWriteFrame : 0;
-                candidate.lastWriteInterval =
-                    observed.previousWriteFrame > 0 && observed.lastWriteFrame >= observed.previousWriteFrame
-                        ? observed.lastWriteFrame - observed.previousWriteFrame
-                        : 0;
-                candidate.active = candidate.writeAgeFrames <= 4;
-                candidate.alternating =
-                    candidate.active && candidate.lastWriteInterval >= 2 && candidate.lastWriteInterval <= 4;
-            }
-        }
+        std::lock_guard trackedLock(_trackedResourcesMutex);
+        _trackedResources.try_emplace(resource);
     }
 
-    {
-        std::scoped_lock psoLock(gRRPsoMutex);
-        for (RRResourceCandidate& candidate : candidates)
-        {
-            ID3D12Resource* resource = static_cast<ID3D12Resource*>(candidate.resourceAddress);
-            const auto producers = gRRResourcePsoProducers.find(resource);
-            if (producers == gRRResourcePsoProducers.end())
-                continue;
-
-            candidate.producerCount = static_cast<uint32_t>(producers->second.size());
-            const RRPsoProducerStats* topProducer = nullptr;
-            for (const auto& [pipelineState, stats] : producers->second)
-            {
-                if (topProducer == nullptr || stats.hits > topProducer->hits ||
-                    (stats.hits == topProducer->hits && stats.lastFrame > topProducer->lastFrame))
-                {
-                    topProducer = &stats;
-                }
-            }
-
-            if (topProducer != nullptr)
-            {
-                candidate.producerPsoId = topProducer->metadata.id;
-                candidate.producerPsoHash = topProducer->metadata.hash;
-                candidate.producerKind = static_cast<uint8_t>(topProducer->metadata.kind);
-                candidate.producerHitCount = topProducer->hits;
-                candidate.producerAmbiguous = topProducer->ambiguous;
-            }
-        }
-    }
-
-    std::sort(candidates.begin(), candidates.end(),
-              [](const RRResourceCandidate& left, const RRResourceCandidate& right)
-              {
-                  if (left.channelCount != right.channelCount)
-                      return left.channelCount < right.channelCount;
-                  if (left.format != right.format)
-                      return left.format < right.format;
-                  return left.resourceAddress < right.resourceAddress;
-              });
-
-    {
-        std::scoped_lock candidateLock(gRRResourceCandidateMutex);
-        gRRResourceCandidates = std::move(candidates);
-        if (gRRResourceCandidates.empty())
-        {
-            gRRResourceCandidateIndex.store(0, std::memory_order_release);
-            return;
-        }
-
-        const uintptr_t selectedAddress = gRRResourceCandidateAddress.load(std::memory_order_acquire);
-        int selected = -1;
-        if (selectedAddress != 0)
-        {
-            const auto found =
-                std::find_if(gRRResourceCandidates.begin(), gRRResourceCandidates.end(),
-                             [selectedAddress](const RRResourceCandidate& candidate)
-                             { return reinterpret_cast<uintptr_t>(candidate.resourceAddress) == selectedAddress; });
-            if (found != gRRResourceCandidates.end())
-                selected = static_cast<int>(std::distance(gRRResourceCandidates.begin(), found));
-        }
-
-        if (selected < 0)
-        {
-            selected = std::clamp(gRRResourceCandidateIndex.load(std::memory_order_acquire), 0,
-                                  static_cast<int>(gRRResourceCandidates.size()) - 1);
-            gRRResourceCandidateAddress.store(
-                reinterpret_cast<uintptr_t>(gRRResourceCandidates[selected].resourceAddress),
-                std::memory_order_release);
-        }
-        gRRResourceCandidateIndex.store(selected, std::memory_order_release);
-    }
+    notifier->Release();
+    return true;
 }
 
-std::vector<RRResourceCandidate> ResTrack_Dx12::GetRRResourceCandidates()
-{
-    std::scoped_lock lock(gRRResourceCandidateMutex);
-    return gRRResourceCandidates;
-}
-
-ID3D12Resource* ResTrack_Dx12::AcquireRRResourceCandidate()
-{
-    if (!IsRRResourceInspectorEnabled())
-        return nullptr;
-
-    void* selectedAddress = nullptr;
-    {
-        std::scoped_lock candidateLock(gRRResourceCandidateMutex);
-        const uintptr_t selected = gRRResourceCandidateAddress.load(std::memory_order_acquire);
-        const auto candidate = std::find_if(gRRResourceCandidates.begin(), gRRResourceCandidates.end(),
-                                            [selected](const RRResourceCandidate& value)
-                                            { return reinterpret_cast<uintptr_t>(value.resourceAddress) == selected; });
-        if (candidate == gRRResourceCandidates.end())
-            return nullptr;
-
-        if (!candidate->previewSupported)
-            return nullptr;
-        selectedAddress = candidate->resourceAddress;
-    }
-
-    ID3D12Resource* resource = static_cast<ID3D12Resource*>(selectedAddress);
-    {
-        std::scoped_lock stateLock(gRRResourceStateMutex);
-        const auto state = gRRResourceStates.find(resource);
-        if (state == gRRResourceStates.end() || !IsRRResourceComputeReadable(state->second))
-            return nullptr;
-    }
-
-    std::scoped_lock resourceLock(gRRTrackedResourceMutex);
-    if (!gRRTrackedResources.contains(resource))
-        return nullptr;
-
-    resource->AddRef();
-    return resource;
-}
-
-void ResTrack_Dx12::LogRRScalarResourceCandidates(uint32_t renderWidth, uint32_t renderHeight)
-{
-    RefreshRRResourceCandidates(renderWidth, renderHeight);
-    const std::vector<RRResourceCandidate> candidates = GetRRResourceCandidates();
-
-    LOG_INFO("[RR_RESOURCE_CANDIDATE] snapshot: render={}x{}, previewableResources={}", renderWidth, renderHeight,
-             candidates.size());
-    for (size_t index = 0; index < candidates.size(); ++index)
-    {
-        const RRResourceCandidate& candidate = candidates[index];
-        const auto formatName = magic_enum::enum_name(candidate.format);
-        LOG_INFO("[RR_RESOURCE_CANDIDATE] candidate[{}]: ptr={:X}, size={}x{}, format={}({}), "
-                 "flags={:#x}, channels={}, views=[SRV:{}, UAV:{}, RTV:{}], writable={}, "
-                 "stateKnown={}, state={:#x}, computeReadable={}, name='{}', writeObserved={}, "
-                 "active={}, alternating={}, writeAge={}, interval={}, writtenFrames={}, transitions={}, "
-                 "passWrites={}, emissivePassMatch={}, lastWritePass='{}', producer=[id:{}, hash:{:016X}, "
-                 "kind:{}, hits:{}, count:{}, ambiguous:{}]",
-                 index, reinterpret_cast<uintptr_t>(candidate.resourceAddress), candidate.width, candidate.height,
-                 formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(candidate.format),
-                 static_cast<uint32_t>(candidate.flags), candidate.channelCount, candidate.srvViews, candidate.uavViews,
-                 candidate.rtvViews, !!(candidate.flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
-                 candidate.stateKnown, static_cast<uint32_t>(candidate.state), candidate.computeReadable,
-                 candidate.debugName, candidate.writeObserved, candidate.active, candidate.alternating,
-                 candidate.writeObserved ? std::to_string(candidate.writeAgeFrames) : "never",
-                 candidate.lastWriteInterval, candidate.writtenFrameCount, candidate.writeTransitionCount,
-                 candidate.passWriteCount, candidate.emissivePassMatch, candidate.lastWritePass,
-                 candidate.producerPsoId, candidate.producerPsoHash, candidate.producerKind, candidate.producerHitCount,
-                 candidate.producerCount, candidate.producerAmbiguous);
-    }
-
-    if (candidates.empty())
-    {
-        struct InventoryItem
-        {
-            ID3D12Resource* resource = nullptr;
-            D3D12_RESOURCE_DESC desc {};
-            RRTrackedResourceViews views {};
-            uint64_t sizeDelta = 0;
-        };
-
-        std::vector<InventoryItem> inventory;
-        {
-            std::scoped_lock resourceLock(gRRTrackedResourceMutex);
-            inventory.reserve(gRRTrackedResources.size());
-            for (const auto& [resource, views] : gRRTrackedResources)
-            {
-                if (resource == nullptr || views.srvViews == 0)
-                    continue;
-
-                const D3D12_RESOURCE_DESC desc = resource->GetDesc();
-                if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D)
-                    continue;
-
-                InventoryItem item {};
-                item.resource = resource;
-                item.desc = desc;
-                item.views = views;
-                item.sizeDelta = static_cast<uint64_t>(std::abs(static_cast<int64_t>(desc.Width) - renderWidth)) +
-                                 static_cast<uint64_t>(std::abs(static_cast<int64_t>(desc.Height) - renderHeight));
-                inventory.push_back(item);
-            }
-        }
-
-        std::sort(inventory.begin(), inventory.end(), [](const InventoryItem& left, const InventoryItem& right)
-                  { return left.sizeDelta < right.sizeDelta; });
-
-        constexpr size_t kInventoryLogLimit = 64;
-        LOG_INFO("[RR_RESOURCE_INVENTORY] no exact preview candidates; trackedTexture2DResources={}, "
-                 "logging closest {}",
-                 inventory.size(), std::min(inventory.size(), kInventoryLogLimit));
-        for (size_t index = 0; index < std::min(inventory.size(), kInventoryLogLimit); ++index)
-        {
-            const InventoryItem& item = inventory[index];
-            const auto formatName = magic_enum::enum_name(item.desc.Format);
-            LOG_INFO("[RR_RESOURCE_INVENTORY] resource[{}]: ptr={:X}, size={}x{}, format={}({}), "
-                     "flags={:#x}, mips={}, arrays={}, views=[SRV:{}, UAV:{}, RTV:{}], sizeDelta={}",
-                     index, reinterpret_cast<uintptr_t>(item.resource), item.desc.Width, item.desc.Height,
-                     formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(item.desc.Format),
-                     static_cast<uint32_t>(item.desc.Flags), item.desc.MipLevels, item.desc.DepthOrArraySize,
-                     item.views.srvViews, item.views.uavViews, item.views.rtvViews, item.sizeDelta);
-        }
-    }
-}
-
-void ResTrack_Dx12::LogRREmissivePassSnapshot(uint32_t renderWidth, uint32_t renderHeight)
-{
-    RefreshRRResourceCandidates(renderWidth, renderHeight);
-    const std::vector<RRResourceCandidate> candidates = GetRRResourceCandidates();
-
-    std::vector<std::pair<std::string, RRMarkerInventoryItem>> markers;
-    {
-        std::scoped_lock markerLock(gRRMarkerMutex);
-        markers.reserve(gRRMarkerInventory.size());
-        for (const auto& marker : gRRMarkerInventory)
-            markers.push_back(marker);
-    }
-    std::sort(markers.begin(), markers.end(),
-              [](const auto& left, const auto& right)
-              {
-                  const bool leftEmissive = IsRREmissiveMarker(left.first);
-                  const bool rightEmissive = IsRREmissiveMarker(right.first);
-                  if (leftEmissive != rightEmissive)
-                      return leftEmissive > rightEmissive;
-                  if (left.second.lastFrame != right.second.lastFrame)
-                      return left.second.lastFrame > right.second.lastFrame;
-                  return left.second.count > right.second.count;
-              });
-
-    const size_t emissiveMarkerCount = static_cast<size_t>(std::count_if(
-        markers.begin(), markers.end(), [](const auto& marker) { return IsRREmissiveMarker(marker.first); }));
-    const size_t associatedResourceCount =
-        static_cast<size_t>(std::count_if(candidates.begin(), candidates.end(), [](const RRResourceCandidate& candidate)
-                                          { return !candidate.lastWritePass.empty(); }));
-    const size_t emissiveResourceCount =
-        static_cast<size_t>(std::count_if(candidates.begin(), candidates.end(), [](const RRResourceCandidate& candidate)
-                                          { return candidate.emissivePassMatch; }));
-
-    LOG_INFO("[RR_EMISSIVE_PASS] snapshot: render={}x{}, markerNames={}, emissiveMarkerNames={}, "
-             "passAssociatedResources={}, emissivePassResources={}",
-             renderWidth, renderHeight, markers.size(), emissiveMarkerCount, associatedResourceCount,
-             emissiveResourceCount);
-
-    constexpr size_t kMarkerLogLimit = 128;
-    for (size_t index = 0; index < std::min(markers.size(), kMarkerLogLimit); ++index)
-    {
-        const auto& [name, item] = markers[index];
-        LOG_INFO("[RR_EMISSIVE_PASS] marker[{}]: emissiveMatch={}, count={}, lastFrame={}, name='{}'", index,
-                 IsRREmissiveMarker(name), item.count, item.lastFrame, name);
-    }
-
-    for (size_t index = 0; index < candidates.size(); ++index)
-    {
-        const RRResourceCandidate& candidate = candidates[index];
-        if (candidate.lastWritePass.empty())
-            continue;
-        const auto formatName = magic_enum::enum_name(candidate.format);
-        LOG_INFO("[RR_EMISSIVE_PASS] resource[{}]: ptr={:X}, size={}x{}, format={}({}), "
-                 "emissiveMatch={}, passWrites={}, writeAge={}, views=[SRV:{}, UAV:{}, RTV:{}], pass='{}'",
-                 index, reinterpret_cast<uintptr_t>(candidate.resourceAddress), candidate.width, candidate.height,
-                 formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(candidate.format),
-                 candidate.emissivePassMatch, candidate.passWriteCount,
-                 candidate.writeObserved ? std::to_string(candidate.writeAgeFrames) : "never", candidate.srvViews,
-                 candidate.uavViews, candidate.rtvViews, candidate.lastWritePass);
-    }
-}
-
-void ResTrack_Dx12::LogRRPsoProducerSnapshot(uint32_t renderWidth, uint32_t renderHeight)
-{
-    RefreshRRResourceCandidates(renderWidth, renderHeight);
-    const std::vector<RRResourceCandidate> candidates = GetRRResourceCandidates();
-    const size_t associated =
-        static_cast<size_t>(std::count_if(candidates.begin(), candidates.end(), [](const RRResourceCandidate& candidate)
-                                          { return candidate.producerPsoId != 0; }));
-    const size_t ambiguous =
-        static_cast<size_t>(std::count_if(candidates.begin(), candidates.end(), [](const RRResourceCandidate& candidate)
-                                          { return candidate.producerAmbiguous; }));
-
-    LOG_INFO("[RR_PSO_PRODUCER] snapshot: render={}x{}, resources={}, associated={}, ambiguous={}", renderWidth,
-             renderHeight, candidates.size(), associated, ambiguous);
-    for (size_t index = 0; index < candidates.size(); ++index)
-    {
-        const RRResourceCandidate& candidate = candidates[index];
-        if (candidate.producerPsoId == 0)
-            continue;
-
-        const auto formatName = magic_enum::enum_name(candidate.format);
-        LOG_INFO("[RR_PSO_PRODUCER] resource[{}]: ptr={:X}, format={}({}), producerId={}, "
-                 "producerHash={:016X}, kind={}, hits={}, producerCount={}, ambiguous={}, "
-                 "writeAge={}, views=[SRV:{}, UAV:{}, RTV:{}]",
-                 index, reinterpret_cast<uintptr_t>(candidate.resourceAddress),
-                 formatName.empty() ? "UNKNOWN" : formatName, static_cast<uint32_t>(candidate.format),
-                 candidate.producerPsoId, candidate.producerPsoHash, GetRRPsoKindName(candidate.producerKind),
-                 candidate.producerHitCount, candidate.producerCount, candidate.producerAmbiguous,
-                 candidate.writeObserved ? std::to_string(candidate.writeAgeFrames) : "never", candidate.srvViews,
-                 candidate.uavViews, candidate.rtvViews);
-    }
-}
-
-bool ResTrack_Dx12::CheckResource(ID3D12Resource* resource)
+bool ResTrack_Dx12::CheckResource(ID3D12Resource* resource, ResourceInfo* outInfo)
 {
     if (State::Instance().isShuttingDown)
         return false;
@@ -1179,22 +222,48 @@ bool ResTrack_Dx12::CheckResource(ID3D12Resource* resource)
     if (resDesc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D)
         return false;
 
+    // depth etc
+    if (resDesc.DepthOrArraySize != 1 || resDesc.SampleDesc.Count != 1)
+        return false;
+
+    // depth, rt, video etc
+    constexpr auto unsupportedFlags =
+        D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE | D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL |
+        D3D12_RESOURCE_FLAG_VIDEO_DECODE_REFERENCE_ONLY | D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE |
+        D3D12_RESOURCE_FLAG_VIDEO_ENCODE_REFERENCE_ONLY;
+
+    // Early reject
+    if ((resDesc.Flags & unsupportedFlags) != 0)
+        return false;
+
     auto& s = State::Instance();
+    const uint32_t width = s.currentSwapchainDesc.BufferDesc.Width;
+    const uint32_t height = s.currentSwapchainDesc.BufferDesc.Height;
 
-    if (resDesc.Height != s.currentSwapchainDesc.BufferDesc.Height ||
-        resDesc.Width != s.currentSwapchainDesc.BufferDesc.Width)
+    if (resDesc.Height != height || resDesc.Width != width)
     {
-        auto result = Config::Instance()->FGRelaxedResolutionCheck.value_or_default() &&
-                      resDesc.Height >= s.currentSwapchainDesc.BufferDesc.Height - 32 &&
-                      resDesc.Height <= s.currentSwapchainDesc.BufferDesc.Height + 32 &&
-                      resDesc.Width >= s.currentSwapchainDesc.BufferDesc.Width - 32 &&
-                      resDesc.Width <= s.currentSwapchainDesc.BufferDesc.Width + 32;
+        // Need to make these tolarances global
+        const auto toleranceX = width / 20;
+        const auto toleranceY = height / 20;
 
-        // LOG_TRACK("Resource: {}x{} ({}), Swapchain: {}x{} ({}), Relaxed Result: {}", resDesc.Width, resDesc.Height,
-        //           (UINT) resDesc.Format, scDesc.BufferDesc.Width, scDesc.BufferDesc.Height,
-        //           (UINT) scDesc.BufferDesc.Format, result);
+        if (!(resDesc.Height >= height - toleranceY && resDesc.Height <= height + toleranceY &&
+              resDesc.Width >= width - toleranceX && resDesc.Width <= width + toleranceX))
+        {
+            return false;
+        }
+    }
 
-        return result;
+    if (outInfo != nullptr)
+    {
+        if (!TrackResourceRelease(resource))
+            return false;
+
+        outInfo->buffer = resource;
+        outInfo->width = resDesc.Width;
+        outInfo->height = resDesc.Height;
+        outInfo->format = resDesc.Format;
+        outInfo->flags = resDesc.Flags;
+        outInfo->lifetimeTracked = true;
     }
 
     return true;
@@ -1429,22 +498,31 @@ std::shared_ptr<HeapInfo> ResTrack_Dx12::GetHeapByGpuHandleCR(SIZE_T gpuHandle)
 
 #pragma region Hudless methods
 
-void ResTrack_Dx12::FillResourceInfo(ID3D12Resource* resource, ResourceInfo* info)
+static bool IsDescriptorEnabled(ResourceType type)
 {
-    auto desc = resource->GetDesc();
-    info->buffer = resource;
-    info->width = desc.Width;
-    info->height = desc.Height;
-    info->format = desc.Format;
-    info->flags = desc.Flags;
+    auto* config = Config::Instance();
+
+    switch (type)
+    {
+    case RTV:
+        return !config->FGHudfixDisableRTV.value_or_default();
+
+    case SRV:
+        return !config->FGHudfixDisableSRV.value_or_default();
+
+    case UAV:
+        return !config->FGHudfixDisableUAV.value_or_default();
+
+    default:
+        return false;
+    }
 }
 
 bool ResTrack_Dx12::IsHudFixActive()
 {
-    if (!Config::Instance()->FGEnabled.value_or_default() || !Config::Instance()->FGHUDFix.value_or_default())
+    if (!Config::Instance()->IsFGEnabled() || !Config::Instance()->FGHUDFix.value_or_default())
     {
-        LOG_TRACK(
-            "!Config::Instance()->FGEnabled.value_or_default() || !Config::Instance()->FGHUDFix.value_or_default()");
+        LOG_TRACK("!Config::Instance()->IsFGEnabled() || !Config::Instance()->FGHUDFix.value_or_default()");
         return false;
     }
 
@@ -1510,24 +588,8 @@ void ResTrack_Dx12::hkCreateRenderTargetView(ID3D12Device* This, ID3D12Resource*
 
     o_CreateRenderTargetView(This, pResource, pDesc, DestDescriptor);
 
-    const DXGI_FORMAT viewFormat = pDesc == nullptr ? DXGI_FORMAT_UNKNOWN : pDesc->Format;
-    const bool isTexture2D = pDesc == nullptr || pDesc->ViewDimension == D3D12_RTV_DIMENSION_TEXTURE2D;
-    if (isTexture2D)
-        TrackRRResourceView(pResource, viewFormat, RTV);
-
-    if (Config::Instance()->FGHudfixDisableRTV.value_or_default())
-        return;
-
-    const bool isHudResource = pResource != nullptr && pDesc != nullptr &&
-                               pDesc->ViewDimension == D3D12_RTV_DIMENSION_TEXTURE2D && CheckResource(pResource);
-    // Retaining a candidate in the HUD descriptor cache is only useful while the
-    // inspector is running, and RefreshRRResourceCandidates does not read that cache
-    // anyway - its registry is fed directly by these hooks. Leaving this ungated
-    // widens OptiFG's hudless candidate set for every user.
-    const bool isRRCandidate = isTexture2D && gRRResourceInspectorEnabled.load(std::memory_order_relaxed) &&
-                               IsRRScalarCandidateResource(pResource, viewFormat);
-
-    if (!isHudResource && !isRRCandidate)
+    ResourceInfo resInfo {};
+    if (pResource == nullptr || !CheckResource(pResource, &resInfo))
     {
         auto heap = GetHeapByCpuHandleRTV(DestDescriptor.ptr);
 
@@ -1543,10 +605,6 @@ void ResTrack_Dx12::hkCreateRenderTargetView(ID3D12Device* This, ID3D12Resource*
     auto heap = GetHeapByCpuHandleRTV(DestDescriptor.ptr);
     if (heap != nullptr)
     {
-        ResourceInfo resInfo {};
-        FillResourceInfo(pResource, &resInfo);
-        if (viewFormat != DXGI_FORMAT_UNKNOWN)
-            resInfo.format = viewFormat;
         resInfo.type = RTV;
         resInfo.captureInfo = CaptureInfo::CreateRTV;
         heap->SetByCpuHandle(DestDescriptor.ptr, resInfo);
@@ -1580,24 +638,8 @@ void ResTrack_Dx12::hkCreateShaderResourceView(ID3D12Device* This, ID3D12Resourc
 
     o_CreateShaderResourceView(This, pResource, pDesc, DestDescriptor);
 
-    const DXGI_FORMAT viewFormat = pDesc == nullptr ? DXGI_FORMAT_UNKNOWN : pDesc->Format;
-    const bool isTexture2D = pDesc == nullptr || pDesc->ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D;
-    if (isTexture2D)
-        TrackRRResourceView(pResource, viewFormat, SRV);
-
-    if (Config::Instance()->FGHudfixDisableSRV.value_or_default())
-        return;
-
-    const bool isHudResource = pResource != nullptr && pDesc != nullptr &&
-                               pDesc->ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D && CheckResource(pResource);
-    // Retaining a candidate in the HUD descriptor cache is only useful while the
-    // inspector is running, and RefreshRRResourceCandidates does not read that cache
-    // anyway - its registry is fed directly by these hooks. Leaving this ungated
-    // widens OptiFG's hudless candidate set for every user.
-    const bool isRRCandidate = isTexture2D && gRRResourceInspectorEnabled.load(std::memory_order_relaxed) &&
-                               IsRRScalarCandidateResource(pResource, viewFormat);
-
-    if (!isHudResource && !isRRCandidate)
+    ResourceInfo resInfo {};
+    if (pResource == nullptr || !CheckResource(pResource, &resInfo))
     {
         auto heap = GetHeapByCpuHandleSRV(DestDescriptor.ptr);
 
@@ -1613,10 +655,6 @@ void ResTrack_Dx12::hkCreateShaderResourceView(ID3D12Device* This, ID3D12Resourc
     auto heap = GetHeapByCpuHandleSRV(DestDescriptor.ptr);
     if (heap != nullptr)
     {
-        ResourceInfo resInfo {};
-        FillResourceInfo(pResource, &resInfo);
-        if (viewFormat != DXGI_FORMAT_UNKNOWN)
-            resInfo.format = viewFormat;
         resInfo.type = SRV;
         resInfo.captureInfo = CaptureInfo::CreateSRV;
         heap->SetByCpuHandle(DestDescriptor.ptr, resInfo);
@@ -1655,24 +693,8 @@ void ResTrack_Dx12::hkCreateUnorderedAccessView(ID3D12Device* This, ID3D12Resour
 
     o_CreateUnorderedAccessView(This, pResource, pCounterResource, pDesc, DestDescriptor);
 
-    const DXGI_FORMAT viewFormat = pDesc == nullptr ? DXGI_FORMAT_UNKNOWN : pDesc->Format;
-    const bool isTexture2D = pDesc == nullptr || pDesc->ViewDimension == D3D12_UAV_DIMENSION_TEXTURE2D;
-    if (isTexture2D)
-        TrackRRResourceView(pResource, viewFormat, UAV);
-
-    if (Config::Instance()->FGHudfixDisableUAV.value_or_default())
-        return;
-
-    const bool isHudResource = pResource != nullptr && pDesc != nullptr &&
-                               pDesc->ViewDimension == D3D12_UAV_DIMENSION_TEXTURE2D && CheckResource(pResource);
-    // Retaining a candidate in the HUD descriptor cache is only useful while the
-    // inspector is running, and RefreshRRResourceCandidates does not read that cache
-    // anyway - its registry is fed directly by these hooks. Leaving this ungated
-    // widens OptiFG's hudless candidate set for every user.
-    const bool isRRCandidate = isTexture2D && gRRResourceInspectorEnabled.load(std::memory_order_relaxed) &&
-                               IsRRScalarCandidateResource(pResource, viewFormat);
-
-    if (!isHudResource && !isRRCandidate)
+    ResourceInfo resInfo {};
+    if (pResource == nullptr || !CheckResource(pResource, &resInfo))
     {
         auto heap = GetHeapByCpuHandleUAV(DestDescriptor.ptr);
 
@@ -1688,10 +710,6 @@ void ResTrack_Dx12::hkCreateUnorderedAccessView(ID3D12Device* This, ID3D12Resour
     auto heap = GetHeapByCpuHandleUAV(DestDescriptor.ptr);
     if (heap != nullptr)
     {
-        ResourceInfo resInfo {};
-        FillResourceInfo(pResource, &resInfo);
-        if (viewFormat != DXGI_FORMAT_UNKNOWN)
-            resInfo.format = viewFormat;
         resInfo.type = UAV;
         resInfo.captureInfo = CaptureInfo::CreateUAV;
         heap->SetByCpuHandle(DestDescriptor.ptr, resInfo);
@@ -1703,81 +721,6 @@ void ResTrack_Dx12::hkCreateUnorderedAccessView(ID3D12Device* This, ID3D12Resour
 }
 
 #pragma endregion
-
-void ResTrack_Dx12::hkExecuteCommandLists(ID3D12CommandQueue* This, UINT NumCommandLists,
-                                          ID3D12CommandList* const* ppCommandLists)
-{
-    auto fg = State::Instance().currentFG;
-
-    if (fg != nullptr && fg->IsActive() && !fg->IsPaused())
-    {
-        LOG_TRACK("NumCommandLists: {}", NumCommandLists);
-
-        std::vector<FG_ResourceType> found;
-        auto fIndex = fg->GetIndex();
-
-        do
-        {
-            std::lock_guard<std::mutex> lock2(_resourceCommandListMutex);
-
-            if (!_notFoundCmdLists.empty())
-            {
-                for (size_t i = 0; i < NumCommandLists; i++)
-                {
-                    if (_notFoundCmdLists.contains(ppCommandLists[i]))
-                    {
-                        LOG_WARN("Found last frames cmdList: {:X}", (size_t) ppCommandLists[i]);
-                        _notFoundCmdLists.erase(ppCommandLists[i]);
-                    }
-                }
-            }
-
-            if (_resCmdList[fIndex].empty())
-                break;
-
-            for (size_t i = 0; i < NumCommandLists; i++)
-            {
-                LOG_TRACK("ppCommandLists[{}]: {:X}", i, (size_t) ppCommandLists[i]);
-
-                for (const auto& pair : _resCmdList[fIndex])
-                {
-                    if (pair.second == ppCommandLists[i])
-                    {
-                        LOG_DEBUG("found {} cmdList: {:X}, queue: {:X}", (UINT) pair.first, (size_t) pair.second,
-                                  (size_t) This);
-                        fg->SetResourceReady(pair.first);
-                        found.push_back(pair.first);
-                    }
-                }
-
-                for (size_t i = 0; i < found.size(); i++)
-                {
-                    _resCmdList[fIndex].erase(found[i]);
-                }
-
-                if (_resCmdList[fIndex].empty())
-                    break;
-            }
-
-        } while (false);
-
-        if (!found.empty())
-        {
-            o_ExecuteCommandLists(This, NumCommandLists, ppCommandLists);
-
-            for (size_t i = 0; i < found.size(); i++)
-            {
-                fg->SetCommandQueue(found[i], This);
-            }
-
-            return;
-        }
-    }
-
-    LOG_TRACK("Done NumCommandLists: {}", NumCommandLists);
-
-    o_ExecuteCommandLists(This, NumCommandLists, ppCommandLists);
-}
 
 #pragma region Heap hooks
 
@@ -1906,260 +849,6 @@ HRESULT ResTrack_Dx12::hkCreateDescriptorHeap(ID3D12Device* This, D3D12_DESCRIPT
     return result;
 }
 
-ULONG ResTrack_Dx12::hkRelease(ID3D12Resource* This)
-{
-    if (State::Instance().isShuttingDown)
-        return o_Release(This);
-
-    std::vector<TrackedResourceSlot> toClean;
-    {
-        std::lock_guard lock(_trackedResourcesMutex);
-
-        This->AddRef();
-        auto refCount = o_Release(This);
-
-        if (refCount <= 1)
-        {
-            std::scoped_lock stateLock(gRRResourceStateMutex);
-            gRRResourceStates.erase(This);
-            gRRResourceActivity.erase(This);
-
-            {
-                std::scoped_lock rrResourceLock(gRRTrackedResourceMutex);
-                gRRTrackedResources.erase(This);
-            }
-            {
-                std::scoped_lock psoLock(gRRPsoMutex);
-                gRRResourcePsoProducers.erase(This);
-            }
-
-            // A runtime may use the same IUnknown::Release implementation for resources and
-            // PSOs. In that case this hook also owns PSO cleanup; the helper is a no-op for an
-            // ordinary resource address.
-            CleanupRRPsoReferences(This);
-
-            if (auto it = _trackedResources.find(This); it != _trackedResources.end())
-            {
-                toClean = std::move(it->second);
-                _trackedResources.erase(it);
-            }
-
-            State::Instance().capturedHudlesses.erase(This);
-        }
-    }
-
-    // Clean descriptor slots outside the reverse-index lock.
-    for (const auto& slot : toClean)
-    {
-        if (auto heap = slot.heap.lock())
-            heap->ClearSlotIfMatches(slot.index, This);
-    }
-
-    return o_Release(This);
-}
-
-ULONG hkPsoRelease(ID3D12PipelineState* This)
-{
-    if (State::Instance().isShuttingDown)
-        return o_PsoRelease(This);
-
-    // Same probe as hkRelease: keep the object alive while its metadata is
-    // cleaned up, then perform the caller's release.
-    This->AddRef();
-    auto refCount = o_PsoRelease(This);
-
-    if (refCount <= 1)
-        CleanupRRPsoReferences(This);
-
-    return o_PsoRelease(This);
-}
-
-HRESULT ResTrack_Dx12::hkCreateGraphicsPipelineState(ID3D12Device* This,
-                                                     const D3D12_GRAPHICS_PIPELINE_STATE_DESC* pDesc, REFIID riid,
-                                                     void** ppPipelineState)
-{
-    const HRESULT result = o_CreateGraphicsPipelineState(This, pDesc, riid, ppPipelineState);
-    if (SUCCEEDED(result) && pDesc != nullptr && ppPipelineState != nullptr && *ppPipelineState != nullptr &&
-        gRRResourceInspectorEnabled.load(std::memory_order_relaxed))
-    {
-        std::scoped_lock psoLock(gRRPsoMutex);
-        EnsureRRPsoMetadata(static_cast<ID3D12PipelineState*>(*ppPipelineState), RRPsoKind::Graphics,
-                            HashRRGraphicsPipeline(*pDesc));
-    }
-    return result;
-}
-
-HRESULT ResTrack_Dx12::hkCreateComputePipelineState(ID3D12Device* This, const D3D12_COMPUTE_PIPELINE_STATE_DESC* pDesc,
-                                                    REFIID riid, void** ppPipelineState)
-{
-    const HRESULT result = o_CreateComputePipelineState(This, pDesc, riid, ppPipelineState);
-    if (SUCCEEDED(result) && pDesc != nullptr && ppPipelineState != nullptr && *ppPipelineState != nullptr &&
-        gRRResourceInspectorEnabled.load(std::memory_order_relaxed))
-    {
-        std::scoped_lock psoLock(gRRPsoMutex);
-        EnsureRRPsoMetadata(static_cast<ID3D12PipelineState*>(*ppPipelineState), RRPsoKind::Compute,
-                            HashRRComputePipeline(*pDesc));
-    }
-    return result;
-}
-
-HRESULT ResTrack_Dx12::hkCreatePipelineState(ID3D12Device2* This, const D3D12_PIPELINE_STATE_STREAM_DESC* pDesc,
-                                             REFIID riid, void** ppPipelineState)
-{
-    const HRESULT result = o_CreatePipelineState(This, pDesc, riid, ppPipelineState);
-    if (SUCCEEDED(result) && pDesc != nullptr && ppPipelineState != nullptr && *ppPipelineState != nullptr &&
-        gRRResourceInspectorEnabled.load(std::memory_order_relaxed))
-    {
-        const uint64_t hash = HashRRBytes(pDesc->pPipelineStateSubobjectStream, pDesc->SizeInBytes);
-        std::scoped_lock psoLock(gRRPsoMutex);
-        EnsureRRPsoMetadata(static_cast<ID3D12PipelineState*>(*ppPipelineState), RRPsoKind::Stream, hash);
-    }
-    return result;
-}
-
-void ResTrack_Dx12::hkResourceBarrier(ID3D12GraphicsCommandList* This, UINT NumBarriers,
-                                      const D3D12_RESOURCE_BARRIER* pBarriers)
-{
-    std::vector<ID3D12Resource*> computeWrites;
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) && pBarriers != nullptr)
-    {
-        const auto [passName, emissivePassMatch] = GetRRActivePass(This);
-        std::scoped_lock stateLock(gRRResourceStateMutex);
-        for (UINT index = 0; index < NumBarriers; ++index)
-        {
-            const D3D12_RESOURCE_BARRIER& barrier = pBarriers[index];
-            if (barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_ALIASING)
-            {
-                if (barrier.Aliasing.pResourceBefore != nullptr)
-                {
-                    gRRResourceStates.erase(barrier.Aliasing.pResourceBefore);
-                    gRRResourceActivity.erase(barrier.Aliasing.pResourceBefore);
-                }
-                if (barrier.Aliasing.pResourceAfter != nullptr)
-                {
-                    gRRResourceStates.erase(barrier.Aliasing.pResourceAfter);
-                    gRRResourceActivity.erase(barrier.Aliasing.pResourceAfter);
-                }
-                continue;
-            }
-
-            if (barrier.Type == D3D12_RESOURCE_BARRIER_TYPE_UAV)
-            {
-                RecordRRResourceWrite(barrier.UAV.pResource, passName, emissivePassMatch);
-                if (barrier.UAV.pResource != nullptr)
-                    computeWrites.push_back(barrier.UAV.pResource);
-                continue;
-            }
-
-            if (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || barrier.Transition.pResource == nullptr)
-            {
-                continue;
-            }
-
-            ID3D12Resource* resource = barrier.Transition.pResource;
-            const D3D12_RESOURCE_DESC desc = resource->GetDesc();
-            const bool wholeResource = barrier.Transition.Subresource == D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES ||
-                                       (desc.MipLevels == 1 && desc.DepthOrArraySize == 1);
-
-            if (!wholeResource || (barrier.Flags & D3D12_RESOURCE_BARRIER_FLAG_BEGIN_ONLY) != 0)
-            {
-                gRRResourceStates.erase(resource);
-                continue;
-            }
-
-            gRRResourceStates[resource] = barrier.Transition.StateAfter;
-            if (IsRRResourceWritable(barrier.Transition.StateBefore) &&
-                !IsRRResourceWritable(barrier.Transition.StateAfter))
-            {
-                RecordRRResourceWrite(resource, passName, emissivePassMatch);
-                if ((barrier.Transition.StateBefore & D3D12_RESOURCE_STATE_UNORDERED_ACCESS) != 0)
-                {
-                    computeWrites.push_back(resource);
-                }
-            }
-        }
-    }
-
-    for (ID3D12Resource* resource : computeWrites)
-        RecordRRComputeOutput(This, resource);
-
-    o_ResourceBarrier(This, NumBarriers, pBarriers);
-}
-
-void ResTrack_Dx12::hkSetPipelineState(ID3D12GraphicsCommandList* This, ID3D12PipelineState* pPipelineState)
-{
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) && This != MenuOverlayDx::MenuCommandList())
-    {
-        std::scoped_lock psoLock(gRRPsoMutex);
-        RRCommandListPsoState& state = gRRCommandListPsoStates[This];
-        state.currentPso = pPipelineState;
-        if (pPipelineState != nullptr)
-            EnsureRRPsoMetadata(pPipelineState);
-    }
-    o_SetPipelineState(This, pPipelineState);
-}
-
-HRESULT ResTrack_Dx12::hkReset(ID3D12GraphicsCommandList* This, ID3D12CommandAllocator* pAllocator,
-                               ID3D12PipelineState* pInitialState)
-{
-    const HRESULT result = o_Reset(This, pAllocator, pInitialState);
-    if (SUCCEEDED(result) && gRRResourceInspectorEnabled.load(std::memory_order_relaxed))
-    {
-        std::scoped_lock psoLock(gRRPsoMutex);
-        RRCommandListPsoState& state = gRRCommandListPsoStates[This];
-        state = {};
-        state.currentPso = pInitialState;
-        if (pInitialState != nullptr)
-            EnsureRRPsoMetadata(pInitialState);
-    }
-    return result;
-}
-
-void ResTrack_Dx12::hkSetMarker(ID3D12GraphicsCommandList* This, UINT Metadata, const void* pData, UINT Size)
-{
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed))
-    {
-        std::string name = DecodeRRMarkerName(pData, Size);
-        if (!name.empty())
-        {
-            std::scoped_lock markerLock(gRRMarkerMutex);
-            RRCommandListMarkerState& state = gRRCommandListMarkers[This];
-            state.lastMarker = name;
-            ObserveRRMarker(name);
-        }
-    }
-    o_SetMarker(This, Metadata, pData, Size);
-}
-
-void ResTrack_Dx12::hkBeginEvent(ID3D12GraphicsCommandList* This, UINT Metadata, const void* pData, UINT Size)
-{
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed))
-    {
-        std::string name = DecodeRRMarkerName(pData, Size);
-        std::scoped_lock markerLock(gRRMarkerMutex);
-        RRCommandListMarkerState& state = gRRCommandListMarkers[This];
-        state.stack.push_back(name);
-        if (!name.empty())
-        {
-            state.lastMarker = name;
-            ObserveRRMarker(name);
-        }
-    }
-    o_BeginEvent(This, Metadata, pData, Size);
-}
-
-void ResTrack_Dx12::hkEndEvent(ID3D12GraphicsCommandList* This)
-{
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed))
-    {
-        std::scoped_lock markerLock(gRRMarkerMutex);
-        const auto found = gRRCommandListMarkers.find(This);
-        if (found != gRRCommandListMarkers.end() && !found->second.stack.empty())
-            found->second.stack.pop_back();
-    }
-    o_EndEvent(This);
-}
-
 void ResTrack_Dx12::hkCopyDescriptors(ID3D12Device* This, UINT NumDestDescriptorRanges,
                                       D3D12_CPU_DESCRIPTOR_HANDLE* pDestDescriptorRangeStarts,
                                       UINT* pDestDescriptorRangeSizes, UINT NumSrcDescriptorRanges,
@@ -2177,48 +866,10 @@ void ResTrack_Dx12::hkCopyDescriptors(ID3D12Device* This, UINT NumDestDescriptor
     if (NumDestDescriptorRanges == 0 || pDestDescriptorRangeStarts == nullptr)
         return;
 
-    const UINT inc = This->GetDescriptorHandleIncrementSize(DescriptorHeapsType);
-
     if (!Config::Instance()->FGAlwaysTrackHeaps.value_or_default() && !IsHudFixActive())
-    {
-        const auto rangeContainsScalarCandidate =
-            [inc](UINT rangeCount, const D3D12_CPU_DESCRIPTOR_HANDLE* starts, const UINT* sizes)
-        {
-            if (rangeCount == 0 || starts == nullptr)
-                return false;
+        return;
 
-            for (UINT range = 0; range < rangeCount; ++range)
-            {
-                const UINT descriptorCount = sizes == nullptr ? 1u : sizes[range];
-                auto heap = GetHeapByCpuHandle(starts[range].ptr);
-                if (heap == nullptr)
-                    continue;
-
-                for (UINT descriptor = 0; descriptor < descriptorCount; ++descriptor)
-                {
-                    const SIZE_T handle = starts[range].ptr + static_cast<SIZE_T>(descriptor) * inc;
-                    ResourceInfo info {};
-                    if (heap->GetByCpuHandle(handle, info) && info.buffer != nullptr &&
-                        IsRRScalarCandidateFormat(info.format))
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            return false;
-        };
-
-        // Process a copy only when it propagates a scalar candidate or
-        // overwrites a destination slot that previously contained one.
-        if (!rangeContainsScalarCandidate(NumSrcDescriptorRanges, pSrcDescriptorRangeStarts,
-                                          pSrcDescriptorRangeSizes) &&
-            !rangeContainsScalarCandidate(NumDestDescriptorRanges, pDestDescriptorRangeStarts,
-                                          pDestDescriptorRangeSizes))
-        {
-            return;
-        }
-    }
+    const UINT inc = This->GetDescriptorHandleIncrementSize(DescriptorHeapsType);
 
     // Validate that we have source descriptors to copy
     bool haveSources = (NumSrcDescriptorRanges > 0 && pSrcDescriptorRangeStarts != nullptr);
@@ -2229,13 +880,17 @@ void ResTrack_Dx12::hkCopyDescriptors(ID3D12Device* This, UINT NumDestDescriptor
     UINT destRangeIndex = 0;
     UINT destOffsetInRange = 0;
 
-    // Cache for heap lookups to avoid repeated lookups within the same range
+    // Cache heap and direct-index state for each active range.
     std::shared_ptr<HeapInfo> cachedDestHeap;
     SIZE_T cachedDestRangeStart = 0;
     UINT cachedDestRangeSize = 0;
+    UINT cachedDestBaseIndex = 0;
+    bool cachedDestRangeFits = false;
     std::shared_ptr<HeapInfo> cachedSrcHeap;
     SIZE_T cachedSrcRangeStart = 0;
     UINT cachedSrcRangeSize = 0;
+    UINT cachedSrcBaseIndex = 0;
+    bool cachedSrcRangeFits = false;
 
     // Process all destination descriptors
     while (destRangeIndex < NumDestDescriptorRanges)
@@ -2247,10 +902,10 @@ void ResTrack_Dx12::hkCopyDescriptors(ID3D12Device* This, UINT NumDestDescriptor
             cachedDestRangeSize =
                 (pDestDescriptorRangeSizes == nullptr) ? 1 : pDestDescriptorRangeSizes[destRangeIndex];
             cachedDestHeap = GetHeapByCpuHandle(cachedDestRangeStart);
+            cachedDestRangeFits = cachedDestHeap != nullptr &&
+                                  cachedDestHeap->GetCpuIndex(cachedDestRangeStart, cachedDestBaseIndex) &&
+                                  cachedDestRangeSize <= cachedDestHeap->numDescriptors - cachedDestBaseIndex;
         }
-
-        // Calculate current destination handle
-        const SIZE_T destHandle = cachedDestRangeStart + (static_cast<SIZE_T>(destOffsetInRange) * inc);
 
         // Get or update source information
         ResourceInfo srcInfo {};
@@ -2264,13 +919,23 @@ void ResTrack_Dx12::hkCopyDescriptors(ID3D12Device* This, UINT NumDestDescriptor
                 cachedSrcRangeSize =
                     (pSrcDescriptorRangeSizes == nullptr) ? 1 : pSrcDescriptorRangeSizes[srcRangeIndex];
                 cachedSrcHeap = GetHeapByCpuHandle(cachedSrcRangeStart);
+                cachedSrcRangeFits = cachedSrcHeap != nullptr &&
+                                     cachedSrcHeap->GetCpuIndex(cachedSrcRangeStart, cachedSrcBaseIndex) &&
+                                     cachedSrcRangeSize <= cachedSrcHeap->numDescriptors - cachedSrcBaseIndex;
             }
 
-            // Calculate current source handle
-            const SIZE_T srcHandle = cachedSrcRangeStart + (static_cast<SIZE_T>(srcOffsetInRange) * inc);
-
             if (cachedSrcHeap != nullptr)
-                haveSrcInfo = cachedSrcHeap->GetByCpuHandle(srcHandle, srcInfo);
+            {
+                if (cachedSrcRangeFits)
+                {
+                    haveSrcInfo = cachedSrcHeap->GetByIndex(cachedSrcBaseIndex + srcOffsetInRange, srcInfo);
+                }
+                else
+                {
+                    const SIZE_T srcHandle = cachedSrcRangeStart + (static_cast<SIZE_T>(srcOffsetInRange) * inc);
+                    haveSrcInfo = cachedSrcHeap->GetByCpuHandle(srcHandle, srcInfo);
+                }
+            }
 
             // Advance source position
             srcOffsetInRange++;
@@ -2283,10 +948,22 @@ void ResTrack_Dx12::hkCopyDescriptors(ID3D12Device* This, UINT NumDestDescriptor
 
         if (cachedDestHeap != nullptr)
         {
-            if (haveSrcInfo)
-                cachedDestHeap->SetByCpuHandle(destHandle, srcInfo);
+            if (cachedDestRangeFits)
+            {
+                const auto destIndex = cachedDestBaseIndex + destOffsetInRange;
+                if (haveSrcInfo)
+                    cachedDestHeap->SetByIndex(destIndex, srcInfo);
+                else
+                    cachedDestHeap->ClearByIndex(destIndex);
+            }
             else
-                cachedDestHeap->ClearByCpuHandle(destHandle);
+            {
+                const SIZE_T destHandle = cachedDestRangeStart + (static_cast<SIZE_T>(destOffsetInRange) * inc);
+                if (haveSrcInfo)
+                    cachedDestHeap->SetByCpuHandle(destHandle, srcInfo);
+                else
+                    cachedDestHeap->ClearByCpuHandle(destHandle);
+            }
         }
 
         // Advance destination position
@@ -2311,31 +988,41 @@ void ResTrack_Dx12::hkCopyDescriptorsSimple(ID3D12Device* This, UINT NumDescript
         DescriptorHeapsType != D3D12_DESCRIPTOR_HEAP_TYPE_RTV)
         return;
 
-    auto size = This->GetDescriptorHandleIncrementSize(DescriptorHeapsType);
-
     if (!Config::Instance()->FGAlwaysTrackHeaps.value_or_default() && !IsHudFixActive())
+        return;
+
+    if (NumDescriptors == 0)
+        return;
+
+    auto srcHeap = SrcDescriptorRangeStart.ptr != 0 ? GetHeapByCpuHandle(SrcDescriptorRangeStart.ptr) : nullptr;
+    auto dstHeap = GetHeapByCpuHandle(DestDescriptorRangeStart.ptr);
+
+    UINT srcBaseIndex = 0;
+    UINT dstBaseIndex = 0;
+    const bool srcRangeFits = SrcDescriptorRangeStart.ptr == 0 ||
+                              (srcHeap != nullptr && srcHeap->GetCpuIndex(SrcDescriptorRangeStart.ptr, srcBaseIndex) &&
+                               NumDescriptors <= srcHeap->numDescriptors - srcBaseIndex);
+    const bool dstRangeFits = dstHeap != nullptr && dstHeap->GetCpuIndex(DestDescriptorRangeStart.ptr, dstBaseIndex) &&
+                              NumDescriptors <= dstHeap->numDescriptors - dstBaseIndex;
+
+    if (srcRangeFits && dstRangeFits)
     {
-        bool containsScalarCandidate = false;
-        auto srcHeap = GetHeapByCpuHandle(SrcDescriptorRangeStart.ptr);
-        auto dstHeap = GetHeapByCpuHandle(DestDescriptorRangeStart.ptr);
-        for (UINT descriptor = 0; descriptor < NumDescriptors && !containsScalarCandidate; ++descriptor)
+        for (UINT i = 0; i < NumDescriptors; ++i)
         {
-            const SIZE_T srcHandle = SrcDescriptorRangeStart.ptr + static_cast<SIZE_T>(descriptor) * size;
-            const SIZE_T dstHandle = DestDescriptorRangeStart.ptr + static_cast<SIZE_T>(descriptor) * size;
-            ResourceInfo srcInfo {};
-            ResourceInfo dstInfo {};
-            const bool hasSrc = srcHeap != nullptr && srcHeap->GetByCpuHandle(srcHandle, srcInfo);
-            const bool hasDst = dstHeap != nullptr && dstHeap->GetByCpuHandle(dstHandle, dstInfo);
-            containsScalarCandidate =
-                (hasSrc && srcInfo.buffer != nullptr && IsRRScalarCandidateFormat(srcInfo.format)) ||
-                (hasDst && dstInfo.buffer != nullptr && IsRRScalarCandidateFormat(dstInfo.format));
+            ResourceInfo buffer {};
+            if (srcHeap != nullptr && srcHeap->GetByIndex(srcBaseIndex + i, buffer))
+                dstHeap->SetByIndex(dstBaseIndex + i, buffer);
+            else
+                dstHeap->ClearByIndex(dstBaseIndex + i);
         }
 
-        if (!containsScalarCandidate)
-            return;
+        return;
     }
 
-    for (size_t i = 0; i < NumDescriptors; i++)
+    // Old behavior for malformed/cross ranges.
+    const auto size = This->GetDescriptorHandleIncrementSize(DescriptorHeapsType);
+
+    for (UINT i = 0; i < NumDescriptors; ++i)
     {
         std::shared_ptr<HeapInfo> srcHeap;
         SIZE_T srcHandle = 0;
@@ -2373,11 +1060,687 @@ void ResTrack_Dx12::hkCopyDescriptorsSimple(ID3D12Device* This, UINT NumDescript
 
 #pragma endregion
 
+#pragma region Commandlist state
+
+void ResTrack_Dx12::RemoveBindingState(ID3D12GraphicsCommandList* commandList)
+{
+    if (commandList == nullptr)
+        return;
+
+    if (!_useShards)
+    {
+        std::lock_guard<std::mutex> lock(_bindingStateMutex);
+        _bindingStates.erase(commandList);
+        return;
+    }
+
+    auto& shard = _bindingShards[GetShardIndex(commandList)];
+    std::lock_guard<BindingStateMutex> lock(shard.mutex);
+    shard.map.erase(commandList);
+}
+
+void ResTrack_Dx12::ClearBindingStates()
+{
+    if (!_useShards)
+    {
+        std::lock_guard<std::mutex> lock(_bindingStateMutex);
+        _bindingStates.clear();
+        return;
+    }
+
+    for (auto& shard : _bindingShards)
+    {
+        std::lock_guard<BindingStateMutex> lock(shard.mutex);
+        shard.map.clear();
+    }
+}
+
+CommandListBindingState* ResTrack_Dx12::GetOrCreateBindingState(ID3D12GraphicsCommandList* commandList)
+{
+    if (!_bindingTrackingEnabled.load(std::memory_order_acquire) || commandList == nullptr ||
+        State::Instance().isShuttingDown)
+        return nullptr;
+
+    CommandListBindingState* state = nullptr;
+    bool created = false;
+
+    if (!_useShards)
+    {
+        std::lock_guard<std::mutex> lock(_bindingStateMutex);
+        auto [it, inserted] = _bindingStates.try_emplace(commandList);
+        if (inserted)
+            it->second = std::make_unique<CommandListBindingState>();
+        state = it->second.get();
+        created = inserted;
+    }
+    else
+    {
+        auto& shard = _bindingShards[GetShardIndex(commandList)];
+        std::lock_guard<BindingStateMutex> lock(shard.mutex);
+        auto [it, inserted] = shard.map.try_emplace(commandList);
+        if (inserted)
+            it->second = std::make_unique<CommandListBindingState>();
+        state = it->second.get();
+        created = inserted;
+    }
+
+    if (!created)
+        return state;
+
+    ID3DDestructionNotifier* notifier = nullptr;
+    auto result = commandList->QueryInterface(IID_PPV_ARGS(&notifier));
+    if (FAILED(result) || notifier == nullptr)
+    {
+        LOG_DEBUG("ID3DDestructionNotifier is not available for commandlist {:X}, result: {:X}", (size_t) commandList,
+                  (UINT) result);
+        RemoveBindingState(commandList);
+        return nullptr;
+    }
+
+    UINT callbackId = 0;
+    result = notifier->RegisterDestructionCallback(&ResTrack_Dx12::CommandListDestroyed, commandList, &callbackId);
+    notifier->Release();
+
+    if (FAILED(result))
+    {
+        LOG_DEBUG("Can't register commandlist remove callback for {:X}, result: {:X}", (size_t) commandList,
+                  (UINT) result);
+        RemoveBindingState(commandList);
+        return nullptr;
+    }
+
+    return state;
+}
+
+CommandListBindingState* ResTrack_Dx12::FindBindingState(ID3D12GraphicsCommandList* commandList)
+{
+    if (commandList == nullptr)
+        return nullptr;
+
+    if (!_useShards)
+    {
+        std::lock_guard<std::mutex> lock(_bindingStateMutex);
+        auto it = _bindingStates.find(commandList);
+        return it != _bindingStates.end() ? it->second.get() : nullptr;
+    }
+
+    auto& shard = _bindingShards[GetShardIndex(commandList)];
+    std::lock_guard<BindingStateMutex> lock(shard.mutex);
+    auto it = shard.map.find(commandList);
+    return it != shard.map.end() ? it->second.get() : nullptr;
+}
+
+template <typename RootParameterT>
+static void BuildRootSignatureInfo(RootSignatureInfo& info, UINT numParameters, const RootParameterT* parameters)
+{
+    if (parameters == nullptr)
+        return;
+
+    const auto parameterCount =
+        std::min<UINT>(numParameters, static_cast<UINT>(CommandListBindingState::MAX_ROOT_PARAMETERS));
+
+    for (UINT parameterIndex = 0; parameterIndex < parameterCount; ++parameterIndex)
+    {
+        const auto& parameter = parameters[parameterIndex];
+        if (parameter.ParameterType != D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE ||
+            parameter.DescriptorTable.NumDescriptorRanges == 0 ||
+            parameter.DescriptorTable.pDescriptorRanges == nullptr)
+            continue;
+
+        auto& tableInfo = info.parameters[parameterIndex];
+        tableInfo.firstRange = static_cast<UINT>(info.ranges.size());
+        tableInfo.visibility = parameter.ShaderVisibility;
+
+        UINT nextOffset = 0;
+        bool nextOffsetValid = true;
+
+        for (UINT rangeIndex = 0; rangeIndex < parameter.DescriptorTable.NumDescriptorRanges; ++rangeIndex)
+        {
+            const auto& range = parameter.DescriptorTable.pDescriptorRanges[rangeIndex];
+
+            UINT offset = range.OffsetInDescriptorsFromTableStart;
+            bool offsetValid = true;
+            if (offset == D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND)
+            {
+                offsetValid = nextOffsetValid;
+                offset = nextOffset;
+            }
+
+            if (offsetValid && (range.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_SRV ||
+                                range.RangeType == D3D12_DESCRIPTOR_RANGE_TYPE_UAV))
+            {
+                info.ranges.push_back({ offset, range.NumDescriptors, range.RangeType });
+            }
+
+            if (!offsetValid || range.NumDescriptors == UINT_MAX || offset > UINT_MAX - range.NumDescriptors)
+            {
+                nextOffsetValid = false;
+            }
+            else
+            {
+                nextOffset = offset + range.NumDescriptors;
+                nextOffsetValid = true;
+            }
+        }
+
+        tableInfo.rangeCount = static_cast<UINT>(info.ranges.size()) - tableInfo.firstRange;
+    }
+}
+
+std::shared_ptr<RootSignatureInfo> ResTrack_Dx12::FindRootSignatureInfo(ID3D12RootSignature* rootSignature)
+{
+    if (rootSignature == nullptr)
+        return nullptr;
+
+    std::lock_guard<std::mutex> lock(_rootSignatureInfoMutex);
+    auto it = _rootSignatureInfos.find(rootSignature);
+    return it != _rootSignatureInfos.end() ? it->second : nullptr;
+}
+
+void __stdcall ResTrack_Dx12::RootSignatureDestroyed(void* data)
+{
+    if (data == nullptr || State::Instance().isShuttingDown)
+        return;
+
+    std::lock_guard<std::mutex> lock(_rootSignatureInfoMutex);
+    _rootSignatureInfos.erase(static_cast<ID3D12RootSignature*>(data));
+}
+
+void ResTrack_Dx12::RegisterRootSignature(ID3D12RootSignature* rootSignature,
+                                          const D3D12_VERSIONED_ROOT_SIGNATURE_DESC* desc)
+{
+    if (rootSignature == nullptr || desc == nullptr)
+        return;
+
+    auto info = std::make_shared<RootSignatureInfo>();
+    switch (desc->Version)
+    {
+    case D3D_ROOT_SIGNATURE_VERSION_1_0:
+        BuildRootSignatureInfo(*info, desc->Desc_1_0.NumParameters, desc->Desc_1_0.pParameters);
+        info->pixelShaderRootAccess =
+            (desc->Desc_1_0.Flags & D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS) == 0;
+        break;
+
+    case D3D_ROOT_SIGNATURE_VERSION_1_1:
+        BuildRootSignatureInfo(*info, desc->Desc_1_1.NumParameters, desc->Desc_1_1.pParameters);
+        info->pixelShaderRootAccess =
+            (desc->Desc_1_1.Flags & D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS) == 0;
+        break;
+
+    case D3D_ROOT_SIGNATURE_VERSION_1_2:
+        BuildRootSignatureInfo(*info, desc->Desc_1_2.NumParameters, desc->Desc_1_2.pParameters);
+        info->pixelShaderRootAccess =
+            (desc->Desc_1_2.Flags & D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS) == 0;
+        break;
+
+    default:
+        return;
+    }
+
+    ID3DDestructionNotifier* notifier = nullptr;
+    auto result = rootSignature->QueryInterface(IID_PPV_ARGS(&notifier));
+    if (FAILED(result) || notifier == nullptr)
+    {
+        LOG_DEBUG("ID3DDestructionNotifier is not available for root signature {:X}, result: {:X}",
+                  (size_t) rootSignature, (UINT) result);
+        return;
+    }
+
+    UINT callbackId = 0;
+    result = notifier->RegisterDestructionCallback(&ResTrack_Dx12::RootSignatureDestroyed, rootSignature, &callbackId);
+    notifier->Release();
+
+    if (FAILED(result))
+    {
+        LOG_DEBUG("Can't register root signature remove callback for {:X}, result: {:X}", (size_t) rootSignature,
+                  (UINT) result);
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(_rootSignatureInfoMutex);
+    _rootSignatureInfos.insert_or_assign(rootSignature, std::move(info));
+}
+
+void ResTrack_Dx12::ResetBindingState(ID3D12GraphicsCommandList* commandList)
+{
+    auto* state = FindBindingState(commandList);
+    if (state == nullptr)
+        return;
+
+    state->graphicsTableMask = 0;
+    state->computeTableMask = 0;
+    state->renderTargetCount = 0;
+    state->renderTargetsContiguous = false;
+    state->graphicsRootSignature = nullptr;
+    state->computeRootSignature = nullptr;
+    state->graphicsRootSignatureInfo.reset();
+    state->computeRootSignatureInfo.reset();
+    state->cbvSrvUavHeap = nullptr;
+    state->cbvSrvUavHeapInfo.reset();
+}
+
+void __stdcall ResTrack_Dx12::CommandListDestroyed(void* data)
+{
+    if (data == nullptr || State::Instance().isShuttingDown)
+        return;
+    RemoveBindingState(static_cast<ID3D12GraphicsCommandList*>(data));
+}
+
+void ResTrack_Dx12::OnSetDescriptorHeaps(ID3D12GraphicsCommandList* commandList, UINT numDescriptorHeaps,
+                                         ID3D12DescriptorHeap* const* descriptorHeaps)
+{
+    auto* state = GetOrCreateBindingState(commandList);
+    if (state == nullptr)
+        return;
+
+    ID3D12DescriptorHeap* cbvSrvUavHeap = nullptr;
+    if (descriptorHeaps != nullptr)
+    {
+        for (UINT i = 0; i < numDescriptorHeaps; ++i)
+        {
+            auto* heap = descriptorHeaps[i];
+            if (heap != nullptr && heap->GetDesc().Type == D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
+            {
+                cbvSrvUavHeap = heap;
+                break;
+            }
+        }
+    }
+
+    if (state->cbvSrvUavHeap == cbvSrvUavHeap)
+    {
+        auto* trackedHeap = state->cbvSrvUavHeapInfo.get();
+        if (cbvSrvUavHeap == nullptr)
+        {
+            state->cbvSrvUavHeapInfo.reset();
+            return;
+        }
+
+        if (trackedHeap != nullptr && trackedHeap->active.load(std::memory_order_acquire) &&
+            trackedHeap->heap == cbvSrvUavHeap)
+            return;
+
+        const auto gpuStart = cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart().ptr;
+        auto heapInfo = gpuStart != 0 ? GetHeapByGpuHandleGR(gpuStart) : nullptr;
+        if (heapInfo != nullptr && heapInfo->heap != cbvSrvUavHeap)
+            heapInfo.reset();
+
+        state->cbvSrvUavHeapInfo = std::move(heapInfo);
+        return;
+    }
+
+    state->graphicsTableMask = 0;
+    state->computeTableMask = 0;
+    state->cbvSrvUavHeap = cbvSrvUavHeap;
+    state->cbvSrvUavHeapInfo.reset();
+
+    if (cbvSrvUavHeap != nullptr)
+    {
+        const auto gpuStart = cbvSrvUavHeap->GetGPUDescriptorHandleForHeapStart().ptr;
+        auto heapInfo = gpuStart != 0 ? GetHeapByGpuHandleGR(gpuStart) : nullptr;
+        if (heapInfo != nullptr && heapInfo->heap == cbvSrvUavHeap)
+            state->cbvSrvUavHeapInfo = std::move(heapInfo);
+    }
+}
+
+void ResTrack_Dx12::OnSetGraphicsRootSignature(ID3D12GraphicsCommandList* commandList,
+                                               ID3D12RootSignature* rootSignature)
+{
+    auto* state = GetOrCreateBindingState(commandList);
+    if (state == nullptr)
+        return;
+
+    if (state->graphicsRootSignature != rootSignature)
+    {
+        state->graphicsTableMask = 0;
+        state->graphicsRootSignature = rootSignature;
+        state->graphicsRootSignatureInfo = FindRootSignatureInfo(rootSignature);
+    }
+}
+
+void ResTrack_Dx12::OnSetComputeRootSignature(ID3D12GraphicsCommandList* commandList,
+                                              ID3D12RootSignature* rootSignature)
+{
+    auto* state = GetOrCreateBindingState(commandList);
+    if (state == nullptr)
+        return;
+
+    if (state->computeRootSignature != rootSignature)
+    {
+        state->computeTableMask = 0;
+        state->computeRootSignature = rootSignature;
+        state->computeRootSignatureInfo = FindRootSignatureInfo(rootSignature);
+    }
+}
+
+bool ResTrack_Dx12::ResolveGraphicsBinding(const HeapInfo* boundHeap, SIZE_T gpuHandle, ResourceInfo& outInfo)
+{
+    if (gpuHandle == 0)
+        return false;
+
+    std::shared_ptr<HeapInfo> fallbackHeap;
+    auto* heap = boundHeap;
+    if (heap == nullptr || !heap->active.load(std::memory_order_acquire) || gpuHandle < heap->gpuStart ||
+        gpuHandle >= heap->gpuEnd)
+    {
+        fallbackHeap = GetHeapByGpuHandleGR(gpuHandle);
+        heap = fallbackHeap.get();
+    }
+
+    if (heap == nullptr || !heap->GetByGpuHandle(gpuHandle, outInfo) || outInfo.buffer == nullptr ||
+        !IsDescriptorEnabled(outInfo.type))
+        return false;
+
+    outInfo.state =
+        outInfo.type == UAV ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    outInfo.captureInfo = CaptureInfo::SetGR;
+    return true;
+}
+
+bool ResTrack_Dx12::ResolveComputeBinding(const HeapInfo* boundHeap, SIZE_T gpuHandle, ResourceInfo& outInfo)
+{
+    if (gpuHandle == 0)
+        return false;
+
+    std::shared_ptr<HeapInfo> fallbackHeap;
+    auto* heap = boundHeap;
+    if (heap == nullptr || !heap->active.load(std::memory_order_acquire) || gpuHandle < heap->gpuStart ||
+        gpuHandle >= heap->gpuEnd)
+    {
+        fallbackHeap = GetHeapByGpuHandleCR(gpuHandle);
+        heap = fallbackHeap.get();
+    }
+
+    if (heap == nullptr || !heap->GetByGpuHandle(gpuHandle, outInfo) || outInfo.buffer == nullptr ||
+        !IsDescriptorEnabled(outInfo.type))
+        return false;
+
+    outInfo.state =
+        outInfo.type == UAV ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    outInfo.captureInfo = CaptureInfo::SetCR;
+    return true;
+}
+
+bool ResTrack_Dx12::ProcessDescriptorTableBinding(ID3D12GraphicsCommandList* commandList,
+                                                  const RootSignatureInfo* rootInfo, UINT rootParameterIndex,
+                                                  const HeapInfo* boundHeap, SIZE_T baseHandle, UINT captureInfo,
+                                                  bool graphics)
+{
+    if (baseHandle == 0)
+        return false;
+
+    // Missing metadata keeps the pre-F14 base-descriptor behavior.
+    if (rootInfo == nullptr)
+    {
+        ResourceInfo candidate {};
+        const bool resolved = graphics ? ResolveGraphicsBinding(boundHeap, baseHandle, candidate)
+                                       : ResolveComputeBinding(boundHeap, baseHandle, candidate);
+        if (!resolved)
+            return false;
+
+        candidate.captureInfo |= captureInfo;
+        return Hudfix_Dx12::CheckForHudless(commandList, &candidate, candidate.state);
+    }
+
+    if (rootParameterIndex >= CommandListBindingState::MAX_ROOT_PARAMETERS)
+        return false;
+
+    const auto& tableInfo = rootInfo->parameters[rootParameterIndex];
+    if (tableInfo.rangeCount == 0)
+        return false;
+
+    if (graphics && (!rootInfo->pixelShaderRootAccess || (tableInfo.visibility != D3D12_SHADER_VISIBILITY_ALL &&
+                                                          tableInfo.visibility != D3D12_SHADER_VISIBILITY_PIXEL)))
+        return false;
+
+    std::shared_ptr<HeapInfo> fallbackHeap;
+    auto* heap = boundHeap;
+    if (heap == nullptr || !heap->active.load(std::memory_order_acquire) || baseHandle < heap->gpuStart ||
+        baseHandle >= heap->gpuEnd)
+    {
+        fallbackHeap = graphics ? GetHeapByGpuHandleGR(baseHandle) : GetHeapByGpuHandleCR(baseHandle);
+        heap = fallbackHeap.get();
+    }
+
+    UINT baseIndex = 0;
+    if (heap == nullptr || !heap->GetGpuIndex(baseHandle, baseIndex))
+        return false;
+
+    auto* config = Config::Instance();
+    const bool srvEnabled = !config->FGHudfixDisableSRV.value_or_default();
+    const bool uavEnabled = !config->FGHudfixDisableUAV.value_or_default();
+
+    // Bound the complete descriptor table, not each individual range. A root table can contain many
+    // ranges, so a per-range cap can still create large Draw/Dispatch spikes.
+    static constexpr UINT MAX_DESCRIPTORS_PER_TABLE = 16;
+    UINT remainingDescriptorBudget = MAX_DESCRIPTORS_PER_TABLE;
+
+    // Descriptor tables often alias the same resource in multiple slots/ranges. Avoid sending the
+    // same resource/type pair through the HUDless policy more than once during this table scan.
+    std::array<ID3D12Resource*, MAX_DESCRIPTORS_PER_TABLE> seenResources {};
+    std::array<ResourceType, MAX_DESCRIPTORS_PER_TABLE> seenTypes {};
+    UINT seenCount = 0;
+
+    const UINT rangeEnd = tableInfo.firstRange + tableInfo.rangeCount;
+    for (UINT rangeIndex = tableInfo.firstRange; rangeIndex < rangeEnd && remainingDescriptorBudget > 0; ++rangeIndex)
+    {
+        const auto& range = rootInfo->ranges[rangeIndex];
+        if ((range.type == D3D12_DESCRIPTOR_RANGE_TYPE_SRV && !srvEnabled) ||
+            (range.type == D3D12_DESCRIPTOR_RANGE_TYPE_UAV && !uavEnabled))
+            continue;
+
+        const uint64_t firstIndex64 = static_cast<uint64_t>(baseIndex) + range.offset;
+        if (firstIndex64 >= heap->numDescriptors)
+            continue;
+
+        const auto firstIndex = static_cast<UINT>(firstIndex64);
+        const UINT available = heap->numDescriptors - firstIndex;
+
+        // Unbounded bindless ranges stay at one descriptor. Bounded ranges consume the shared table
+        // budget so many small ranges cannot multiply the hot-path cost.
+        const UINT descriptorCount =
+            range.count == UINT_MAX ? 1
+                                    : std::min<UINT>(std::min<UINT>(range.count, available), remainingDescriptorBudget);
+
+        for (UINT descriptorOffset = 0; descriptorOffset < descriptorCount; ++descriptorOffset)
+        {
+            ResourceInfo candidate {};
+            if (!heap->GetByIndex(firstIndex + descriptorOffset, candidate) || candidate.buffer == nullptr)
+                continue;
+
+            if ((range.type == D3D12_DESCRIPTOR_RANGE_TYPE_SRV && candidate.type != SRV) ||
+                (range.type == D3D12_DESCRIPTOR_RANGE_TYPE_UAV && candidate.type != UAV))
+                continue;
+
+            bool duplicate = false;
+            for (UINT seenIndex = 0; seenIndex < seenCount; ++seenIndex)
+            {
+                if (seenResources[seenIndex] == candidate.buffer && seenTypes[seenIndex] == candidate.type)
+                {
+                    duplicate = true;
+                    break;
+                }
+            }
+
+            if (duplicate)
+                continue;
+
+            seenResources[seenCount] = candidate.buffer;
+            seenTypes[seenCount] = candidate.type;
+            ++seenCount;
+
+            candidate.state = candidate.type == UAV ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+                                                    : (graphics ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+                                                                : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            candidate.captureInfo = graphics ? CaptureInfo::SetGR : CaptureInfo::SetCR;
+            candidate.captureInfo |= captureInfo;
+
+            if (Hudfix_Dx12::CheckForHudless(commandList, &candidate, candidate.state))
+                return true;
+        }
+
+        remainingDescriptorBudget -= descriptorCount;
+    }
+
+    return false;
+}
+
+bool ResTrack_Dx12::ResolveRenderTargetBinding(SIZE_T cpuHandle, ResourceInfo& outInfo)
+{
+    if (cpuHandle == 0)
+        return false;
+
+    auto heap = GetHeapByCpuHandleRTV(cpuHandle);
+    if (heap == nullptr || !heap->GetByCpuHandle(cpuHandle, outInfo) || outInfo.buffer == nullptr ||
+        !IsDescriptorEnabled(outInfo.type))
+        return false;
+
+    outInfo.state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    outInfo.captureInfo = CaptureInfo::OMSetRTV;
+    return true;
+}
+
+bool ResTrack_Dx12::ProcessGraphicsBindings(ID3D12GraphicsCommandList* commandList, UINT captureInfo)
+{
+    if (!_bindingTrackingEnabled.load(std::memory_order_acquire) ||
+        Config::Instance()->FGImmediateCapture.value_or_default())
+        return false;
+
+    auto* state = FindBindingState(commandList);
+    if (state == nullptr)
+        return false;
+
+    if (Hudfix_Dx12::SkipHudlessChecks())
+        return true;
+
+    if (!Config::Instance()->FGHudfixDisableSGR.value_or_default())
+    {
+        auto mask = state->graphicsTableMask;
+        for (UINT index = 0; mask != 0 && index < CommandListBindingState::MAX_ROOT_PARAMETERS; ++index, mask >>= 1)
+        {
+            if ((mask & 1) == 0)
+                continue;
+
+            if (ProcessDescriptorTableBinding(commandList, state->graphicsRootSignatureInfo.get(), index,
+                                              state->cbvSrvUavHeapInfo.get(), state->graphicsTables[index], captureInfo,
+                                              true))
+                return true;
+        }
+    }
+
+    if (!Config::Instance()->FGHudfixDisableOM.value_or_default() && state->renderTargetCount > 0)
+    {
+        if (state->renderTargetsContiguous)
+        {
+            const auto baseHandle = state->renderTargets[0];
+            auto heap = GetHeapByCpuHandleRTV(baseHandle);
+            if (heap != nullptr)
+            {
+                for (UINT i = 0; i < state->renderTargetCount; ++i)
+                {
+                    ResourceInfo candidate {};
+                    if (!ResolveRenderTargetBinding(baseHandle + (static_cast<SIZE_T>(i) * heap->increment), candidate))
+                        continue;
+                    candidate.captureInfo |= captureInfo;
+                    if (Hudfix_Dx12::CheckForHudless(commandList, &candidate, candidate.state))
+                        return true;
+                }
+            }
+        }
+        else
+        {
+            for (UINT i = 0; i < state->renderTargetCount; ++i)
+            {
+                ResourceInfo candidate {};
+                if (!ResolveRenderTargetBinding(state->renderTargets[i], candidate))
+                    continue;
+                candidate.captureInfo |= captureInfo;
+                if (Hudfix_Dx12::CheckForHudless(commandList, &candidate, candidate.state))
+                    return true;
+            }
+        }
+    }
+
+    return true;
+}
+
+bool ResTrack_Dx12::ProcessComputeBindings(ID3D12GraphicsCommandList* commandList, UINT captureInfo)
+{
+    if (!_bindingTrackingEnabled.load(std::memory_order_acquire) ||
+        Config::Instance()->FGImmediateCapture.value_or_default())
+        return false;
+
+    auto* state = FindBindingState(commandList);
+    if (state == nullptr)
+        return false;
+
+    if (Hudfix_Dx12::SkipHudlessChecks())
+        return true;
+
+    if (!Config::Instance()->FGHudfixDisableSCR.value_or_default())
+    {
+        auto mask = state->computeTableMask;
+        for (UINT index = 0; mask != 0 && index < CommandListBindingState::MAX_ROOT_PARAMETERS; ++index, mask >>= 1)
+        {
+            if ((mask & 1) == 0)
+                continue;
+
+            if (ProcessDescriptorTableBinding(commandList, state->computeRootSignatureInfo.get(), index,
+                                              state->cbvSrvUavHeapInfo.get(), state->computeTables[index], captureInfo,
+                                              false))
+                return true;
+        }
+    }
+
+    return true;
+}
+
+#pragma endregion
+
 #pragma region Shader input hooks
 
 void ResTrack_Dx12::hkSetGraphicsRootDescriptorTable(ID3D12GraphicsCommandList* This, UINT RootParameterIndex,
                                                      D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor)
 {
+    bool persistentBinding = false;
+    if (This != MenuOverlayDx::MenuCommandList() && !Hudfix_Dx12::SkipHudlessChecks())
+    {
+        if (auto* state = GetOrCreateBindingState(This);
+            state != nullptr && RootParameterIndex < CommandListBindingState::MAX_ROOT_PARAMETERS)
+        {
+            persistentBinding = true;
+            state->graphicsTables[RootParameterIndex] = BaseDescriptor.ptr;
+            const auto bit = UINT64_C(1) << RootParameterIndex;
+            if (BaseDescriptor.ptr != 0)
+                state->graphicsTableMask |= bit;
+            else
+                state->graphicsTableMask &= ~bit;
+
+            if (BaseDescriptor.ptr != 0 && (state->cbvSrvUavHeapInfo == nullptr ||
+                                            !state->cbvSrvUavHeapInfo->active.load(std::memory_order_acquire)))
+            {
+                if (auto heap = GetHeapByGpuHandleGR(BaseDescriptor.ptr))
+                {
+                    if (state->cbvSrvUavHeap != nullptr && state->cbvSrvUavHeap != heap->heap)
+                        heap.reset();
+
+                    if (heap != nullptr)
+                    {
+                        state->cbvSrvUavHeap = heap->heap;
+                        state->cbvSrvUavHeapInfo = std::move(heap);
+                    }
+                }
+            }
+        }
+    }
+
+    const bool immediateCapture = Config::Instance()->FGImmediateCapture.value_or_default();
+    if (persistentBinding && !immediateCapture)
+    {
+        o_SetGraphicsRootDescriptorTable(This, RootParameterIndex, BaseDescriptor);
+        return;
+    }
+
     // Consistent early exit - always call original function
     auto shouldTrack = !Config::Instance()->FGHudfixDisableSGR.value_or_default() && BaseDescriptor.ptr != 0 &&
                        IsHudFixActive() && !Hudfix_Dx12::SkipHudlessChecks() &&
@@ -2406,6 +1769,12 @@ void ResTrack_Dx12::hkSetGraphicsRootDescriptorTable(ID3D12GraphicsCommandList* 
         return;
     }
 
+    if (!IsDescriptorEnabled(capturedBuffer.type))
+    {
+        o_SetGraphicsRootDescriptorTable(This, RootParameterIndex, BaseDescriptor);
+        return;
+    }
+
     LOG_DEBUG_ONLY("CommandList: {:X}, Resource: {:X}", (size_t) This, (size_t) capturedBuffer.buffer);
 
     // Only proceed with tracking if we have a valid buffer
@@ -2414,12 +1783,12 @@ void ResTrack_Dx12::hkSetGraphicsRootDescriptorTable(ID3D12GraphicsCommandList* 
 
     // Track the resource
     bool capturedImmediately = false;
-    if (Config::Instance()->FGImmediateCapture.value_or_default())
+    if (immediateCapture)
     {
         capturedImmediately = Hudfix_Dx12::CheckForHudless(This, &capturedBuffer, capturedBuffer.state);
     }
 
-    if (!capturedImmediately)
+    if (!capturedImmediately && (!persistentBinding || immediateCapture))
     {
         auto fIndex = Hudfix_Dx12::ActivePresentFrame() % BUFFER_COUNT;
 
@@ -2470,45 +1839,40 @@ void ResTrack_Dx12::hkOMSetRenderTargets(ID3D12GraphicsCommandList* This, UINT N
                                          BOOL RTsSingleHandleToDescriptorRange,
                                          D3D12_CPU_DESCRIPTOR_HANDLE* pDepthStencilDescriptor)
 {
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) && This != MenuOverlayDx::MenuCommandList())
+    bool persistentBinding = false;
+    if (This != MenuOverlayDx::MenuCommandList() && !Hudfix_Dx12::SkipHudlessChecks())
     {
-        std::vector<ID3D12Resource*> renderTargets;
-        if (NumRenderTargetDescriptors > 0 && pRenderTargetDescriptors != nullptr)
+        if (auto* state = GetOrCreateBindingState(This); state != nullptr)
         {
-            renderTargets.reserve(NumRenderTargetDescriptors);
-            for (UINT index = 0; index < NumRenderTargetDescriptors; ++index)
-            {
-                std::shared_ptr<HeapInfo> heap;
-                SIZE_T handle = 0;
-                if (RTsSingleHandleToDescriptorRange)
-                {
-                    heap = GetHeapByCpuHandleRTV(pRenderTargetDescriptors[0].ptr);
-                    if (heap != nullptr)
-                    {
-                        handle = pRenderTargetDescriptors[0].ptr + static_cast<SIZE_T>(index) * heap->increment;
-                    }
-                }
-                else
-                {
-                    handle = pRenderTargetDescriptors[index].ptr;
-                    heap = GetHeapByCpuHandleRTV(handle);
-                }
+            persistentBinding = true;
+            state->renderTargetCount = 0;
+            state->renderTargetsContiguous = false;
 
-                ResourceInfo info {};
-                if (heap != nullptr && heap->GetByCpuHandle(handle, info) && info.buffer != nullptr)
-                    renderTargets.push_back(info.buffer);
+            if (NumRenderTargetDescriptors > 0 && pRenderTargetDescriptors != nullptr)
+            {
+                state->renderTargetCount =
+                    std::min<UINT>(NumRenderTargetDescriptors, D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT);
+                state->renderTargetsContiguous = RTsSingleHandleToDescriptorRange != FALSE;
+
+                if (state->renderTargetsContiguous)
+                    state->renderTargets[0] = pRenderTargetDescriptors[0].ptr;
+                else
+                    for (UINT i = 0; i < state->renderTargetCount; ++i)
+                        state->renderTargets[i] = pRenderTargetDescriptors[i].ptr;
             }
         }
+    }
 
-        std::scoped_lock psoLock(gRRPsoMutex);
-        RRCommandListPsoState& state = gRRCommandListPsoStates[This];
-        state.renderTargets = std::move(renderTargets);
-        ++state.renderTargetGeneration;
+    const bool immediateCapture = Config::Instance()->FGImmediateCapture.value_or_default();
+    if (persistentBinding && !immediateCapture)
+    {
+        o_OMSetRenderTargets(This, NumRenderTargetDescriptors, pRenderTargetDescriptors,
+                             RTsSingleHandleToDescriptorRange, pDepthStencilDescriptor);
+        return;
     }
 
     // Consistent early exit validation
-    auto shouldTrack = State::Instance().activeFgInput == FGInput::Upscaler &&
-                       !Config::Instance()->FGHudfixDisableOM.value_or_default() && NumRenderTargetDescriptors > 0 &&
+    auto shouldTrack = !Config::Instance()->FGHudfixDisableOM.value_or_default() && NumRenderTargetDescriptors > 0 &&
                        pRenderTargetDescriptors != nullptr && IsHudFixActive() && !Hudfix_Dx12::SkipHudlessChecks() &&
                        This != MenuOverlayDx::MenuCommandList();
 
@@ -2559,13 +1923,16 @@ void ResTrack_Dx12::hkOMSetRenderTargets(ID3D12GraphicsCommandList* This, UINT N
             continue;
         }
 
+        if (!IsDescriptorEnabled(capturedBuffer.type))
+            continue;
+
         // Valid resource found, update state
         capturedBuffer.state = D3D12_RESOURCE_STATE_RENDER_TARGET;
         capturedBuffer.captureInfo = CaptureInfo::OMSetRTV;
 
         // Check for immediate capture
         bool capturedImmediately = false;
-        if (Config::Instance()->FGImmediateCapture.value_or_default())
+        if (immediateCapture)
         {
             capturedImmediately = Hudfix_Dx12::CheckForHudless(This, &capturedBuffer, capturedBuffer.state);
             if (capturedImmediately)
@@ -2573,7 +1940,7 @@ void ResTrack_Dx12::hkOMSetRenderTargets(ID3D12GraphicsCommandList* This, UINT N
         }
 
         // Track for later processing
-        if (!capturedImmediately)
+        if (!capturedImmediately && (!persistentBinding || immediateCapture))
         {
             if (!_useShards)
             {
@@ -2622,6 +1989,45 @@ void ResTrack_Dx12::hkOMSetRenderTargets(ID3D12GraphicsCommandList* This, UINT N
 void ResTrack_Dx12::hkSetComputeRootDescriptorTable(ID3D12GraphicsCommandList* This, UINT RootParameterIndex,
                                                     D3D12_GPU_DESCRIPTOR_HANDLE BaseDescriptor)
 {
+    bool persistentBinding = false;
+    if (This != MenuOverlayDx::MenuCommandList() && !Hudfix_Dx12::SkipHudlessChecks())
+    {
+        if (auto* state = GetOrCreateBindingState(This);
+            state != nullptr && RootParameterIndex < CommandListBindingState::MAX_ROOT_PARAMETERS)
+        {
+            persistentBinding = true;
+            state->computeTables[RootParameterIndex] = BaseDescriptor.ptr;
+            const auto bit = UINT64_C(1) << RootParameterIndex;
+            if (BaseDescriptor.ptr != 0)
+                state->computeTableMask |= bit;
+            else
+                state->computeTableMask &= ~bit;
+
+            if (BaseDescriptor.ptr != 0 && (state->cbvSrvUavHeapInfo == nullptr ||
+                                            !state->cbvSrvUavHeapInfo->active.load(std::memory_order_acquire)))
+            {
+                if (auto heap = GetHeapByGpuHandleCR(BaseDescriptor.ptr))
+                {
+                    if (state->cbvSrvUavHeap != nullptr && state->cbvSrvUavHeap != heap->heap)
+                        heap.reset();
+
+                    if (heap != nullptr)
+                    {
+                        state->cbvSrvUavHeap = heap->heap;
+                        state->cbvSrvUavHeapInfo = std::move(heap);
+                    }
+                }
+            }
+        }
+    }
+
+    const bool immediateCapture = Config::Instance()->FGImmediateCapture.value_or_default();
+    if (persistentBinding && !immediateCapture)
+    {
+        o_SetComputeRootDescriptorTable(This, RootParameterIndex, BaseDescriptor);
+        return;
+    }
+
     // Consistent early exit - always call original function
     auto shouldTrack = !Config::Instance()->FGHudfixDisableSCR.value_or_default() && BaseDescriptor.ptr != 0 &&
                        IsHudFixActive() && !Hudfix_Dx12::SkipHudlessChecks() &&
@@ -2650,6 +2056,12 @@ void ResTrack_Dx12::hkSetComputeRootDescriptorTable(ID3D12GraphicsCommandList* T
         return;
     }
 
+    if (!IsDescriptorEnabled(capturedBuffer.type))
+    {
+        o_SetComputeRootDescriptorTable(This, RootParameterIndex, BaseDescriptor);
+        return;
+    }
+
     LOG_DEBUG_ONLY("CommandList: {:X}, Resource: {:X}", (size_t) This, (size_t) capturedBuffer.buffer);
 
     // Only proceed with tracking if we have a valid buffer
@@ -2662,12 +2074,12 @@ void ResTrack_Dx12::hkSetComputeRootDescriptorTable(ID3D12GraphicsCommandList* T
 
     // Track the resource
     bool capturedImmediately = false;
-    if (Config::Instance()->FGImmediateCapture.value_or_default())
+    if (immediateCapture)
     {
         capturedImmediately = Hudfix_Dx12::CheckForHudless(This, &capturedBuffer, capturedBuffer.state);
     }
 
-    if (!capturedImmediately)
+    if (!capturedImmediately && (!persistentBinding || immediateCapture))
     {
         auto fIndex = Hudfix_Dx12::ActivePresentFrame() % BUFFER_COUNT;
 
@@ -2711,6 +2123,21 @@ void ResTrack_Dx12::hkSetComputeRootDescriptorTable(ID3D12GraphicsCommandList* T
 
 #pragma endregion
 
+HRESULT ResTrack_Dx12::hkReset(ID3D12GraphicsCommandList* This, ID3D12CommandAllocator* pAllocator,
+                               ID3D12PipelineState* pInitialState)
+{
+    const auto result = o_Reset(This, pAllocator, pInitialState);
+    if (SUCCEEDED(result))
+        ResetBindingState(This);
+    return result;
+}
+
+void ResTrack_Dx12::hkClearState(ID3D12GraphicsCommandList* This, ID3D12PipelineState* pPipelineState)
+{
+    o_ClearState(This, pPipelineState);
+    ResetBindingState(This);
+}
+
 #pragma region Shader finalizer hooks
 
 // Capture if render target matches, wait for DrawIndexed
@@ -2719,19 +2146,17 @@ void ResTrack_Dx12::hkDrawInstanced(ID3D12GraphicsCommandList* This, UINT Vertex
 {
     o_DrawInstanced(This, VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
 
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) && This != MenuOverlayDx::MenuCommandList())
-    {
-        std::scoped_lock psoLock(gRRPsoMutex);
-        RecordRRGraphicsOutputs(This);
-    }
-
-    if (State::Instance().activeFgInput != FGInput::Upscaler || !IsHudFixActive())
+    if (!IsHudFixActive())
     {
         LOG_TRACK("Skipping {:X}", (size_t) This);
         return;
     }
 
     LOG_TRACK("CmdList: {:X}", (size_t) This);
+
+    if (!Config::Instance()->FGHudfixDisableDI.value_or_default() &&
+        ProcessGraphicsBindings(This, CaptureInfo::DrawInstanced))
+        return;
 
     auto fIndex = Hudfix_Dx12::ActivePresentFrame() % BUFFER_COUNT;
 
@@ -2764,7 +2189,6 @@ void ResTrack_Dx12::hkDrawInstanced(ID3D12GraphicsCommandList* This, UINT Vertex
             if (Config::Instance()->FGHudfixDisableDI.value_or_default())
                 break;
 
-            std::lock_guard<std::mutex> lock(_drawMutex);
             for (auto& [key, val] : val0)
             {
                 val.captureInfo |= CaptureInfo::DrawInstanced;
@@ -2780,7 +2204,7 @@ void ResTrack_Dx12::hkDrawInstanced(ID3D12GraphicsCommandList* This, UINT Vertex
         size_t shardIdx = GetShardIndex(This);
         auto& shard = _hudlessShards[fIndex][shardIdx];
 
-        if (This == MenuOverlayDx::MenuCommandList() && shard.map.contains(This))
+        if (This == MenuOverlayDx::MenuCommandList())
         {
             LOCK_GUARD(shard.mutex);
 
@@ -2818,8 +2242,6 @@ void ResTrack_Dx12::hkDrawInstanced(ID3D12GraphicsCommandList* This, UINT Vertex
 
             for (auto& [key, val] : val0)
             {
-                std::lock_guard<std::mutex> lock(_drawMutex);
-
                 val.captureInfo |= CaptureInfo::DrawInstanced;
 
                 if (Hudfix_Dx12::CheckForHudless(This, &val, val.state))
@@ -2837,19 +2259,17 @@ void ResTrack_Dx12::hkDrawIndexedInstanced(ID3D12GraphicsCommandList* This, UINT
     o_DrawIndexedInstanced(This, IndexCountPerInstance, InstanceCount, StartIndexLocation, BaseVertexLocation,
                            StartInstanceLocation);
 
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) && This != MenuOverlayDx::MenuCommandList())
-    {
-        std::scoped_lock psoLock(gRRPsoMutex);
-        RecordRRGraphicsOutputs(This);
-    }
-
-    if (State::Instance().activeFgInput != FGInput::Upscaler || !IsHudFixActive())
+    if (!IsHudFixActive())
     {
         LOG_TRACK("Skipping CmdList: {:X}", (size_t) This);
         return;
     }
 
     LOG_TRACK("CmdList: {:X}", (size_t) This);
+
+    if (!Config::Instance()->FGHudfixDisableDII.value_or_default() &&
+        ProcessGraphicsBindings(This, CaptureInfo::DrawIndexedInstanced))
+        return;
 
     auto fIndex = Hudfix_Dx12::ActivePresentFrame() % BUFFER_COUNT;
 
@@ -2882,7 +2302,6 @@ void ResTrack_Dx12::hkDrawIndexedInstanced(ID3D12GraphicsCommandList* This, UINT
             if (Config::Instance()->FGHudfixDisableDII.value_or_default())
                 break;
 
-            std::lock_guard<std::mutex> lock(_drawMutex);
             for (auto& [key, val] : val0)
             {
                 val.captureInfo |= CaptureInfo::DrawIndexedInstanced;
@@ -2898,7 +2317,7 @@ void ResTrack_Dx12::hkDrawIndexedInstanced(ID3D12GraphicsCommandList* This, UINT
         size_t shardIdx = GetShardIndex(This);
         auto& shard = _hudlessShards[fIndex][shardIdx];
 
-        if (This == MenuOverlayDx::MenuCommandList() && shard.map.contains(This))
+        if (This == MenuOverlayDx::MenuCommandList())
         {
             LOCK_GUARD(shard.mutex);
 
@@ -2935,9 +2354,6 @@ void ResTrack_Dx12::hkDrawIndexedInstanced(ID3D12GraphicsCommandList* This, UINT
 
             for (auto& [key, val] : val0)
             {
-                // LOG_DEBUG("Waiting _drawMutex {:X}", (size_t)val.buffer);
-                std::lock_guard<std::mutex> lock(_drawMutex);
-
                 val.captureInfo |= CaptureInfo::DrawIndexedInstanced;
 
                 if (Hudfix_Dx12::CheckForHudless(This, &val, val.state))
@@ -2948,117 +2364,22 @@ void ResTrack_Dx12::hkDrawIndexedInstanced(ID3D12GraphicsCommandList* This, UINT
     }
 }
 
-void ResTrack_Dx12::hkExecuteBundle(ID3D12GraphicsCommandList* This, ID3D12GraphicsCommandList* pCommandList)
-{
-    LOG_FUNC();
-
-    IFGFeature_Dx12* fg = State::Instance().currentFG;
-    auto index = fg != nullptr ? fg->GetIndex() : 0;
-
-    {
-        std::lock_guard<std::mutex> lock(_resourceCommandListMutex);
-
-        if (fg != nullptr && fg->IsActive() && (_resourceCommandList[index].size() > 0 || !_resCmdList[index].empty()))
-        {
-            if (_notFoundCmdLists.contains(pCommandList))
-                LOG_WARN("Found last frames cmdList: {:X}", (size_t) This);
-
-            auto& frameCmdList = _resourceCommandList[index];
-            for (std::unordered_map<FG_ResourceType, ID3D12GraphicsCommandList*>::iterator it = frameCmdList.begin();
-                 it != frameCmdList.end(); ++it)
-            {
-                if (it->second == pCommandList)
-                    it->second = This;
-            }
-
-            for (std::unordered_map<FG_ResourceType, void*>::iterator it = _resCmdList[index].begin();
-                 it != _resCmdList[index].end(); ++it)
-            {
-                if (it->second == pCommandList)
-                    it->second = This;
-            }
-        }
-    }
-
-    o_ExecuteBundle(This, pCommandList);
-}
-
-HRESULT ResTrack_Dx12::hkClose(ID3D12GraphicsCommandList* This)
-{
-    auto fg = State::Instance().currentFG;
-    auto index = fg != nullptr ? fg->GetIndex() : 0;
-
-    if (fg != nullptr && fg->IsActive() && !fg->IsPaused() && _resourceCommandList[index].size() > 0)
-    {
-        LOG_TRACK("CmdList: {:X}", (size_t) This);
-
-        std::lock_guard<std::mutex> lock(_resourceCommandListMutex);
-
-        if (_notFoundCmdLists.contains(This))
-            LOG_WARN("Found last frames cmdList: {:X}", (size_t) This);
-
-        std::vector<FG_ResourceType> found;
-
-        for (const auto& pair : _resourceCommandList[index])
-        {
-            if (This == pair.second)
-            {
-                if (!fg->IsResourceReady(pair.first))
-                {
-                    LOG_DEBUG("{} cmdList: {:X}", (UINT) pair.first, (size_t) This);
-                    _resCmdList[index][pair.first] = pair.second;
-                    found.push_back(pair.first);
-                }
-            }
-        }
-
-        for (size_t i = 0; i < found.size(); i++)
-        {
-            _resourceCommandList[index].erase(found[i]);
-        }
-    }
-
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed))
-    {
-        {
-            std::scoped_lock markerLock(gRRMarkerMutex);
-            gRRCommandListMarkers.erase(This);
-        }
-        {
-            std::scoped_lock psoLock(gRRPsoMutex);
-            gRRCommandListPsoStates.erase(This);
-        }
-    }
-
-    return o_Close(This);
-}
-
 void ResTrack_Dx12::hkDispatch(ID3D12GraphicsCommandList* This, UINT ThreadGroupCountX, UINT ThreadGroupCountY,
                                UINT ThreadGroupCountZ)
 {
     o_Dispatch(This, ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ);
 
-    if (gRRResourceInspectorEnabled.load(std::memory_order_relaxed) && This != MenuOverlayDx::MenuCommandList())
-    {
-        std::scoped_lock psoLock(gRRPsoMutex);
-        RRCommandListPsoState& state = gRRCommandListPsoStates[This];
-        if (state.currentPso != nullptr)
-        {
-            RRPsoMetadata& metadata = EnsureRRPsoMetadata(state.currentPso);
-            if (metadata.kind == RRPsoKind::Unknown || metadata.kind == RRPsoKind::Stream)
-                metadata.kind = RRPsoKind::Compute;
-            state.lastComputePso = state.currentPso;
-            ++state.dispatchesSinceBarrier;
-        }
-    }
-
-    if (State::Instance().activeFgInput != FGInput::Upscaler || !IsHudFixActive())
+    if (!IsHudFixActive())
     {
         LOG_TRACK("Skipping {:X}", (size_t) This);
         return;
     }
 
     LOG_TRACK("CmdList: {:X}", (size_t) This);
+
+    if (!Config::Instance()->FGHudfixDisableDispatch.value_or_default() &&
+        ProcessComputeBindings(This, CaptureInfo::Dispatch))
+        return;
 
     auto fIndex = Hudfix_Dx12::ActivePresentFrame() % BUFFER_COUNT;
 
@@ -3091,7 +2412,6 @@ void ResTrack_Dx12::hkDispatch(ID3D12GraphicsCommandList* This, UINT ThreadGroup
             if (Config::Instance()->FGHudfixDisableDispatch.value_or_default())
                 break;
 
-            std::lock_guard<std::mutex> lock(_drawMutex);
             for (auto& [key, val] : val0)
             {
                 val.captureInfo |= CaptureInfo::Dispatch;
@@ -3106,7 +2426,7 @@ void ResTrack_Dx12::hkDispatch(ID3D12GraphicsCommandList* This, UINT ThreadGroup
         size_t shardIdx = GetShardIndex(This);
         auto& shard = _hudlessShards[fIndex][shardIdx];
 
-        if (This == MenuOverlayDx::MenuCommandList() && shard.map.contains(This))
+        if (This == MenuOverlayDx::MenuCommandList())
         {
             LOCK_GUARD(shard.mutex);
 
@@ -3144,9 +2464,6 @@ void ResTrack_Dx12::hkDispatch(ID3D12GraphicsCommandList* This, UINT ThreadGroup
 
             for (auto& [key, val] : val0)
             {
-                // LOG_DEBUG("Waiting _drawMutex {:X}", (size_t)val.buffer);
-                std::lock_guard<std::mutex> lock(_drawMutex);
-
                 val.captureInfo |= CaptureInfo::Dispatch;
                 if (Hudfix_Dx12::CheckForHudless(This, &val, val.state))
                 {
@@ -3158,50 +2475,6 @@ void ResTrack_Dx12::hkDispatch(ID3D12GraphicsCommandList* This, UINT ThreadGroup
 }
 
 #pragma endregion
-
-void ResTrack_Dx12::HookResource(ID3D12Device* InDevice)
-{
-    if (o_Release != nullptr)
-        return;
-
-    ID3D12Resource* tmp = nullptr;
-    auto d = CD3DX12_RESOURCE_DESC::Buffer(4);
-    auto heapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-
-    HRESULT hr = InDevice->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &d,
-                                                   D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&tmp));
-
-    if (hr == S_OK)
-    {
-        PVOID* pVTable = *(PVOID**) tmp;
-        gResourceReleaseEntry = pVTable[2];
-        o_Release = (PFN_Release) pVTable[2];
-
-        if (o_Release != nullptr)
-        {
-            DetourTransactionBegin();
-            DetourUpdateThread(GetCurrentThread());
-            DetourAttach(&(PVOID&) o_Release, hkRelease);
-            auto detourResult = DetourTransactionCommit();
-
-            if (detourResult != NO_ERROR)
-            {
-                LOG_ERROR("Failed to hook Heap Release: {:X}", detourResult);
-                o_Release = nullptr;
-                gResourceReleaseEntry = nullptr;
-                tmp->Release();
-            }
-            else
-            {
-                o_Release(tmp); // drop temp
-            }
-        }
-        else
-        {
-            tmp->Release();
-        }
-    }
-}
 
 void ResTrack_Dx12::HookCommandList(ID3D12Device* InDevice)
 {
@@ -3223,6 +2496,14 @@ void ResTrack_Dx12::HookCommandList(ID3D12Device* InDevice)
 
             // Get the vtable pointer
             PVOID* pVTable = *(PVOID**) realCL;
+            const bool persistentBindings = Config::Instance()->FGHudfixPersistentBindings.value_or_default();
+
+            // Persistent command-list binding invalidation
+            if (persistentBindings)
+            {
+                o_Reset = (PFN_Reset) pVTable[10];
+                o_ClearState = (PFN_ClearState) pVTable[11];
+            }
 
             // hudless shader
             o_OMSetRenderTargets = (PFN_OMSetRenderTargets) pVTable[46];
@@ -3231,82 +2512,59 @@ void ResTrack_Dx12::HookCommandList(ID3D12Device* InDevice)
             o_DrawInstanced = (PFN_DrawInstanced) pVTable[12];
             o_DrawIndexedInstanced = (PFN_DrawIndexedInstanced) pVTable[13];
             o_Dispatch = (PFN_Dispatch) pVTable[14];
-            o_Close = (PFN_Close) pVTable[9];
-            o_Reset = (PFN_Reset) pVTable[10];
-            o_SetPipelineState = (PFN_SetPipelineState) pVTable[25];
-            o_ResourceBarrier = (PFN_ResourceBarrier) pVTable[26];
-            o_SetMarker = (PFN_SetMarker) pVTable[56];
-            o_BeginEvent = (PFN_BeginEvent) pVTable[57];
-            o_EndEvent = (PFN_EndEvent) pVTable[58];
 
             // hudless compute
             o_SetComputeRootDescriptorTable = (PFN_SetComputeRootDescriptorTable) pVTable[31];
-
-            o_ExecuteBundle = (PFN_ExecuteBundle) pVTable[27];
 
             if (o_OMSetRenderTargets != nullptr)
             {
                 DetourTransactionBegin();
                 DetourUpdateThread(GetCurrentThread());
 
-                if (o_OMSetRenderTargets != nullptr)
-                    DetourAttach(&(PVOID&) o_OMSetRenderTargets, hkOMSetRenderTargets);
-
-                if (o_DrawIndexedInstanced != nullptr)
-                    DetourAttach(&(PVOID&) o_DrawIndexedInstanced, hkDrawIndexedInstanced);
-
-                if (o_DrawInstanced != nullptr)
-                    DetourAttach(&(PVOID&) o_DrawInstanced, hkDrawInstanced);
-
-                if (o_Dispatch != nullptr)
-                    DetourAttach(&(PVOID&) o_Dispatch, hkDispatch);
-
-                // Root descriptor tracking is only needed by the HUD fix.
+                // Only needed for hudfix
                 if (State::Instance().activeFgInput == FGInput::Upscaler)
                 {
+                    if (o_Reset != nullptr)
+                        DetourAttach(&(PVOID&) o_Reset, hkReset);
+                    if (o_ClearState != nullptr)
+                        DetourAttach(&(PVOID&) o_ClearState, hkClearState);
+
+                    if (o_OMSetRenderTargets != nullptr)
+                        DetourAttach(&(PVOID&) o_OMSetRenderTargets, hkOMSetRenderTargets);
+
                     if (o_SetGraphicsRootDescriptorTable != nullptr)
                         DetourAttach(&(PVOID&) o_SetGraphicsRootDescriptorTable, hkSetGraphicsRootDescriptorTable);
 
                     if (o_SetComputeRootDescriptorTable != nullptr)
                         DetourAttach(&(PVOID&) o_SetComputeRootDescriptorTable, hkSetComputeRootDescriptorTable);
+
+                    if (o_DrawIndexedInstanced != nullptr)
+                        DetourAttach(&(PVOID&) o_DrawIndexedInstanced, hkDrawIndexedInstanced);
+
+                    if (o_DrawInstanced != nullptr)
+                        DetourAttach(&(PVOID&) o_DrawInstanced, hkDrawInstanced);
+
+                    if (o_Dispatch != nullptr)
+                        DetourAttach(&(PVOID&) o_Dispatch, hkDispatch);
                 }
-
-                if (o_Close != nullptr)
-                    DetourAttach(&(PVOID&) o_Close, hkClose);
-
-                if (o_Reset != nullptr)
-                    DetourAttach(&(PVOID&) o_Reset, hkReset);
-
-                if (o_SetPipelineState != nullptr)
-                    DetourAttach(&(PVOID&) o_SetPipelineState, hkSetPipelineState);
-
-                if (o_ResourceBarrier != nullptr)
-                    DetourAttach(&(PVOID&) o_ResourceBarrier, hkResourceBarrier);
-
-                if (o_SetMarker != nullptr)
-                    DetourAttach(&(PVOID&) o_SetMarker, hkSetMarker);
-
-                if (o_BeginEvent != nullptr)
-                    DetourAttach(&(PVOID&) o_BeginEvent, hkBeginEvent);
-
-                if (o_EndEvent != nullptr)
-                    DetourAttach(&(PVOID&) o_EndEvent, hkEndEvent);
-
-                if (o_ExecuteBundle != nullptr)
-                    DetourAttach(&(PVOID&) o_ExecuteBundle, hkExecuteBundle);
 
                 auto detourResult = DetourTransactionCommit();
                 if (detourResult != NO_ERROR)
                 {
                     LOG_ERROR("Failed to hook CommandList methods: {:X}", detourResult);
+                    _bindingTrackingEnabled.store(false, std::memory_order_release);
+                    o_Reset = nullptr;
+                    o_ClearState = nullptr;
                     o_OMSetRenderTargets = nullptr;
                     o_SetGraphicsRootDescriptorTable = nullptr;
                     o_DrawInstanced = nullptr;
                     o_DrawIndexedInstanced = nullptr;
                     o_Dispatch = nullptr;
-                    o_Close = nullptr;
                     o_SetComputeRootDescriptorTable = nullptr;
-                    o_ExecuteBundle = nullptr;
+                }
+                else if (State::Instance().activeFgInput == FGInput::Upscaler)
+                {
+                    _bindingTrackingEnabled.store(persistentBindings, std::memory_order_release);
                 }
             }
 
@@ -3316,48 +2574,6 @@ void ResTrack_Dx12::HookCommandList(ID3D12Device* InDevice)
 
         commandAllocator->Reset();
         commandAllocator->Release();
-    }
-}
-
-void ResTrack_Dx12::HookToQueue(ID3D12Device* InDevice)
-{
-    if (o_ExecuteCommandLists != nullptr)
-        return;
-
-    ID3D12CommandQueue* queue = nullptr;
-    D3D12_COMMAND_QUEUE_DESC queueDesc = {};
-    queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-    queueDesc.NodeMask = 0;
-    queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
-
-    auto hr = InDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue));
-
-    if (hr == S_OK)
-    {
-        ID3D12CommandQueue* realQueue = nullptr;
-        if (!CheckForRealObject(__FUNCTION__, queue, (IUnknown**) &realQueue))
-            realQueue = queue;
-
-        // Get the vtable pointer
-        PVOID* pVTable = *(PVOID**) realQueue;
-
-        o_ExecuteCommandLists = (PFN_ExecuteCommandLists) pVTable[10];
-
-        DetourTransactionBegin();
-        DetourUpdateThread(GetCurrentThread());
-
-        if (o_ExecuteCommandLists != nullptr)
-            DetourAttach(&(PVOID&) o_ExecuteCommandLists, hkExecuteCommandLists);
-
-        auto detourResult = DetourTransactionCommit();
-        if (detourResult != NO_ERROR)
-        {
-            LOG_ERROR("Failed to hook CommandList methods: {:X}", detourResult);
-            o_ExecuteCommandLists = nullptr;
-        }
-
-        queue->Release();
     }
 }
 
@@ -3382,8 +2598,28 @@ void ResTrack_Dx12::HookDevice(ID3D12Device* device)
     if (initializeTracking)
     {
         _useShards = Config::Instance()->FGUseShards.value_or_default();
-        std::scoped_lock lock(_trackedResourcesMutex);
-        _trackedResources.reserve(1024);
+
+        {
+            std::scoped_lock lock(_trackedResourcesMutex);
+            _trackedResources.reserve(1024);
+        }
+
+        if (Config::Instance()->FGHudfixPersistentBindings.value_or_default())
+        {
+            if (!_useShards)
+            {
+                std::lock_guard<std::mutex> lock(_bindingStateMutex);
+                _bindingStates.reserve(256);
+            }
+            else
+            {
+                for (auto& shard : _bindingShards)
+                {
+                    std::lock_guard<BindingStateMutex> lock(shard.mutex);
+                    shard.map.reserve(32);
+                }
+            }
+        }
     }
 
     LOG_FUNC();
@@ -3397,21 +2633,12 @@ void ResTrack_Dx12::HookDevice(ID3D12Device* device)
 
     // Hudfix
     o_CreateDescriptorHeap = (PFN_CreateDescriptorHeap) pVTable[14];
-    o_CreateGraphicsPipelineState = (PFN_CreateGraphicsPipelineState) pVTable[10];
-    o_CreateComputePipelineState = (PFN_CreateComputePipelineState) pVTable[11];
     o_CreateShaderResourceView = (PFN_CreateShaderResourceView) pVTable[18];
     o_CreateUnorderedAccessView = (PFN_CreateUnorderedAccessView) pVTable[19];
     o_CreateRenderTargetView = (PFN_CreateRenderTargetView) pVTable[20];
     o_CreateSampler = (PFN_CreateSampler) pVTable[22];
     o_CopyDescriptors = (PFN_CopyDescriptors) pVTable[23];
     o_CopyDescriptorsSimple = (PFN_CopyDescriptorsSimple) pVTable[24];
-
-    ID3D12Device2* device2 = nullptr;
-    if (SUCCEEDED(realDevice->QueryInterface(IID_PPV_ARGS(&device2))) && device2 != nullptr)
-    {
-        PVOID* device2VTable = *(PVOID**) device2;
-        o_CreatePipelineState = (PFN_CreatePipelineState) device2VTable[47];
-    }
 
     // o_CreateDepthStencilView = (PFN_CreateDepthStencilView) pVTable[21];
     // o_CreateConstantBufferView = (PFN_CreateConstantBufferView) pVTable[17];
@@ -3425,15 +2652,6 @@ void ResTrack_Dx12::HookDevice(ID3D12Device* device)
 
         if (o_CreateDescriptorHeap != nullptr)
             DetourAttach(&(PVOID&) o_CreateDescriptorHeap, hkCreateDescriptorHeap);
-
-        if (o_CreateGraphicsPipelineState != nullptr)
-            DetourAttach(&(PVOID&) o_CreateGraphicsPipelineState, hkCreateGraphicsPipelineState);
-
-        if (o_CreateComputePipelineState != nullptr)
-            DetourAttach(&(PVOID&) o_CreateComputePipelineState, hkCreateComputePipelineState);
-
-        if (o_CreatePipelineState != nullptr)
-            DetourAttach(&(PVOID&) o_CreatePipelineState, hkCreatePipelineState);
 
         if (o_CreateRenderTargetView != nullptr)
             DetourAttach(&(PVOID&) o_CreateRenderTargetView, hkCreateRenderTargetView);
@@ -3463,12 +2681,7 @@ void ResTrack_Dx12::HookDevice(ID3D12Device* device)
         }
     }
 
-    if (device2 != nullptr)
-        device2->Release();
-
-    HookToQueue(device);
     HookCommandList(device);
-    HookResource(device);
 }
 
 void ResTrack_Dx12::ReleaseDeviceHooks()
@@ -3480,15 +2693,6 @@ void ResTrack_Dx12::ReleaseDeviceHooks()
 
     if (o_CreateDescriptorHeap != nullptr)
         DetourDetach(&(PVOID&) o_CreateDescriptorHeap, hkCreateDescriptorHeap);
-
-    if (o_CreateGraphicsPipelineState != nullptr)
-        DetourDetach(&(PVOID&) o_CreateGraphicsPipelineState, hkCreateGraphicsPipelineState);
-
-    if (o_CreateComputePipelineState != nullptr)
-        DetourDetach(&(PVOID&) o_CreateComputePipelineState, hkCreateComputePipelineState);
-
-    if (o_CreatePipelineState != nullptr)
-        DetourDetach(&(PVOID&) o_CreatePipelineState, hkCreatePipelineState);
 
     if (o_CreateRenderTargetView != nullptr)
         DetourDetach(&(PVOID&) o_CreateRenderTargetView, hkCreateRenderTargetView);
@@ -3505,11 +2709,12 @@ void ResTrack_Dx12::ReleaseDeviceHooks()
     if (o_CopyDescriptorsSimple != nullptr)
         DetourDetach(&(PVOID&) o_CopyDescriptorsSimple, hkCopyDescriptorsSimple);
 
-    // Queue
-    if (o_ExecuteCommandLists != nullptr)
-        DetourDetach(&(PVOID&) o_ExecuteCommandLists, hkExecuteCommandLists);
-
     // CommandList
+    if (o_Reset != nullptr)
+        DetourDetach(&(PVOID&) o_Reset, hkReset);
+    if (o_ClearState != nullptr)
+        DetourDetach(&(PVOID&) o_ClearState, hkClearState);
+
     if (o_OMSetRenderTargets != nullptr)
         DetourDetach(&(PVOID&) o_OMSetRenderTargets, hkOMSetRenderTargets);
 
@@ -3528,100 +2733,34 @@ void ResTrack_Dx12::ReleaseDeviceHooks()
     if (o_Dispatch != nullptr)
         DetourDetach(&(PVOID&) o_Dispatch, hkDispatch);
 
-    if (o_Close != nullptr)
-        DetourDetach(&(PVOID&) o_Close, hkClose);
-
-    if (o_Reset != nullptr)
-        DetourDetach(&(PVOID&) o_Reset, hkReset);
-
-    if (o_SetPipelineState != nullptr)
-        DetourDetach(&(PVOID&) o_SetPipelineState, hkSetPipelineState);
-
-    if (o_ResourceBarrier != nullptr)
-        DetourDetach(&(PVOID&) o_ResourceBarrier, hkResourceBarrier);
-
-    if (o_SetMarker != nullptr)
-        DetourDetach(&(PVOID&) o_SetMarker, hkSetMarker);
-
-    if (o_BeginEvent != nullptr)
-        DetourDetach(&(PVOID&) o_BeginEvent, hkBeginEvent);
-
-    if (o_EndEvent != nullptr)
-        DetourDetach(&(PVOID&) o_EndEvent, hkEndEvent);
-
-    if (o_ExecuteBundle != nullptr)
-        DetourDetach(&(PVOID&) o_ExecuteBundle, hkExecuteBundle);
-
-    // Resource
-    if (o_Release != nullptr)
-        DetourDetach(&(PVOID&) o_Release, hkRelease);
-
-    if (o_PsoRelease != nullptr)
-        DetourDetach(&(PVOID&) o_PsoRelease, hkPsoRelease);
-
-    DetourTransactionCommit();
-
-    // Device
-    o_CreateDescriptorHeap = nullptr;
-    o_CreateGraphicsPipelineState = nullptr;
-    o_CreateComputePipelineState = nullptr;
-    o_CreatePipelineState = nullptr;
-    o_CreateRenderTargetView = nullptr;
-    o_CreateShaderResourceView = nullptr;
-    o_CreateUnorderedAccessView = nullptr;
-    o_CopyDescriptors = nullptr;
-    o_CopyDescriptorsSimple = nullptr;
-
-    // Queue
-    o_ExecuteCommandLists = nullptr;
-
-    // CommandList
-    o_OMSetRenderTargets = nullptr;
-    o_SetGraphicsRootDescriptorTable = nullptr;
-    o_SetComputeRootDescriptorTable = nullptr;
-    o_DrawIndexedInstanced = nullptr;
-    o_DrawInstanced = nullptr;
-    o_Dispatch = nullptr;
-    o_Close = nullptr;
-    o_Reset = nullptr;
-    o_SetPipelineState = nullptr;
-    o_ResourceBarrier = nullptr;
-    o_SetMarker = nullptr;
-    o_BeginEvent = nullptr;
-    o_EndEvent = nullptr;
-    o_ExecuteBundle = nullptr;
-
-    // Resource
-    o_Release = nullptr;
-    o_PsoRelease = nullptr;
-    gResourceReleaseEntry = nullptr;
-
+    auto detourResult = DetourTransactionCommit();
+    if (detourResult != NO_ERROR)
     {
-        std::scoped_lock resourceLock(gRRTrackedResourceMutex);
-        gRRTrackedResources.clear();
+        LOG_ERROR("Failed to unhook DX12 methods: {:X}", detourResult);
     }
+    else
     {
-        std::scoped_lock stateLock(gRRResourceStateMutex);
-        gRRResourceStates.clear();
-        gRRResourceActivity.clear();
+        // Device
+        o_CreateDescriptorHeap = nullptr;
+        o_CreateRenderTargetView = nullptr;
+        o_CreateShaderResourceView = nullptr;
+        o_CreateUnorderedAccessView = nullptr;
+        o_CopyDescriptors = nullptr;
+        o_CopyDescriptorsSimple = nullptr;
+
+        // CommandList
+        o_Reset = nullptr;
+        o_ClearState = nullptr;
+        o_OMSetRenderTargets = nullptr;
+        o_SetGraphicsRootDescriptorTable = nullptr;
+        o_SetComputeRootDescriptorTable = nullptr;
+        o_DrawIndexedInstanced = nullptr;
+        o_DrawInstanced = nullptr;
+        o_Dispatch = nullptr;
+
+        _bindingTrackingEnabled.store(false, std::memory_order_release);
+        ClearBindingStates();
     }
-    {
-        std::scoped_lock candidateLock(gRRResourceCandidateMutex);
-        gRRResourceCandidates.clear();
-    }
-    {
-        std::scoped_lock markerLock(gRRMarkerMutex);
-        gRRCommandListMarkers.clear();
-        gRRMarkerInventory.clear();
-    }
-    {
-        std::scoped_lock psoLock(gRRPsoMutex);
-        gRRPsoMetadata.clear();
-        gRRCommandListPsoStates.clear();
-        gRRResourcePsoProducers.clear();
-        gRRNextPsoId.store(1, std::memory_order_release);
-    }
-    gRRResourceCandidateAddress.store(0, std::memory_order_release);
 }
 
 void ResTrack_Dx12::ReleaseHooks()
@@ -3656,15 +2795,11 @@ void ResTrack_Dx12::ReleaseHooks()
     // o_CopyDescriptors = nullptr;
     // o_CopyDescriptorsSimple = nullptr;
 
-    // if (o_ExecuteCommandLists != nullptr)
-    //     DetourAttach(&(PVOID&) o_ExecuteCommandLists, hkExecuteCommandLists);
+    if (o_Reset != nullptr)
+        DetourDetach(&(PVOID&) o_Reset, hkReset);
 
-    // o_ExecuteCommandLists = nullptr;
-
-    // if (o_Release != nullptr)
-    //     DetourAttach(&(PVOID&) o_Release, hkRelease);
-
-    // o_Release = nullptr;
+    if (o_ClearState != nullptr)
+        DetourDetach(&(PVOID&) o_ClearState, hkClearState);
 
     if (o_OMSetRenderTargets != nullptr)
         DetourDetach(&(PVOID&) o_OMSetRenderTargets, hkOMSetRenderTargets);
@@ -3684,46 +2819,26 @@ void ResTrack_Dx12::ReleaseHooks()
     if (o_Dispatch != nullptr)
         DetourDetach(&(PVOID&) o_Dispatch, hkDispatch);
 
-    if (o_Close != nullptr)
-        DetourDetach(&(PVOID&) o_Close, hkClose);
+    auto detourResult = DetourTransactionCommit();
+    if (detourResult != NO_ERROR)
+    {
+        LOG_ERROR("Failed to unhook CommandList methods: {:X}", detourResult);
+    }
+    else
+    {
+        o_Reset = nullptr;
+        o_ClearState = nullptr;
+        o_OMSetRenderTargets = nullptr;
+        o_SetGraphicsRootDescriptorTable = nullptr;
+        o_SetComputeRootDescriptorTable = nullptr;
+        o_DrawIndexedInstanced = nullptr;
+        o_DrawInstanced = nullptr;
+        o_Dispatch = nullptr;
 
-    if (o_Reset != nullptr)
-        DetourDetach(&(PVOID&) o_Reset, hkReset);
+        _bindingTrackingEnabled.store(false, std::memory_order_release);
 
-    if (o_SetPipelineState != nullptr)
-        DetourDetach(&(PVOID&) o_SetPipelineState, hkSetPipelineState);
-
-    if (o_ResourceBarrier != nullptr)
-        DetourDetach(&(PVOID&) o_ResourceBarrier, hkResourceBarrier);
-
-    if (o_SetMarker != nullptr)
-        DetourDetach(&(PVOID&) o_SetMarker, hkSetMarker);
-
-    if (o_BeginEvent != nullptr)
-        DetourDetach(&(PVOID&) o_BeginEvent, hkBeginEvent);
-
-    if (o_EndEvent != nullptr)
-        DetourDetach(&(PVOID&) o_EndEvent, hkEndEvent);
-
-    if (o_ExecuteBundle != nullptr)
-        DetourDetach(&(PVOID&) o_ExecuteBundle, hkExecuteBundle);
-
-    o_OMSetRenderTargets = nullptr;
-    o_SetGraphicsRootDescriptorTable = nullptr;
-    o_SetComputeRootDescriptorTable = nullptr;
-    o_DrawIndexedInstanced = nullptr;
-    o_DrawInstanced = nullptr;
-    o_Dispatch = nullptr;
-    o_Close = nullptr;
-    o_Reset = nullptr;
-    o_SetPipelineState = nullptr;
-    o_ResourceBarrier = nullptr;
-    o_SetMarker = nullptr;
-    o_BeginEvent = nullptr;
-    o_EndEvent = nullptr;
-    o_ExecuteBundle = nullptr;
-
-    DetourTransactionCommit();
+        ClearBindingStates();
+    }
 }
 
 void ResTrack_Dx12::ClearPossibleHudless()
@@ -3748,47 +2863,25 @@ void ResTrack_Dx12::ClearPossibleHudless()
             shard.map.clear();
         }
     }
-
-    std::lock_guard<std::mutex> lock2(_resourceCommandListMutex);
-
-    auto fg = State::Instance().currentFG;
-    if (fg != nullptr)
-    {
-        auto fIndex = fg->GetIndex();
-
-        if (_notFoundCmdLists.size() > 10)
-            _notFoundCmdLists.clear();
-
-        for (const auto& pair : _resourceCommandList[fIndex])
-        {
-            LOG_WARN("{} cmdList: {:X}, not closed!", (UINT) pair.first, (size_t) pair.second);
-            _notFoundCmdLists.insert(pair.second);
-        }
-
-        _resourceCommandList[fIndex].clear();
-
-        for (const auto& pair : _resCmdList[fIndex])
-        {
-            LOG_WARN("{} cmdList: {:X}, not executed!", (UINT) pair.first, (size_t) pair.second);
-            _notFoundCmdLists.insert(pair.second);
-        }
-
-        _resCmdList[fIndex].clear();
-    }
 }
 
-void ResTrack_Dx12::SetResourceCmdList(FG_ResourceType type, ID3D12GraphicsCommandList* cmdList)
-{
-    auto fg = State::Instance().currentFG;
-    if (fg != nullptr && fg->IsActive())
-    {
-        auto index = fg->GetIndex();
+// FSR-RR resource inspector: nothing is tracked, see ResTrack_dx12.h
+static std::atomic<int> gRRResourceCandidateIndex { -1 };
+static std::atomic<uint32_t> gRRResourceChannel { 0 };
+static std::atomic<float> gRRResourceViewScale { 1.0f };
 
-        ID3D12GraphicsCommandList* realCmdList = nullptr;
-        if (!CheckForRealObject(__FUNCTION__, cmdList, (IUnknown**) &realCmdList))
-            realCmdList = cmdList;
-
-        _resourceCommandList[index][type] = realCmdList;
-        LOG_DEBUG("_resourceCommandList[{}][{}]: {:X}", index, magic_enum::enum_name(type), (size_t) realCmdList);
-    }
-}
+void ResTrack_Dx12::SetRRResourceInspectorEnabled(bool) {}
+bool ResTrack_Dx12::IsRRResourceInspectorEnabled() { return false; }
+void ResTrack_Dx12::NotifyRRResourceInspectorFrame(uint64_t) {}
+void ResTrack_Dx12::RefreshRRResourceCandidates(uint32_t, uint32_t) {}
+std::vector<RRResourceCandidate> ResTrack_Dx12::GetRRResourceCandidates() { return {}; }
+void ResTrack_Dx12::SetRRResourceCandidateIndex(int index) { gRRResourceCandidateIndex.store(index); }
+int ResTrack_Dx12::GetRRResourceCandidateIndex() { return gRRResourceCandidateIndex.load(); }
+void ResTrack_Dx12::SetRRResourceChannel(uint32_t channel) { gRRResourceChannel.store(channel); }
+uint32_t ResTrack_Dx12::GetRRResourceChannel() { return gRRResourceChannel.load(); }
+void ResTrack_Dx12::SetRRResourceViewScale(float scale) { gRRResourceViewScale.store(scale); }
+float ResTrack_Dx12::GetRRResourceViewScale() { return gRRResourceViewScale.load(); }
+ID3D12Resource* ResTrack_Dx12::AcquireRRResourceCandidate() { return nullptr; }
+void ResTrack_Dx12::LogRRScalarResourceCandidates(uint32_t, uint32_t) { LOG_INFO("FSR-RR resource inspector: not available"); }
+void ResTrack_Dx12::LogRREmissivePassSnapshot(uint32_t, uint32_t) { LOG_INFO("FSR-RR resource inspector: not available"); }
+void ResTrack_Dx12::LogRRPsoProducerSnapshot(uint32_t, uint32_t) { LOG_INFO("FSR-RR resource inspector: not available"); }

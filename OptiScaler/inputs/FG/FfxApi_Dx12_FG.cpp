@@ -4,6 +4,7 @@
 
 #include <Util.h>
 #include <Config.h>
+#include <misc/DeferredRelease.h>
 
 #include <magic_enum.hpp>
 
@@ -189,8 +190,8 @@ static bool CreateBufferResource(ID3D12Device* InDevice, ID3D12Resource* InResou
 
         if (bufDesc.Width != inDesc.Width || bufDesc.Height != inDesc.Height || bufDesc.Format != inDesc.Format)
         {
-            (*OutResource)->Release();
-            (*OutResource) = nullptr;
+            // FG can still be using it
+            DeferredRelease::Release(*OutResource);
             LOG_WARN("Release {}x{}, new one: {}x{}", bufDesc.Width, bufDesc.Height, inDesc.Width, inDesc.Height);
         }
         else
@@ -214,6 +215,16 @@ static bool CreateBufferResource(ID3D12Device* InDevice, ID3D12Resource* InResou
 
     LOG_DEBUG("Created new one: {}x{}", inDesc.Width, inDesc.Height);
     return true;
+}
+
+// Game's FG context is gone, nothing uses these until it's recreated
+static void ReleaseBuffers()
+{
+    for (size_t i = 0; i < BUFFER_COUNT; i++)
+    {
+        DeferredRelease::Release(_hudless[i]);
+        DeferredRelease::Release(_interpolation[i]);
+    }
 }
 
 static void ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Resource* InResource,
@@ -452,6 +463,7 @@ ffxReturnCode_t ffxDestroyContext_Dx12FG(ffxContext* context, const ffxAllocatio
     {
         LOG_INFO("Destroying FG Context: {:X}", (size_t) State::Instance().currentFG);
         State::Instance().currentFG->DestroyFGContext();
+        ReleaseBuffers();
         return FFX_API_RETURN_OK;
     }
 
@@ -518,7 +530,7 @@ ffxReturnCode_t ffxConfigure_Dx12FG(ffxContext* context, ffxConfigureDescHeader*
 
         s.fsrfgInputActive = cDesc->frameGenerationEnabled;
 
-        if (cDesc->frameGenerationEnabled && !fg->IsActive() && Config::Instance()->FGEnabled.value_or_default())
+        if (cDesc->frameGenerationEnabled && !fg->IsActive() && Config::Instance()->IsFGEnabled())
         {
             if (!fg->IsPaused())
             {
@@ -1098,7 +1110,7 @@ ffxReturnCode_t ffxDispatch_Dx12FG(ffxContext* context, ffxDispatchDescHeader* d
             if (Config::Instance()->FGDepthValidNow.value_or_default())
                 depth.validity = FG_ResourceValidity::ValidNow;
             else
-                depth.validity = FG_ResourceValidity::JustTrackCmdlist;
+                depth.validity = FG_ResourceValidity::UntilPresent;
 
             depth.width = cdDesc->renderSize.width; // cdDesc->depth.description.height;
             depth.frameIndex = fIndex;
@@ -1132,7 +1144,7 @@ ffxReturnCode_t ffxDispatch_Dx12FG(ffxContext* context, ffxDispatchDescHeader* d
             if (Config::Instance()->FGVelocityValidNow.value_or_default())
                 velocity.validity = FG_ResourceValidity::ValidNow;
             else
-                velocity.validity = FG_ResourceValidity::JustTrackCmdlist;
+                velocity.validity = FG_ResourceValidity::UntilPresent;
 
             velocity.width = width; // cdDesc->motionVectors.description.height;
             velocity.frameIndex = fIndex;
@@ -1190,7 +1202,7 @@ ffxReturnCode_t ffxDispatch_Dx12FG(ffxContext* context, ffxDispatchDescHeader* d
             if (Config::Instance()->FGDepthValidNow.value_or_default())
                 depth.validity = FG_ResourceValidity::ValidNow;
             else
-                depth.validity = FG_ResourceValidity::JustTrackCmdlist;
+                depth.validity = FG_ResourceValidity::UntilPresent;
 
             depth.width = cdDesc->renderSize.width; // cdDesc->depth.description.height;
             depth.frameIndex = fIndex;
@@ -1224,7 +1236,7 @@ ffxReturnCode_t ffxDispatch_Dx12FG(ffxContext* context, ffxDispatchDescHeader* d
             if (Config::Instance()->FGVelocityValidNow.value_or_default())
                 velocity.validity = FG_ResourceValidity::ValidNow;
             else
-                velocity.validity = FG_ResourceValidity::JustTrackCmdlist;
+                velocity.validity = FG_ResourceValidity::UntilPresent;
 
             velocity.width = width; // cdDesc->motionVectors.description.height;
             velocity.frameIndex = fIndex;

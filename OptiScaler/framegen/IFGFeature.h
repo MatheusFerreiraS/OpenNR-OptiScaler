@@ -4,6 +4,9 @@
 #include <dxgi1_6.h>
 #include <flag-set-cpp/flag_set.hpp>
 
+class Reproject;
+struct FilloutData;
+
 enum class FG_Flags : uint64_t
 {
     Async,
@@ -29,6 +32,7 @@ enum FG_ResourceType : uint32_t
     HudlessColor,
     UIColor,
     Distortion,
+    Color, // Hudless + UI
 
     ResourceTypeCOUNT
 };
@@ -38,7 +42,6 @@ enum class FG_ResourceValidity : uint32_t
     ValidNow = 0,
     UntilPresent,
     ValidButMakeCopy,
-    JustTrackCmdlist,
     UntilPresentFromDispatch,
 
     ValidityCOUNT
@@ -90,8 +93,16 @@ class IFGFeature
 
     IID streamlineRiid {};
 
+    uint64_t _timeSinceSimStart = 0;
+    bool _reprojectionActive = false;
+
     bool CheckForRealObject(std::string functionName, IUnknown* pObject, IUnknown** ppRealObject);
     int GetDispatchIndex(UINT64& willDispatchFrame);
+
+    // The frame's camera and the mouse input since its simulation start, for the reprojection of the presented frame
+    // Depth and motion vector sizes are left to the caller
+    void FilloutReprojectionData(FilloutData& data, int fIndex);
+
     virtual void NewFrame() = 0;
 
   public:
@@ -108,6 +119,7 @@ class IFGFeature
     virtual bool Shutdown() = 0;
     virtual bool HasResource(FG_ResourceType type, int index = -1) = 0;
     virtual bool SetInterpolatedFrameCount(UINT interpolatedFrameCount) = 0;
+    virtual std::optional<double> ReadGpuTime(void* commandQueue) { return std::nullopt; }
 
     int GetIndex();
     int GetIndexWillBeDispatched();
@@ -158,6 +170,11 @@ class IFGFeature
     UINT64 FrameCount();
     UINT64 TargetFrame();
     UINT64 LastDispatchedFrame();
+
+    virtual bool HasReprojection() { return false; };
+    bool IsReprojectionActive() const { return _reprojectionActive; };
+    virtual const Reproject* GetReproject() const { return nullptr; };
+    uint64_t GetLastTimeSinceSimStartNs() const { return _timeSinceSimStart; };
 
     IFGFeature() {}
 };

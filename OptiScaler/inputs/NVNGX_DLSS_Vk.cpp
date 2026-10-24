@@ -6,14 +6,13 @@
 
 #include "NVNGX_DLSS.h"
 #include <framegen/nvngx/Nvngx_FG.h>
+#include <inputs/FG/Upscaler_Inputs_Vk.h>
 #include "NVNGX_Parameter.h"
 #include "proxies/NVNGX_Proxy.h"
 
 #include "upscalers/FeatureProvider_Vk.h"
 
-#include <upscaler_time/UpscalerTime_Vk.h>
-
-#include <vulkan/vulkan.hpp>
+#include <vulkan/vulkan.h>
 #include <ankerl/unordered_dense.h>
 #include <imgui/ImGuiNotify.hpp>
 #include <misc/IdentifyGpu.h>
@@ -189,16 +188,17 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_Init_Ext2(
     if (InFeatureInfo != nullptr && InSDKVersion > 0x0000013)
         State::Instance().NVNGX_Logger = InFeatureInfo->LoggingInfo;
 
+    // Streamline initializes NGX for DLSSG with the device the game's DLSS already did
+    if (State::Instance().activeFgNvngx != FGNvngxReplacement::None)
+    {
+        Nvngx_FG::VULKAN_Init_Ext2(InApplicationId, InApplicationDataPath, InInstance, InPD, InDevice, InGIPA, InGDPA,
+                                   InSDKVersion, &localFeatureInfo);
+    }
+
     if (State::Instance().nvngxVkInited && InInstance == vkInstance && InDevice == vkDevice && InPD == vkPD)
     {
         LOG_WARN("NVNGX already inited");
         return NVSDK_NGX_Result_Success;
-    }
-
-    if (State::Instance().activeFgInput == FGInput::NvngxFG)
-    {
-        Nvngx_FG::VULKAN_Init_Ext2(InApplicationId, InApplicationDataPath, InInstance, InPD, InDevice, InGIPA, InGDPA,
-                                   InSDKVersion, &localFeatureInfo);
     }
 
     LOG_INFO("AppId: {0}", InApplicationId);
@@ -246,8 +246,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_Init_Ext2(
     }
 
     State::Instance().currentVkDevice = InDevice;
-
-    UpscalerTimeVk::Init(InDevice, InPD);
 
     State::Instance().nvngxVkInited = true;
 
@@ -1008,6 +1006,30 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
     }
 
     auto handleId = InFeatureHandle->Id;
+
+    // Same as D3D12, the DLSSG state shown in the menu comes from the game's own FG evaluations.
+    // Replacements are handled below, so this has to be done before that
+    static size_t evalWithoutFG = 0;
+    static bool fgEvalSeen = false;
+    if (handleId >= NVNGX_PROVIDER_ID_OFFSET)
+    {
+        // Older DLSSG doesn't set the count at all, eval means at least 2x
+        int frameCount = 1;
+        if (InParameters == nullptr ||
+            InParameters->Get("DLSSG.MultiFrameCount", &frameCount) != NVSDK_NGX_Result_Success)
+        {
+            frameCount = 1;
+        }
+        state.dlssgDetectedInterpolationCount = frameCount;
+        evalWithoutFG = 0;
+        fgEvalSeen = true;
+    }
+    else if (fgEvalSeen && ++evalWithoutFG == 6)
+    {
+        // Game stopped evaluating FG, report it as disabled
+        state.dlssgDetectedInterpolationCount = 0;
+    }
+
     if (VkContexts[handleId].feature == nullptr) // prevent source api name flicker when dlssg is active
         state.setInputApiName = state.currentInputApiName;
 
@@ -1071,11 +1093,16 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
     deviceContext = VkContexts[handleId].feature.get();
     state.currentFeature = deviceContext;
 
-    UpscalerTimeVk::UpscaleStart(InCmdList);
+    UpscalerInputsVk::UpscaleStart(InCmdList, InParameters, deviceContext);
+
+    NVSDK_NGX_Resource_VK* output = nullptr;
+    InParameters->Get(NVSDK_NGX_Parameter_Output, (void**) &output);
 
     auto upscaleResult = deviceContext->Evaluate(InCmdList, InParameters);
 
-    if (!upscaleResult)
+    if (upscaleResult)
+        UpscalerInputsVk::UpscaleEnd(InCmdList, output);
+    else
         ImGui::InsertNotification({ ImGuiToastType::Error, 10000, "Upscaler failed to run!" });
 
     if ((!upscaleResult || !deviceContext->IsInited()) &&
@@ -1085,8 +1112,6 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
         state.changeBackend[handleId] = true;
         return NVSDK_NGX_Result_Success;
     }
-
-    UpscalerTimeVk::UpscaleEnd(InCmdList);
 
     // Same pass, for OptiScaler's own upscalers rather than native DLSS. Natively on Vulkan now: the
     // model exports a complete Vulkan surface and OptiScaler's vkCreateDevice hook already adds the
@@ -1103,11 +1128,11 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
     // permanently after a fallback.
     const auto backend = deviceContext != nullptr ? deviceContext->GetUpscalerType() : Upscaler::FSR22;
     const bool bridged = backend == Upscaler::XeSS_on12 || backend == Upscaler::FSR21_on12 ||
-                         backend == Upscaler::FSR22_on12 || backend == Upscaler::FFX_on12;
+                         backend == Upscaler::FSR22_on12 || backend == Upscaler::FFX_on12 ||
+                         backend == Upscaler::DLSS_on12;
 
     if (upscaleResult && !bridged)
         DlssNr::EvaluateAfterUpscaleVk(InCmdList, InParameters, vkInstance, vkPD, vkDevice);
-
     return upscaleResult ? NVSDK_NGX_Result_Success : NVSDK_NGX_Result_Fail;
 }
 

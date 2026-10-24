@@ -62,9 +62,6 @@ bool MenuOverlayGl::Frame()
     if (!_backend || !MenuOverlayBase::IsInited())
         return false;
 
-    auto& state = State::Instance();
-    if (state.delayMenuRenderBy > 0)
-        state.delayMenuRenderBy--;
 
     const bool haveFrame = MenuOverlayBase::RenderMenu();
 
@@ -78,7 +75,7 @@ bool MenuOverlayGl::Frame()
         return false;
 
     ImGui::Render();
-    return state.delayMenuRenderBy == 0;
+    return true;
 }
 
 void MenuOverlayGl::Draw(uint32_t generation)

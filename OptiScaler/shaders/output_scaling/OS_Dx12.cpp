@@ -31,8 +31,7 @@ static UpscaleShaderConstants fsr1Constants {};
 bool OS_Dx12::CreateBufferResource(ID3D12Device* InDevice, ID3D12Resource* InSource, uint32_t InWidth,
                                    uint32_t InHeight, D3D12_RESOURCE_STATES InState)
 {
-    auto resourceFlags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS |
-                         D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
+    auto resourceFlags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
     auto result =
         Shader_Dx12::CreateBufferResource(InDevice, InSource, InState, &_buffer, resourceFlags, InWidth, InHeight);
@@ -250,7 +249,7 @@ OS_Dx12::OS_Dx12(std::string InName, ID3D12Device* InDevice, bool InUpsample, Sc
 
 OS_Dx12::~OS_Dx12()
 {
-    if (!_init || State::Instance().isShuttingDown)
+    if (State::Instance().isShuttingDown)
         return;
 
     for (int i = 0; i < OS_NUM_OF_HEAPS; i++)
@@ -258,5 +257,5 @@ OS_Dx12::~OS_Dx12()
         _frameHeaps[i].ReleaseHeaps();
     }
 
-    SAFE_RELEASE(_buffer);
+    DeferredRelease::Release(_buffer);
 }

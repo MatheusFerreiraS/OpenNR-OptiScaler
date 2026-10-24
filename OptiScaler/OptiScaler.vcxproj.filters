@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Header Files">
@@ -80,10 +80,10 @@
     <ClInclude Include="upscalers\fsr2_212\FSR2Feature_Vk_212.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="detours\detours.h">
+    <ClInclude Include="Logger.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Logger.h">
+    <ClInclude Include="BuildInfo.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="resource.h">
@@ -98,16 +98,7 @@
     <ClInclude Include="upscalers\dlss\DLSSFeature_Dx11.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="nvapi\external\nvapi.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="upscalers\dlss\DLSSFeature_Vk.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="rcas\RCAS_Dx12.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="rcas\RCAS_Common.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="dllmain.h">
@@ -129,15 +120,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="upscalers\fsr31\FSR31Feature.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="rcas\precompile\RCAS_Shader.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="rcas\RCAS_Dx11.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="output_scaling\OS_Dx11.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="upscalers\fsr31\FSR31Feature_Dx11.h">
@@ -176,11 +158,23 @@
     <ClInclude Include="inputs\FSR3_Dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="scanner\rtti.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="scanner\scanner.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="State.h">
       <Filter>Config</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\auto_exposure\AE_Common.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\auto_exposure\AE_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\auto_exposure\precompile\AE_Shader.h">
+      <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="shaders\bias\Bias_Common.h">
       <Filter>Header Files</Filter>
@@ -299,6 +293,15 @@
     <ClInclude Include="OwnedMutex.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="shaders\camera_motion\CM_Common.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\camera_motion\CM_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\camera_motion\precompiled\CM_Shader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="shaders\depth_scale\DS_Common.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -309,6 +312,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="misc\FrameLimit.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="misc\DeferredRelease.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="inputs\FfxApi_Vk.h">
@@ -330,9 +336,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="inputs\XeSS_Dx12.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="inputs\XeSS_Proxy.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="inputs\XeSS_Vulkan.h">
@@ -401,16 +404,25 @@
     <ClInclude Include="framegen\ffx\FSRFG_Dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="framegen\ffx\FSRFG_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="framegen\IFGFeature.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="framegen\IFGFeature_Dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="framegen\IFGFeature_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="hudfix\Hudfix_Dx11.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="hudfix\Hudfix_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="hudfix\Hudfix_Vk.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="resource_tracking\ResTrack_dx11.h">
@@ -432,6 +444,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="shaders\resource_flip\RF_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\resource_flip\RF_Vk.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="shaders\resource_flip\precompiled\RF_Shader.h">
@@ -503,16 +518,13 @@
     <ClInclude Include="shaders\hudless_compare\precompile\hudless_compare_VShader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="inputs\FG\Streamline_Inputs_Dx12.h">
+    <ClInclude Include="inputs\FG\Streamline_Inputs.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="framegen\xefg\XeFG_Dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="framegen\xefg\XeFG_DynamicCount.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="hooks\Ntdll_Hooks.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="proxies\XeFG_Proxy.h">
@@ -530,28 +542,34 @@
     <ClInclude Include="proxies\XeLLUnLock.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="shaders\hudless_compare\HC_Common.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="shaders\hudless_compare\HC_Dx12.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="shaders\hudless_compare\precompile\hudless_compare_PShader.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="shaders\hudless_compare\precompile\hudless_compare_VShader.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="inputs\FG\FfxApi_Dx12_FG.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="fsr4\FSR4ModelSelection.h">
+    <ClInclude Include="inputs\FG\XeFG_Inputs_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fsr4\FSR4DriverProviderDx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fsr4\FSR4Models.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fsr4\FSR4Presets.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fsr4\FSR4PipelineLayouts.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="inputs\FG\FSR3_Dx12_FG.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="inputs\FG\Upscaler_Inputs_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="inputs\FG\Upscaler_Inputs.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="inputs\FG\Upscaler_Inputs_Vk.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="upscalers\FeatureProvider_Dx11.h">
@@ -564,9 +582,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\spdlog_sink\debug_sink.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="hooks\Ntdll_Hooks.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="proxies\Ntdll_Proxy.h">
@@ -585,9 +600,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="hooks\D3D11_Hooks.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="upscaler_time\UpscalerTime_Vk.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="hooks\DxgiFactory_WrappedCalls.h">
@@ -669,6 +681,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="shaders\resource_copy\precompile\rc_Shader_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\velocity_convert\VC_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\velocity_convert\precompile\vc_Shader_Vk.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="shaders\depth_transfer\precompile\dt_int_Shader_Vk.h">
@@ -767,9 +785,6 @@
     <ClInclude Include="nvapi\fakenvapi\log.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="nvapi\fakenvapi\low_latency.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="low_latency\low_latency_tech\ll_antilag2.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -777,6 +792,15 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="low_latency\low_latency_tech\ll_latencyflex.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="low_latency\low_latency_tech\ll_fps_limiter.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="low_latency\low_latency_tech\ll_reflex.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="low_latency\low_latency_tech\ll_reflex_vk.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="low_latency\low_latency_tech\ll_xell.h">
@@ -791,9 +815,6 @@
     <ClInclude Include="low_latency\ll_util.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="hooks\Xell_Hooks.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="misc\IdentifyGpu.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -806,7 +827,10 @@
     <ClInclude Include="framegen\dlssg\DLSSG_Dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="shaders\hud_copy\precompile\HudCopy_Shader.h">
+    <ClInclude Include="framegen\dlssg\DLSSG_Common.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="framegen\dlssg\DLSSG_Vk.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="hooks\Hook_Utils.h">
@@ -845,7 +869,10 @@
     <ClInclude Include="hooks\Amdxc64_Hooks.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="fsr4\FSR4Upgrade.h">
+    <ClInclude Include="fsr4\FSR4DriverProvider.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="fsr4\FSR4DriverProviderVk.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="low_latency\input\input_antilag2.h">
@@ -855,6 +882,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="low_latency\input\input_reflex.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="low_latency\input\input_reflex_vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="low_latency\input\input_antilag_vk.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="shaders\rcas\precompile\da_das_sharpen_Shader.h">
@@ -923,13 +956,25 @@
     <ClInclude Include="shaders\magnifier\Magnifier_Dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="low_latency\input\input_uell.h">
+    <ClInclude Include="shaders\menu_blur\MenuBlur_Common.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="with_dx12\dx11_with_dx12.h">
+    <ClInclude Include="shaders\menu_blur\MenuBlur_Dx11.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="with_dx12\with_dx12.h">
+    <ClInclude Include="shaders\menu_blur\MenuBlur_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\menu_blur\MenuBlur_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\menu_blur\precompile\MenuBlur_Shader_Dx11.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\menu_blur\precompile\MenuBlur_Shader_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\menu_blur\precompile\MenuBlur_Shader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="with_dx12\dx11_with_dx12_sc.h">
@@ -963,6 +1008,7 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="misc\FirstLightPTUnlock.h">
+    <ClInclude Include="misc\GameConfigs.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="shaders\Shader_Dx11.h">
@@ -975,6 +1021,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="gpu_time\GpuTime_Dx11.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="gpu_time\GpuTime_Vk.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="shaders\magnifier\Magnifier_Vk.h">
@@ -1011,12 +1060,103 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="upscalers\fsr31\FSRDFeature_Dx12.h">
+    <ClInclude Include="framegen\reprojection\Reprojection_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\Reproject_Common.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\Reproject.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\Reproject_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="framegen\reprojection\Reprojection_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\precompile\reproject_Shader_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\precompile\reproject_mask_h_Shader_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\precompile\reproject_mask_v_Shader_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\precompile\reproject_latch_Shader_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\precompile\reproject_cache_Shader_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\precompile\reproject_stats_Shader_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\Reproject_Dx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\hudless_compare_compute\HCC_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\ui_unblend\UiUnblend_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\mouseInputs\InputCollection.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\mouseInputs\RawInputHook.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="framegen\reprojection\swapchain\reprojectionSwapchain.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="upscalers\dlss\DLSSFeature_Dx11On12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="upscalers\dlss\DLSSFeature_VkOnDx12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\ui_unblend\precompile\UiUnblend_Shader_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\hudless_compare_compute\precompile\HCC_Shader_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\hudless_compare_compute\precompile\HCC_Shader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\magnifier\precompile\Magnifier_Shader_Dx11.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\magnifier\precompile\Magnifier_Shader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\precompile\reproject_latch_Shader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\precompile\reproject_mask_h_Shader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\precompile\reproject_Shader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\precompile\reproject_mask_v_Shader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\precompile\reproject_cache_Shader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\reproject\precompile\reproject_stats_Shader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Config.cpp">
       <Filter>Config</Filter>
+    </ClCompile>
+    <ClCompile Include="BuildInfo.cpp">
+      <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="Util.cpp">
@@ -1139,10 +1279,16 @@
     <ClCompile Include="inputs\FSR3_Dx12.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="scanner\rtti.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="scanner\scanner.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="shaders\bias\Bias_Dx11.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shaders\auto_exposure\AE_Dx12.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="shaders\bias\Bias_Dx12.cpp">
@@ -1199,10 +1345,16 @@
     <ClCompile Include="menu\menu_overlay_vk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="shaders\camera_motion\CM_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="shaders\depth_scale\DS_Dx12.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="misc\FrameLimit.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="misc\DeferredRelease.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="hooks\Reflex_Hooks.cpp">
@@ -1244,16 +1396,25 @@
     <ClCompile Include="framegen\ffx\FSRFG_Dx12.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="framegen\ffx\FSRFG_Vk.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="framegen\IFGFeature.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="framegen\IFGFeature_Dx12.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="framegen\IFGFeature_Vk.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="hudfix\Hudfix_Dx11.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="hudfix\Hudfix_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="hudfix\Hudfix_Vk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="resource_tracking\ResTrack_dx11.cpp">
@@ -1266,6 +1427,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="shaders\resource_flip\RF_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shaders\resource_flip\RF_Vk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="include\imgui\imgui_impl_dx11.cpp">
@@ -1301,7 +1465,7 @@
     <ClCompile Include="include\sl.param\parameters.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="inputs\FG\Streamline_Inputs_Dx12.cpp">
+    <ClCompile Include="inputs\FG\Streamline_Inputs.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="framegen\xefg\XeFG_Dx12.cpp">
@@ -1313,13 +1477,31 @@
     <ClCompile Include="inputs\FG\FfxApi_Dx12_FG.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="fsr4\FSR4ModelSelection.cpp">
+    <ClCompile Include="inputs\FG\XeFG_Inputs_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="fsr4\FSR4DriverProviderDx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="fsr4\FSR4Models.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="fsr4\FSR4Presets.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="fsr4\FSR4PipelineLayouts.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="inputs\FG\FSR3_Dx12_FG.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="inputs\FG\Upscaler_Inputs_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="inputs\FG\Upscaler_Inputs.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="inputs\FG\Upscaler_Inputs_Vk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="upscalers\FeatureProvider_Dx11.cpp">
@@ -1347,9 +1529,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="hooks\D3D11_Hooks.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="upscaler_time\UpscalerTime_Vk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="hooks\DxgiFactory_WrappedCalls.cpp">
@@ -1403,6 +1582,9 @@
     <ClCompile Include="shaders\resource_copy\RC_Vk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="shaders\velocity_convert\VC_Vk.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="upscalers\fsr2_212\FSR2Feature_VkOnDx12_212.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1421,12 +1603,6 @@
     <ClCompile Include="nvapi\fakenvapi\log.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="nvapi\fakenvapi\low_latency.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="nvapi\fakenvapi\low_latency_d3d.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="low_latency\low_latency_tech\ll_antilag2.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -1436,10 +1612,16 @@
     <ClCompile Include="low_latency\low_latency_tech\ll_latencyflex.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="low_latency\low_latency_tech\ll_xell.cpp">
+    <ClCompile Include="low_latency\low_latency_tech\ll_fps_limiter.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="nvapi\fakenvapi\low_latency_vk.cpp">
+    <ClCompile Include="low_latency\low_latency_tech\ll_reflex.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="low_latency\low_latency_tech\ll_reflex_vk.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="low_latency\low_latency_tech\ll_xell.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="nvapi\fakenvapi\nvapi_calls.cpp">
@@ -1448,13 +1630,16 @@
     <ClCompile Include="low_latency\ll_util.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="hooks\Xell_Hooks.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="misc\IdentifyGpu.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="framegen\dlssg\DLSSG_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="framegen\dlssg\DLSSG_Common.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="framegen\dlssg\DLSSG_Vk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="OptiTypes.cpp">
@@ -1493,7 +1678,10 @@
     <ClCompile Include="hooks\Amdxc64_Hooks.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="fsr4\FSR4Upgrade.cpp">
+    <ClCompile Include="fsr4\FSR4DriverProvider.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="fsr4\FSR4DriverProviderVk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="low_latency\input\input_antilag2.cpp">
@@ -1503,6 +1691,12 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="low_latency\input\input_reflex.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="low_latency\input\input_reflex_vk.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="low_latency\input\input_antilag_vk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="low_latency\input\input_common.cpp">
@@ -1562,16 +1756,16 @@
     <ClCompile Include="inputs\FG\Upscaler_Inputs_Dx11wDx12.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="low_latency\input\input_uell.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="with_dx12\dx11_with_dx12.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="with_dx12\with_dx12.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="shaders\magnifier\Magnifier_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shaders\menu_blur\MenuBlur_Dx11.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shaders\menu_blur\MenuBlur_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shaders\menu_blur\MenuBlur_Vk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="shaders\magnifier\Magnifier_Common.cpp">
@@ -1596,6 +1790,7 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="misc\FirstLightPTUnlock.cpp">
+    <ClCompile Include="misc\GameConfigs.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="shaders\Shader_Dx11.cpp">
@@ -1608,6 +1803,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="gpu_time\GpuTime_Dx11.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="gpu_time\GpuTime_Vk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="upscalers\IFeature_Vk.cpp">
@@ -1624,6 +1822,35 @@
     </ClCompile>
     <ClCompile Include="upscalers\fsr31\FSRDFeature_Dx12.cpp">
       <Filter>Header Files</Filter>
+    <ClCompile Include="framegen\reprojection\Reprojection_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shaders\reproject\Reproject.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shaders\reproject\Reproject_Vk.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="framegen\reprojection\Reprojection_Vk.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shaders\reproject\Reproject_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shaders\reproject\mouseInputs\InputCollection.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="shaders\reproject\mouseInputs\RawInputHook.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="framegen\reprojection\swapchain\reprojectionSwapchain.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="upscalers\dlss\DLSSFeature_Dx11On12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="upscalers\dlss\DLSSFeature_VkOnDx12.cpp">
+      <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

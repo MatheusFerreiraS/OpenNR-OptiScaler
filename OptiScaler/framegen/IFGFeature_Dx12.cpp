@@ -3,6 +3,9 @@
 #include <State.h>
 #include <Config.h>
 
+#include <hudfix/Hudfix_Dx12.h>
+#include <misc/DeferredRelease.h>
+
 #include <magic_enum.hpp>
 
 bool IFGFeature_Dx12::GetResourceCopy(FG_ResourceType type, D3D12_RESOURCE_STATES bufferState, ID3D12Resource* output)
@@ -269,6 +272,35 @@ void IFGFeature_Dx12::NewFrame()
     _lastFGFramePresentId = _fgFramePresentId;
 }
 
+void IFGFeature_Dx12::ReleaseResourceCopies()
+{
+    for (size_t i = 0; i < BUFFER_COUNT; i++)
+    {
+        std::unique_lock<std::shared_mutex> lock(_resourceMutex[i]);
+
+        bool released = false;
+
+        // Entries are kept, callbacks without the lock index the map
+        for (auto& [type, copy] : _resourceCopy[i])
+        {
+            if (copy == nullptr)
+                continue;
+
+            DeferredRelease::Release(copy);
+            released = true;
+        }
+
+        // Frame resources can point at the released copies
+        if (released)
+            _frameResources[i].clear();
+    }
+
+    _mvFlip.reset();
+    _depthFlip.reset();
+
+    Hudfix_Dx12::ReleaseBuffers();
+}
+
 void IFGFeature_Dx12::FlipResource(Dx12Resource* resource)
 {
     auto type = resource->type;
@@ -356,8 +388,8 @@ bool IFGFeature_Dx12::CreateBufferResourceWithSize(ID3D12Device* device, ID3D12R
         if (bufDesc.Width != width || bufDesc.Height != height || bufDesc.Format != inDesc.Format ||
             bufDesc.Flags != inDesc.Flags)
         {
-            (*target)->Release();
-            (*target) = nullptr;
+            // Previous frames can still be using it
+            DeferredRelease::Release(*target);
         }
         else
         {
@@ -468,16 +500,13 @@ bool IFGFeature_Dx12::CreateBufferResource(ID3D12Device* device, ID3D12Resource*
 
     if (*target != nullptr)
     {
-        //(*target)->Release();
-        //(*target) = nullptr;
-
         auto bufDesc = (*target)->GetDesc();
 
         if (bufDesc.Width != inDesc.Width || bufDesc.Height != inDesc.Height || bufDesc.Format != inDesc.Format ||
             bufDesc.Flags != inDesc.Flags)
         {
-            (*target)->Release();
-            (*target) = nullptr;
+            // Previous frames can still be using it
+            DeferredRelease::Release(*target);
         }
         else
         {
@@ -533,4 +562,68 @@ bool IFGFeature_Dx12::CopyResource(ID3D12GraphicsCommandList* cmdList, ID3D12Res
     ResourceBarrier(cmdList, source, D3D12_RESOURCE_STATE_COPY_SOURCE, sourceState);
 
     return result;
+}
+
+bool IFGFeature_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQueue, DXGI_SWAP_CHAIN_DESC* desc,
+                                      IDXGISwapChain** swapChain, bool readyToRelease)
+{
+    if (State::Instance().currentFGSwapchain != nullptr && _hwnd == desc->OutputWindow)
+    {
+        if (Config::Instance()->FGPreserveSwapChain.value_or_default())
+        {
+            LOG_WARN("FG swapchain already created for the same output window!");
+            auto result = State::Instance().currentFGSwapchain->ResizeBuffers(
+                              desc->BufferCount, desc->BufferDesc.Width, desc->BufferDesc.Height,
+                              desc->BufferDesc.Format, desc->Flags) == S_OK;
+
+            *swapChain = State::Instance().currentFGSwapchain;
+            return result;
+        }
+        // Game is creating new swapchain without releasing old one,
+        // we need to release it to avoid errors
+        else if (readyToRelease)
+        {
+            LOG_INFO("Releasing old swapchain");
+            ReleaseSwapchain(_hwnd);
+        }
+        else
+        {
+            LOG_WARN("FG swapchain already exists for the same output window and is not ready to release!");
+            return false;
+        }
+    }
+
+    return CreateSwapchainInternal(factory, cmdQueue, desc, swapChain);
+}
+
+bool IFGFeature_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmdQueue, HWND hwnd,
+                                       DXGI_SWAP_CHAIN_DESC1* desc, DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
+                                       IDXGISwapChain1** swapChain, bool readyToRelease)
+{
+    if (State::Instance().currentFGSwapchain != nullptr && _hwnd == hwnd)
+    {
+        if (Config::Instance()->FGPreserveSwapChain.value_or_default())
+        {
+            LOG_WARN("FG swapchain already created for the same output window!");
+            auto result = State::Instance().currentFGSwapchain->ResizeBuffers(
+                              desc->BufferCount, desc->Width, desc->Height, desc->Format, desc->Flags) == S_OK;
+
+            *swapChain = (IDXGISwapChain1*) State::Instance().currentFGSwapchain;
+            return result;
+        }
+        // Game is creating new swapchain without releasing old one,
+        // we need to release it to avoid errors
+        else if (readyToRelease)
+        {
+            LOG_INFO("Releasing old swapchain");
+            ReleaseSwapchain(_hwnd);
+        }
+        else
+        {
+            LOG_WARN("FG swapchain already exists for the same output window and is not ready to release!");
+            return false;
+        }
+    }
+
+    return CreateSwapchain1Internal(factory, cmdQueue, hwnd, desc, pFullscreenDesc, swapChain);
 }

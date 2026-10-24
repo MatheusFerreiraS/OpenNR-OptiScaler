@@ -11,7 +11,9 @@
 #include <inputs/FfxApi_Dx12.h>
 #include <inputs/FfxApi_Vk.h>
 
-#include <fsr4/FSR4ModelSelection.h>
+#include <fsr4/FSR4DriverProviderDx12.h>
+#include <fsr4/FSR4Models.h>
+#include <fsr4/FSR4Presets.h>
 
 #include <ffx_api.h>
 #include <detours/detours.h>
@@ -275,6 +277,21 @@ class FfxApiProxy
     static HMODULE Dx12Module_Denoiser() { return denoiser_dx12.dll; }
     static HMODULE Dx12Module_Radiance() { return radiance_dx12.dll; }
 
+    // FFX modules that Opti creates its upscalers with
+    static bool IsUpscalerModule(HMODULE module)
+    {
+        return module != nullptr && (module == main_dx12.dll || module == upscaling_dx12.dll);
+    }
+
+    // Module that runs the DX12 upscaler with this version id
+    static HMODULE UpscalerModule(uint64_t versionId)
+    {
+        if (versionId != 0 && versionId == FSR4DriverProviderDx12::VersionId())
+            return FSR4DriverProviderDx12::LoadedModule();
+
+        return upscaling_dx12.dll != nullptr ? upscaling_dx12.dll : main_dx12.dll;
+    }
+
     static std::wstring Dx12Module_Path() { return main_dx12.filePath; }
     static std::wstring Dx12Module_SR_Path() { return upscaling_dx12.filePath; }
     static std::wstring Dx12Module_FG_Path() { return fg_dx12.filePath; }
@@ -398,7 +415,8 @@ class FfxApiProxy
 
             if (!main_dx12.isLoader)
             {
-                FSR4ModelSelection::Hook(main_dx12.dll, FSR4Source::SDK);
+                FSR4Presets::Hook(main_dx12.dll);
+                FSR4Models::Hook(main_dx12.dll);
             }
         }
 
@@ -433,7 +451,11 @@ class FfxApiProxy
     {
         return LoadFfxModuleDx12(
             upscaling_dx12, ffxDx12UpscalerNamesW, module, [](HMODULE hMod)
-            { FSR4ModelSelection::Hook(hMod, FSR4Source::SDK); }, Config::Instance()->FfxDx12SRPath.value_or(L""));
+            {
+                FSR4Presets::Hook(hMod);
+                FSR4Models::Hook(hMod);
+            },
+            Config::Instance()->FfxDx12SRPath.value_or(L""));
     }
 
     static bool InitFfxDx12_FG(HMODULE module = nullptr)
@@ -548,6 +570,13 @@ class FfxApiProxy
                                                const ffxAllocationCallbacks* memCb)
     {
         const FFXStructType type = GetType(desc->type);
+
+        if (auto overrideVersion = FindOverrideVersion(desc); type == FFXStructType::Upscaling && overrideVersion &&
+                                                              *overrideVersion == FSR4DriverProviderDx12::VersionId())
+        {
+            return FSR4DriverProviderDx12::CreateContext(context, desc, memCb);
+        }
+
         FfxModule* pModule = nullptr;
         const auto recordContextType = [context, type](ffxReturnCode_t result)
         {
@@ -618,6 +647,9 @@ class FfxApiProxy
 
     static ffxReturnCode_t D3D12_DestroyContext(ffxContext* context, const ffxAllocationCallbacks* memCb)
     {
+        if (FSR4DriverProviderDx12::OwnsContext(context))
+            return FSR4DriverProviderDx12::DestroyContext(context, memCb);
+
         ffxReturnCode_t result = FFX_API_RETURN_ERROR;
         auto type = FFXStructType::Unknown;
 
@@ -714,6 +746,9 @@ class FfxApiProxy
 
     static ffxReturnCode_t D3D12_Configure(ffxContext* context, const ffxConfigureDescHeader* desc)
     {
+        if (FSR4DriverProviderDx12::OwnsContext(context))
+            return FSR4DriverProviderDx12::Configure(context, desc);
+
         FFXStructType type = GetType(desc->type);
         FfxModule* pModule = nullptr;
 
@@ -768,6 +803,82 @@ class FfxApiProxy
 
     static ffxReturnCode_t D3D12_Query(ffxContext* context, ffxQueryDescHeader* desc)
     {
+        if (FSR4DriverProviderDx12::OwnsContext(context))
+            return FSR4DriverProviderDx12::Query(context, desc);
+
+        if (desc->type == FFX_API_QUERY_DESC_TYPE_GET_VERSIONS && GetIndirectType(desc) == FFXStructType::Upscaling)
+        {
+            return D3D12_QueryUpscalerVersions(reinterpret_cast<ffxQueryDescGetVersions*>(desc),
+                                               FSR4DriverProviderDx12::Listing::WhenNewestUpscaler);
+        }
+
+        return D3D12_QuerySdk(context, desc);
+    }
+
+    // Versions of the FFX SDK upscalers and the upscaler of the driver
+    static ffxReturnCode_t D3D12_QueryUpscalerVersions(ffxQueryDescGetVersions* desc,
+                                                       FSR4DriverProviderDx12::Listing driverListing)
+    {
+        ffxQueryDescGetVersions sdkQuery = *desc;
+        uint64_t sdkCount = 0;
+        sdkQuery.outputCount = &sdkCount;
+        sdkQuery.versionIds = nullptr;
+        sdkQuery.versionNames = nullptr;
+
+        if (auto result = D3D12_QuerySdk(nullptr, &sdkQuery.header); result != FFX_API_RETURN_OK)
+            return result;
+
+        std::vector<uint64_t> ids(sdkCount);
+        std::vector<const char*> names(sdkCount);
+        sdkQuery.versionIds = ids.data();
+        sdkQuery.versionNames = names.data();
+
+        if (auto result = D3D12_QuerySdk(nullptr, &sdkQuery.header); result != FFX_API_RETURN_OK)
+            return result;
+
+        ids.resize(sdkCount);
+        names.resize(sdkCount);
+
+        FSR4DriverProviderDx12::AddToVersionList(ids, names, driverListing);
+
+        if (desc->outputCount == nullptr)
+            return FFX_API_RETURN_ERROR_PARAMETER;
+
+        // Same contract as FFX, a non-zero count is the capacity of the arrays
+        auto count = ids.size();
+        if (*desc->outputCount != 0)
+
+        {
+            count = std::min<size_t>(count, *desc->outputCount);
+
+            for (size_t i = 0; i < count; i++)
+            {
+                if (desc->versionIds != nullptr)
+                    desc->versionIds[i] = ids[i];
+
+                if (desc->versionNames != nullptr)
+                    desc->versionNames[i] = names[i];
+            }
+        }
+
+        *desc->outputCount = count;
+        return FFX_API_RETURN_OK;
+    }
+
+  private:
+    static std::optional<uint64_t> FindOverrideVersion(const ffxApiHeader* desc)
+    {
+        for (auto header = desc; header != nullptr; header = header->pNext)
+        {
+            if (header->type == FFX_API_DESC_TYPE_OVERRIDE_VERSION)
+                return reinterpret_cast<const ffxOverrideVersion*>(header)->versionId;
+        }
+
+        return std::nullopt;
+    }
+
+    static ffxReturnCode_t D3D12_QuerySdk(ffxContext* context, ffxQueryDescHeader* desc)
+    {
         FFXStructType type = GetIndirectType(desc);
         FfxModule* pModule = nullptr;
 
@@ -813,8 +924,12 @@ class FfxApiProxy
         return FFX_API_RETURN_NO_PROVIDER;
     }
 
+  public:
     static ffxReturnCode_t D3D12_Dispatch(ffxContext* context, const ffxDispatchDescHeader* desc)
     {
+        if (FSR4DriverProviderDx12::OwnsContext(context))
+            return FSR4DriverProviderDx12::Dispatch(context, desc);
+
         FFXStructType type = GetType(desc->type);
         FfxModule* pModule = nullptr;
 
@@ -862,6 +977,7 @@ class FfxApiProxy
 
     static HMODULE VkModule() { return main_vk.dll; }
     static std::wstring VkModule_Path() { return main_vk.filePath; }
+    static FfxModule* VkFfxModule() { return &main_vk; }
 
     static bool InitFfxVk(HMODULE module = nullptr)
     {
@@ -871,13 +987,13 @@ class FfxApiProxy
 
         spdlog::info("");
 
-        if (module != nullptr)
-            main_vk.dll = module;
+        if (module != nullptr && main_vk_hooked.dll == nullptr)
+            main_vk_hooked.dll = module;
 
         if (main_vk.dll == nullptr)
         {
             // Try new api first
-            std::vector<std::wstring> dllNames = { L"amd_fidelityfx_vk.dll" };
+            std::vector<std::wstring> dllNames = { L"amd_fidelityfx_upscaler_vk.dll", L"amd_fidelityfx_vk.dll" };
 
             auto optiPath = Config::Instance()->MainDllPath.value();
 
@@ -904,6 +1020,9 @@ class FfxApiProxy
             }
         }
 
+        if (main_vk.dll == nullptr && main_vk_hooked.dll != nullptr)
+            main_vk = main_vk_hooked;
+
         if (main_vk.dll != nullptr)
         {
             wchar_t modulePath[MAX_PATH];
@@ -922,30 +1041,68 @@ class FfxApiProxy
                 (PfnFfxDestroyContext) KernelBaseProxy::GetProcAddress_()(main_vk.dll, "ffxDestroyContext");
             main_vk.Dispatch = (PfnFfxDispatch) KernelBaseProxy::GetProcAddress_()(main_vk.dll, "ffxDispatch");
             main_vk.Query = (PfnFfxQuery) KernelBaseProxy::GetProcAddress_()(main_vk.dll, "ffxQuery");
+        }
 
-            if (Config::Instance()->EnableFfxInputs.value_or_default() && main_vk.CreateContext != nullptr)
+        if (main_vk_hooked.dll != nullptr && main_vk_hooked.Configure == nullptr)
+        {
+            main_vk_hooked.Configure =
+                (PfnFfxConfigure) KernelBaseProxy::GetProcAddress_()(main_vk_hooked.dll, "ffxConfigure");
+            main_vk_hooked.CreateContext =
+                (PfnFfxCreateContext) KernelBaseProxy::GetProcAddress_()(main_vk_hooked.dll, "ffxCreateContext");
+            main_vk_hooked.DestroyContext =
+                (PfnFfxDestroyContext) KernelBaseProxy::GetProcAddress_()(main_vk_hooked.dll, "ffxDestroyContext");
+            main_vk_hooked.Dispatch =
+                (PfnFfxDispatch) KernelBaseProxy::GetProcAddress_()(main_vk_hooked.dll, "ffxDispatch");
+            main_vk_hooked.Query = (PfnFfxQuery) KernelBaseProxy::GetProcAddress_()(main_vk_hooked.dll, "ffxQuery");
+        }
+        else if (main_vk_hooked.Configure == nullptr)
+        {
+            main_vk_hooked = main_vk;
+        }
+
+        if (Config::Instance()->EnableFfxInputs.value_or_default() && main_vk_hooked.dll != nullptr &&
+            main_vk_hooked.CreateContext != nullptr && !main_vk_hooked.hooked)
+        {
+            DetourTransactionBegin();
+            DetourUpdateThread(GetCurrentThread());
+
+            if (main_vk_hooked.Configure != nullptr)
+                DetourAttach(&(PVOID&) main_vk_hooked.Configure, ffxConfigure_Vk);
+
+            if (main_vk_hooked.CreateContext != nullptr)
+                DetourAttach(&(PVOID&) main_vk_hooked.CreateContext, ffxCreateContext_Vk);
+
+            if (main_vk_hooked.DestroyContext != nullptr)
+                DetourAttach(&(PVOID&) main_vk_hooked.DestroyContext, ffxDestroyContext_Vk);
+
+            if (main_vk_hooked.Dispatch != nullptr)
+                DetourAttach(&(PVOID&) main_vk_hooked.Dispatch, ffxDispatch_Vk);
+
+            if (main_vk_hooked.Query != nullptr)
+                DetourAttach(&(PVOID&) main_vk_hooked.Query, ffxQuery_Vk);
+
+            auto detourResult = DetourTransactionCommit();
+            if (detourResult != NO_ERROR)
             {
-                DetourTransactionBegin();
-                DetourUpdateThread(GetCurrentThread());
+                LOG_ERROR("DetourTransactionCommit result: {:X}", detourResult);
+                main_vk_hooked.Configure = nullptr;
+                main_vk_hooked.CreateContext = nullptr;
+                main_vk_hooked.DestroyContext = nullptr;
+                main_vk_hooked.Dispatch = nullptr;
+                main_vk_hooked.Query = nullptr;
+            }
+            else
+            {
+                if (main_vk_hooked.dll == main_vk.dll)
+                    main_vk = main_vk_hooked;
 
-                if (main_vk.Configure != nullptr)
-                    DetourAttach(&(PVOID&) main_vk.Configure, ffxConfigure_Vk);
-
-                if (main_vk.CreateContext != nullptr)
-                    DetourAttach(&(PVOID&) main_vk.CreateContext, ffxCreateContext_Vk);
-
-                if (main_vk.DestroyContext != nullptr)
-                    DetourAttach(&(PVOID&) main_vk.DestroyContext, ffxDestroyContext_Vk);
-
-                if (main_vk.Dispatch != nullptr)
-                    DetourAttach(&(PVOID&) main_vk.Dispatch, ffxDispatch_Vk);
-
-                if (main_vk.Query != nullptr)
-                    DetourAttach(&(PVOID&) main_vk.Query, ffxQuery_Vk);
-
+                main_vk_hooked.hooked = true;
                 State::Instance().fsrHooks = true;
 
-                DetourTransactionCommit();
+                // Pin the dll so the hooks stay valid if the game unloads it
+                HMODULE pinned = nullptr;
+                GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                                   (LPCWSTR) main_vk_hooked.dll, &pinned);
             }
         }
 
@@ -954,9 +1111,18 @@ class FfxApiProxy
         LOG_INFO("LoadResult: {}", loadResult);
 
         if (loadResult)
+        {
+            // Pin the dll so the hooks stay valid if the game unloads it
+            HMODULE pinned = nullptr;
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                               (LPCWSTR) main_vk.dll, &pinned);
+
             VersionVk();
+        }
         else
+        {
             main_vk.dll = nullptr;
+        }
 
         return loadResult;
     }

@@ -8,6 +8,7 @@
 #include "../OptiScaler/shaders/Shader_Common.cpp"
 #include "../OptiScaler/shaders/Shader_Dx12.cpp"
 #include "../OptiScaler/gpu_time/GpuTime_Dx12.cpp"
+#include "../OptiScaler/misc/DeferredRelease.cpp"
 
 // Keep production defaults, without reading or writing a user's INI.
 Config::Config() = default;

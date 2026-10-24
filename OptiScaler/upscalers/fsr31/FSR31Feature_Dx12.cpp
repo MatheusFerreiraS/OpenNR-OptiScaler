@@ -165,7 +165,7 @@ bool FSR31FeatureDx12::InitFSR3(const NVSDK_NGX_Parameter* InParameters)
     // Update version info for UI/Logging
     auto& state = State::Instance();
     auto& cfg = *Config::Instance();
-    auto version = state.ffxUpscalerVersionNames[cfg.FfxUpscalerIndex.value_or_default()];
+    auto version = state.ffxUpscalerVersionsDx12.names[cfg.FfxUpscalerIndex.value_or_default()];
     _name = "FSR";
     parse_version(version);
 
@@ -338,10 +338,10 @@ bool FSR31FeatureDx12::QueryUpscalerVersions()
     FfxApiProxy::D3D12_Query(nullptr, &versionQuery.header);
 
     // Store available FSR version IDs and names in vectors
-    state.ffxUpscalerVersionIds.resize(versionCount);
-    state.ffxUpscalerVersionNames.resize(versionCount);
-    versionQuery.versionIds = state.ffxUpscalerVersionIds.data();
-    versionQuery.versionNames = state.ffxUpscalerVersionNames.data();
+    state.ffxUpscalerVersionsDx12.ids.resize(versionCount);
+    state.ffxUpscalerVersionsDx12.names.resize(versionCount);
+    versionQuery.versionIds = state.ffxUpscalerVersionsDx12.ids.data();
+    versionQuery.versionNames = state.ffxUpscalerVersionsDx12.names.data();
     FfxApiProxy::D3D12_Query(nullptr, &versionQuery.header);
 
     return versionCount > 0;
@@ -354,10 +354,10 @@ uint64_t FSR31FeatureDx12::GetUpscalerOverrideID()
 
     // Select specific FSR version based on user config index
     if (cfg.FfxUpscalerIndex.value_or_default() < 0 ||
-        cfg.FfxUpscalerIndex.value_or_default() >= state.ffxUpscalerVersionIds.size())
+        cfg.FfxUpscalerIndex.value_or_default() >= state.ffxUpscalerVersionsDx12.ids.size())
         cfg.FfxUpscalerIndex.set_volatile_value(0);
 
-    return state.ffxUpscalerVersionIds[cfg.FfxUpscalerIndex.value_or_default()];
+    return state.ffxUpscalerVersionsDx12.ids[cfg.FfxUpscalerIndex.value_or_default()];
 }
 
 bool FSR31FeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)

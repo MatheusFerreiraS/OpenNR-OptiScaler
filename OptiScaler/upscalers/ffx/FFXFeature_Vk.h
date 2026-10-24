@@ -4,10 +4,19 @@
 
 #include "vk/ffx_api_vk.h"
 #include <proxies/FfxApi_Proxy.h>
+#include <shaders/velocity_convert/VC_Vk.h>
 
 class FFXFeatureVk : public FFXFeature, public IFeature_Vk
 {
   private:
+    // amd_fidelityfx_vk.dll or the driver provided upscaler
+    FfxModule* _ffx = nullptr;
+
+    std::unique_ptr<VelocityConvert_Vk> _velocityConvert = nullptr;
+
+    // Last logged inputs of the driver provided FSR 4
+    std::string _lastFsr4Inputs;
+
   protected:
     bool InitFFX(const NVSDK_NGX_Parameter* InParameters);
 
@@ -21,6 +30,11 @@ class FFXFeatureVk : public FFXFeature, public IFeature_Vk
     feature_version Version() override { return FFXFeature::Version(); }
     Upscaler GetUpscalerType() const final { return Upscaler::FFX; }
     API Api() const override { return IFeature_Vk::Api(); }
+    std::optional<double> ReadUpscalerTime(void* unused) override { return IFeature_Vk::ReadUpscalerTime(unused); };
+    void ReadDetailedGpuTimes(void* unused, std::vector<DetailedGpuTime>& detailedGpuTimes) override
+    {
+        return IFeature_Vk::ReadDetailedGpuTimes(unused, detailedGpuTimes);
+    };
 
     bool IsWithDx12() final { return false; }
 
@@ -29,7 +43,7 @@ class FFXFeatureVk : public FFXFeature, public IFeature_Vk
         if (State::Instance().isShuttingDown)
             return;
 
-        if (_context != nullptr)
-            FfxApiProxy::VULKAN_DestroyContext()(&_context, NULL);
+        if (_context != nullptr && _ffx != nullptr)
+            _ffx->DestroyContext(&_context, NULL);
     }
 };

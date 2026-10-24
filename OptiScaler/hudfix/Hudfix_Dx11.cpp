@@ -239,6 +239,7 @@ bool Hudfix_Dx11::FillResourceInfo(ID3D11Texture2D* texture, Dx11ResourceType ty
     outInfo->texture = texture;
     outInfo->width = desc.Width;
     outInfo->height = desc.Height;
+    outInfo->arraySize = desc.ArraySize;
     outInfo->format = desc.Format;
     outInfo->bindFlags = desc.BindFlags;
     outInfo->miscFlags = desc.MiscFlags;
@@ -348,7 +349,7 @@ bool Hudfix_Dx11::IsResourceCheckActive()
             return false;
     }
 
-    if (!Config::Instance()->FGEnabled.value_or_default() || !Config::Instance()->FGHUDFix.value_or_default())
+    if (!Config::Instance()->IsFGEnabled() || !Config::Instance()->FGHUDFix.value_or_default())
         return false;
 
     if (state.activeFgInput != FGInput::Upscaler || state.swapchainInteropApi != SwapchainInteropApi::Dx11wDx12)
@@ -378,7 +379,13 @@ bool Hudfix_Dx11::CheckResource(Dx11ResourceInfo* resource)
     }
 
     D3D11_TEXTURE2D_DESC desc = {};
-    resource->texture->GetDesc(&desc);
+    desc.Width = resource->width;
+    desc.Height = resource->height;
+    desc.ArraySize = resource->arraySize;
+    desc.Format = resource->format;
+    desc.SampleDesc.Count = resource->sampleCount;
+    desc.BindFlags = resource->bindFlags;
+    desc.MiscFlags = resource->miscFlags;
 
     if (desc.Width == 0 || desc.Height == 0 || desc.ArraySize == 0)
         return false;
@@ -403,8 +410,8 @@ bool Hudfix_Dx11::CheckResource(Dx11ResourceInfo* resource)
 
     if (desc.Width != width || desc.Height != height)
     {
-        const UINT toleranceX = width / 8;
-        const UINT toleranceY = height / 8;
+        const UINT toleranceX = width / 20;
+        const UINT toleranceY = height / 20;
 
         if (resource->captureInfo != Dx11CaptureInfo::Upscaler &&
             !(Config::Instance()->FGRelaxedResolutionCheck.value_or_default() &&

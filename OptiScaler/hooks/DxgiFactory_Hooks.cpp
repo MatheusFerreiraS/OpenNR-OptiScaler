@@ -840,7 +840,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUn
         return result;
     }
 
-    if (pDesc->Height < 100 || pDesc->Width < 100)
+    if ((pDesc->Height != 0 && pDesc->Height < 100) || (pDesc->Width != 0 && pDesc->Width < 100))
     {
         LOG_WARN("Overlay call! Width: {}, Height: {}", pDesc->Width, pDesc->Height);
         HRESULT result;
@@ -1700,7 +1700,7 @@ HRESULT DxgiFactoryHooks::DLSSGCreateSwapChainForHwnd(IDXGIFactory2* realFactory
         return result;
     }
 
-    if (pDesc->Height < 100 || pDesc->Width < 100)
+    if ((pDesc->Height != 0 && pDesc->Height < 100) || (pDesc->Width != 0 && pDesc->Width < 100))
     {
         LOG_WARN("Overlay call! Width: {}, Height: {}", pDesc->Width, pDesc->Height);
         HRESULT result;

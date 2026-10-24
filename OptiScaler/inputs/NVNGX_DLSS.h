@@ -12,4 +12,5 @@ template <typename FeatureType> struct ContextData
     unsigned int createWidth = 0, createHeight = 0, createOutWidth = 0, createOutHeight = 0;
     int createFlags = 0, createQuality = 0;
     int changeBackendCounter = 0;
+    UINT64 lastEvalFrame = 0;
 };

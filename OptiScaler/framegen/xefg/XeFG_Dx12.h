@@ -7,6 +7,7 @@
 
 #include "shaders/depth_invert/DI_Dx12.h"
 #include "XeFG_DynamicCount.h"
+#include "XeFG_DynamicCap.h"
 
 #include <xell.h>
 #include <xell_d3d12.h>
@@ -28,14 +29,15 @@ class XeFG_Dx12 : public virtual IFGFeature_Dx12
 
     // Dynamic MFG
     XeFG_DynamicCount _dynamicCount;
+    XeFG_DynamicCap _dynamicCap; // with "Use target as cap": holds the target, no rounding band, no 1X
     bool _dynamicActive = false;
+    bool _dynamicCapActive = false;
     double _dynamicLogMs = 0.0;
     int _refreshRate = 0;
     double _refreshCheckedMs = 0.0;
     float DisplayRefreshFps(double nowMs);
     void SetGenerationOff(bool off); // Dynamic MFG 1X
     float DynamicTargetFps(double nowMs);
-    bool UpdateDynamicCount(int maxCount);
 
     std::unique_ptr<DI_Dx12> _depthInvert;
 
@@ -52,17 +54,20 @@ class XeFG_Dx12 : public virtual IFGFeature_Dx12
     void CreateObjects(ID3D12Device* InDevice) override final;
 
   public:
+    // Uses a temporary context, works before our FG swapchain exists. Returns 0 on failure
+    static int QueryMaxInterpolationCount(ID3D12Device* device);
+
     // IFGFeature
     const char* Name() override final;
     feature_version Version() override final;
     HWND Hwnd() override final;
 
     // IFGFeature_Dx12
-    bool CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQueue, DXGI_SWAP_CHAIN_DESC* desc,
-                         IDXGISwapChain** swapChain, bool readyToRelease) override final;
-    bool CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmdQueue, HWND hwnd, DXGI_SWAP_CHAIN_DESC1* desc,
-                          DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc, IDXGISwapChain1** swapChain,
-                          bool readyToRelease) override final;
+    bool CreateSwapchainInternal(IDXGIFactory* factory, ID3D12CommandQueue* cmdQueue, DXGI_SWAP_CHAIN_DESC* desc,
+                                 IDXGISwapChain** swapChain) override final;
+    bool CreateSwapchain1Internal(IDXGIFactory* factory, ID3D12CommandQueue* cmdQueue, HWND hwnd,
+                                  DXGI_SWAP_CHAIN_DESC1* desc, DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
+                                  IDXGISwapChain1** swapChain) override final;
 
     bool ReleaseSwapchain(HWND hwnd) override final;
 

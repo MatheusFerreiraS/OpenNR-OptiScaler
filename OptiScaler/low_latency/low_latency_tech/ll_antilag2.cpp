@@ -11,13 +11,13 @@ inline HRESULT AntiLag2::al2_sleep()
 
     // if (effective_fg_state && minimum_interval_us != 0) {
     //     static uint64_t previous_frame_time = 0;
-    //     uint64_t current_time = get_timestamp();
+    //     uint64_t current_time = Util::GetTimestamp();
     //     uint64_t frame_time = current_time - previous_frame_time;
     //     if (frame_time < 1000 * minimum_interval_us) {
     //         if (auto res = eepy(minimum_interval_us * 1000 - frame_time); res)
     //             LOG_ERROR("Sleep command failed: {}", res);
     //     }
-    //     previous_frame_time = get_timestamp();
+    //     previous_frame_time = Util::GetTimestamp();
     // } else {
     //     max_fps = minimum_interval_us > 0 ? (int) std::round(1000000.0f / minimum_interval_us) : 0;
     // }
@@ -25,14 +25,14 @@ inline HRESULT AntiLag2::al2_sleep()
 
     HRESULT result = {};
 
-    // auto pre_sleep = get_timestamp();
+    // auto pre_sleep = Util::GetTimestamp();
 
     if (dx12_ctx.m_pAntiLagAPI)
         result = AMD::AntiLag2DX12::Update(&dx12_ctx, is_enabled(), max_fps);
     else if (dx11_ctx.m_pAntiLagAPI)
         result = AMD::AntiLag2DX11::Update(&dx11_ctx, is_enabled(), max_fps);
 
-    // log_event("al2_sleep", "{}", get_timestamp() - pre_sleep);
+    // log_event("al2_sleep", "{}", Util::GetTimestamp() - pre_sleep);
 
     LOG_TRACE_LOWLATENCY("FSR Anti-Lag 2.0 Call Spot: {}",
                          current_call_spot == CallSpot::SimulationStart ? "SimulationStart" : "SleepCall");
@@ -156,6 +156,10 @@ void AntiLag2::sleep(std::optional<uint32_t> frame_id)
 {
     last_sleep_framecount = simulation_framecount;
 
+    // Inputs that only sleep (OptiScaler's present markers) never send a simulation start to switch with
+    if (simulation_framecount == 0)
+        current_call_spot = CallSpot::SleepCall;
+
     if (current_call_spot == CallSpot::SleepCall)
         al2_sleep();
 }
@@ -196,7 +200,9 @@ void AntiLag2::set_async_marker(IUnknown* pCommandQueue, const MarkerParams& mar
             last_present_marker_framecount != 0 &&
             State::Instance().frameCount > last_present_marker_framecount + present_marker_stall_threshold;
 
-        set_fg_type(previous_frame_id == marker_params.frame_id && !presentMarkersStalled, marker_params.frame_id);
+        set_fg_type(marker_params.interpolated.value_or(previous_frame_id == marker_params.frame_id &&
+                                                        !presentMarkersStalled),
+                    marker_params.frame_id);
         previous_frame_id = marker_params.frame_id;
     }
 }

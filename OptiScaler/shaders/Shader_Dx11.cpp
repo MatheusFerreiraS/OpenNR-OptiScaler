@@ -18,6 +18,8 @@ Shader_Dx11::~Shader_Dx11()
     SAFE_RELEASE(_buffer);
     SAFE_RELEASE(_srvInput);
     SAFE_RELEASE(_uavOutput);
+
+    // _currentOutResource is the caller's texture, InitializeUAV keeps it without a reference
 }
 
 DXGI_FORMAT Shader_Dx11::TranslateTypelessFormats(DXGI_FORMAT format)

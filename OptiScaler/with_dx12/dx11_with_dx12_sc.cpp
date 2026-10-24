@@ -2,6 +2,7 @@
 #include "dx11_with_dx12_sc.h"
 
 #include <with_dx12/with_dx12.h>
+#include <with_dx12/dx11_with_dx12_sync.h>
 
 #include <hooks/FG_Hooks.h>
 #include <menu/menu_overlay_dx.h>
@@ -14,6 +15,7 @@
 #include <dlssnr/amd/PresentExperimental.h>
 #include <dlssnr/amd/AmdBridge.h>
 #include <dlssnr/backend/Selector.h>
+#include <misc/IdentifyGpu.h>
 
 #include <d3d11.h>
 #include <d3d11_4.h>
@@ -53,6 +55,41 @@ void SafeCloseHandle(HANDLE& value)
         CloseHandle(value);
         value = nullptr;
     }
+}
+
+bool WaitForQueueIdle(ID3D12CommandQueue* queue, ID3D12Fence* fence, HANDLE fenceEvent, UINT64& fenceValue)
+{
+    if (queue == nullptr || fence == nullptr || fenceEvent == nullptr)
+        return true;
+
+    const UINT64 waitValue = ++fenceValue;
+    auto result = queue->Signal(fence, waitValue);
+    if (FAILED(result))
+    {
+        LOG_ERROR("FG/present queue idle Signal failed: {:X}", (UINT) result);
+        return false;
+    }
+
+    if (fence->GetCompletedValue() >= waitValue)
+        return true;
+
+    result = fence->SetEventOnCompletion(waitValue, fenceEvent);
+    if (FAILED(result))
+    {
+        LOG_ERROR("FG/present queue idle SetEventOnCompletion failed. fence {}, completed {}, result {:X}", waitValue,
+                  fence->GetCompletedValue(), (UINT) result);
+        return false;
+    }
+
+    const auto waitResult = WaitForSingleObject(fenceEvent, 5000);
+    if (waitResult != WAIT_OBJECT_0)
+    {
+        LOG_ERROR("FG/present queue idle wait failed. fence {}, completed {}, waitResult {:X}", waitValue,
+                  fence->GetCompletedValue(), waitResult);
+        return false;
+    }
+
+    return true;
 }
 
 void TransitionResource(ID3D12GraphicsCommandList* commandList, ID3D12Resource* resource,
@@ -120,6 +157,24 @@ void WaitForFgBackBuffers(IDXGISwapChain* swapchain)
         Sleep(2);
     }
     LOG_WARN("XeFG still holds a back buffer after 500 ms");
+}
+
+bool IsSame(IDXGISwapChain* swapchain, UINT bufferCount, UINT width, UINT height, DXGI_FORMAT format, UINT flags)
+{
+    if (swapchain == nullptr)
+        return false;
+
+    DXGI_SWAP_CHAIN_DESC desc {};
+    if (FAILED(swapchain->GetDesc(&desc)))
+        return false;
+
+    const UINT resolvedBufferCount = bufferCount != 0 ? bufferCount : desc.BufferCount;
+    const UINT resolvedWidth = width != 0 ? width : desc.BufferDesc.Width;
+    const UINT resolvedHeight = height != 0 ? height : desc.BufferDesc.Height;
+    const DXGI_FORMAT resolvedFormat = format != DXGI_FORMAT_UNKNOWN ? format : desc.BufferDesc.Format;
+
+    return resolvedBufferCount == desc.BufferCount && resolvedWidth == desc.BufferDesc.Width &&
+           resolvedHeight == desc.BufferDesc.Height && resolvedFormat == desc.BufferDesc.Format && flags == desc.Flags;
 }
 } // namespace
 
@@ -323,6 +378,8 @@ ULONG STDMETHODCALLTYPE Dx11wDx12SC::Release()
 
         ResTrack_Dx11::OnDeviceReleased(_dx11Device);
 
+        ResTrack_Dx11::OnDeviceReleased(_dx11Device);
+
         delete this;
 
         if (finalImage)
@@ -516,7 +573,8 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
               dx11Index, _real3 != nullptr ? _real3->GetCurrentBackBufferIndex() : 0xFFFFFFFF, _currentFakeIndex,
               _bufferCount);
 
-    if (_real != nullptr)
+    // Some memes with Vk swapchains on Lunyx and overlays
+    if (_real != nullptr && !State::Instance().isRunningOnLinux)
     {
         UINT realFlags = Flags;
 
@@ -529,6 +587,9 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
 
     auto result = _fgSwapChain->Present(SyncInterval, Flags);
     _presentReturnedMs = Util::MillisecondsNow();
+
+    if (dx11HudfixPresent)
+        Hudfix_Dx11::PresentEnd();
 
     if (dx11HudfixPresent)
         Hudfix_Dx11::PresentEnd();
@@ -586,8 +647,33 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
               (UINT) NewFormat, SwapChainFlags);
     NewFormat = FlipFormat(NewFormat);
 
+    const bool skipFgResize = IsSame(_fgSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    const bool synchronizeXeFGPresent = skipFgResize && State::Instance().activeFgOutput == FGOutput::XeFG &&
+                                        State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12;
+
+    std::unique_lock<std::shared_mutex> presentResizeLock(Dx11wDx12Sync::PresentResizeMutex(), std::defer_lock);
+    if (synchronizeXeFGPresent)
+    {
+        auto fg = State::Instance().currentFG;
+        if (fg != nullptr && fg->FrameGenerationContext() != nullptr && fg->IsActive())
+        {
+            State::Instance().fgChanged = true;
+            fg->UpdateTarget();
+            fg->Deactivate();
+        }
+
+        LOG_DEBUG("Waiting for XeFG native presents before equivalent ResizeBuffers");
+        presentResizeLock.lock();
+        LOG_DEBUG("XeFG native present barrier acquired");
+    }
+
     if (!_WaitForCopyQueueIdle())
         LOG_WARN("continuing ResizeBuffers after copy fence wait failure");
+
+    if (synchronizeXeFGPresent && !WaitForQueueIdle(_dx12CommandQueue, _copyFence, _copyFenceEvent, _copyFenceValue))
+    {
+        LOG_WARN("continuing ResizeBuffers after FG/present queue wait failure");
+    }
 
     // With final-image NR, XeFG draws the menu from its own thread and reads NR's motion and depth until its resize
     // has drained it: only the back buffers are released first, and the menu stays off until both swapchains are
@@ -606,7 +692,17 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
 
     HRESULT fgResult = DXGI_ERROR_DEVICE_REMOVED;
     if (SUCCEEDED(realResult) && _fgSwapChain != nullptr)
-        fgResult = _fgSwapChain->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    {
+        if (skipFgResize)
+        {
+            LOG_DEBUG("Skipping FG ResizeBuffers");
+            fgResult = S_OK;
+        }
+        else
+        {
+            fgResult = _fgSwapChain->ResizeBuffers(BufferCount, Width, Height, NewFormat, SwapChainFlags);
+        }
+    }
 
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers results: real {:X}, fg {:X}", (UINT) realResult, (UINT) fgResult);
     if (finalImage)
@@ -629,7 +725,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers(UINT BufferCount, UINT Widt
     if (SUCCEEDED(realResult) && SUCCEEDED(fgResult))
     {
 
-        if (Config::Instance()->FGEnabled.value_or_default())
+        if (Config::Instance()->IsFGEnabled())
         {
             State::Instance().fgResetCapturedResources = true;
             State::Instance().fgOnlyUseCapturedResources = false;
@@ -820,8 +916,36 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
               (UINT) Format, SwapChainFlags);
     Format = FlipFormat(Format);
 
+    if (_real3 == nullptr)
+        return ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
+
+    const bool skipFgResize = IsSame(_fgSwapChain, BufferCount, Width, Height, Format, SwapChainFlags);
+    const bool synchronizeXeFGPresent = skipFgResize && State::Instance().activeFgOutput == FGOutput::XeFG &&
+                                        State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx11wDx12;
+
+    std::unique_lock<std::shared_mutex> presentResizeLock(Dx11wDx12Sync::PresentResizeMutex(), std::defer_lock);
+    if (synchronizeXeFGPresent)
+    {
+        auto fg = State::Instance().currentFG;
+        if (fg != nullptr && fg->FrameGenerationContext() != nullptr && fg->IsActive())
+        {
+            State::Instance().fgChanged = true;
+            fg->UpdateTarget();
+            fg->Deactivate();
+        }
+
+        LOG_DEBUG("Waiting for XeFG native presents before equivalent ResizeBuffers1");
+        presentResizeLock.lock();
+        LOG_DEBUG("XeFG native present barrier acquired");
+    }
+
     if (!_WaitForCopyQueueIdle())
         LOG_WARN("continuing ResizeBuffers1 after copy fence wait failure");
+
+    if (synchronizeXeFGPresent && !WaitForQueueIdle(_dx12CommandQueue, _copyFence, _copyFenceEvent, _copyFenceValue))
+    {
+        LOG_WARN("continuing ResizeBuffers1 after FG/present queue wait failure");
+    }
 
     // With final-image NR, XeFG draws the menu from its own thread and reads NR's motion and depth until its resize
     // has drained it: only the back buffers are released first, and the menu stays off until both swapchains are
@@ -848,7 +972,15 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
     if (SUCCEEDED(realResult) && _fgSwapChain != nullptr)
     {
         // The game's ppPresentQueue is not valid for the DX12 FG swapchain. Use ResizeBuffers for phase 1.
-        fgResult = _fgSwapChain->ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
+        if (skipFgResize)
+        {
+            LOG_DEBUG("Skipping FG ResizeBuffers1");
+            fgResult = S_OK;
+        }
+        else
+        {
+            fgResult = _fgSwapChain->ResizeBuffers(BufferCount, Width, Height, Format, SwapChainFlags);
+        }
     }
 
     LOG_DEBUG("Dx11wDx12SC ResizeBuffers1 results: real {:X}, fg {:X}", (UINT) realResult, (UINT) fgResult);
@@ -872,7 +1004,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::ResizeBuffers1(UINT BufferCount, UINT Wid
     if (SUCCEEDED(realResult) && SUCCEEDED(fgResult))
     {
 
-        if (Config::Instance()->FGEnabled.value_or_default())
+        if (Config::Instance()->IsFGEnabled())
         {
             State::Instance().fgResetCapturedResources = true;
             State::Instance().fgOnlyUseCapturedResources = false;
@@ -1337,19 +1469,18 @@ bool Dx11wDx12SC::_CopyDx11SharedToDx12FGBackBuffer(UINT dx11Index)
 
 bool Dx11wDx12SC::_WaitForInteropCopyOnPresentQueue()
 {
-    if (_fg == nullptr || _copyFence == nullptr)
+    if (_copyFence == nullptr)
         return false;
 
     if (_lastInteropCopyFenceValue == 0)
         return true;
 
-    // A frame generation feature whose swapchain could not be made has no queue: the bridge then presents a plain D3D12
-    // swapchain made on its own queue.
-    auto queue = _fg->GetCommandQueue() ? _fg->GetCommandQueue() : _dx12CommandQueue;
-    if (queue == nullptr)
-        return false;
+    auto presentQueue = _fg != nullptr ? _fg->GetCommandQueue() : nullptr;
 
-    auto result = queue->Wait(_copyFence, _lastInteropCopyFenceValue);
+    if (presentQueue == nullptr || presentQueue == _dx12CommandQueue)
+        return true;
+
+    auto result = presentQueue->Wait(_copyFence, _lastInteropCopyFenceValue);
     if (FAILED(result))
     {
         LOG_ERROR("present queue Wait on interop copy fence failed: {:X}", (UINT) result);

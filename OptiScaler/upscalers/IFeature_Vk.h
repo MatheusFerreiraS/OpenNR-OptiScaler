@@ -1,10 +1,11 @@
 #pragma once
-#include <vulkan/vulkan.hpp>
+#include <vulkan/vulkan.h>
 #include "IFeature.h"
 
 #include <shaders/rcas/RCAS_Vk.h>
 #include <shaders/output_scaling/OS_Vk.h>
 #include <shaders/magnifier/Magnifier_Vk.h>
+#include <gpu_time/GpuTime_Vk.h>
 
 class IFeature_Vk : public virtual IFeature
 {
@@ -60,6 +61,7 @@ class IFeature_Vk : public virtual IFeature
     // where every surface between two of these stages rests.
     bool EnsureEnlargerInput(VkCommandBuffer InCmdBuffer, VkFormat format, uint32_t width, uint32_t height);
     void ReleaseEnlargerInput();
+    std::unique_ptr<GpuTime_Vk> UpscalerTime = nullptr;
 
     virtual bool InitInternal(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter* InParameters) = 0;
     virtual bool EvaluateInternal(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter* InParameters) = 0;
@@ -69,6 +71,9 @@ class IFeature_Vk : public virtual IFeature
                       PFN_vkGetInstanceProcAddr InGIPA, PFN_vkGetDeviceProcAddr InGDPA,
                       NVSDK_NGX_Parameter* InParameters);
     virtual bool Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter* InParameters);
+
+    std::optional<double> ReadUpscalerTime(void* unused) override;
+    void ReadDetailedGpuTimes(void* unused, std::vector<DetailedGpuTime>& detailedGpuTimes) override;
 
     IFeature_Vk(unsigned int InHandleId, NVSDK_NGX_Parameter* InParameters) : IFeature(InHandleId, InParameters) {}
 

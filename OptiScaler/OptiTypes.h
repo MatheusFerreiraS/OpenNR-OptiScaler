@@ -31,6 +31,8 @@ inline constexpr CString FSR_Reactive = "FSR.reactive";
 
 } // namespace OptiKeys
 
+template <typename T> struct EnumConfig;
+
 typedef enum API
 {
     NotSelected = 0,
@@ -64,7 +66,7 @@ enum class Upscaler
 
     DLSS, // "dlss", used for the DLSS upscaler backend
 
-    DLSS_on12, // "dlss_12", DLSS run on the D3D12 side of the D3D11 bridge
+    DLSS_on12, // DX12 dlss using interops
 
     DLSSD, // "dlssd", used for the DLSS-D/Ray Reconstruction upscaler+denoiser backend
 
@@ -97,13 +99,40 @@ enum class SharpenShader
     LocalContrastDepthAware
 };
 
+template <> struct EnumConfig<SharpenShader>
+{
+    static constexpr auto default_value = SharpenShader::RCAS;
+
+    static constexpr std::pair<SharpenShader, std::string_view> mapping[] = { { SharpenShader::RCAS, "rcas" },
+                                                                              { SharpenShader::DepthAware, "da" },
+                                                                              { SharpenShader::LocalContrastDepthAware,
+                                                                                "lcda" } };
+};
+
 enum class FSR4Support : uint8_t
 {
     None = 0,
     FP8 = 1,
     INT8 = 2,
+    INT8_2 = 3,   // RDNA2 INT8 model
+    INT8Lite = 4, // Smaller INT8 model meant for APUs
     Count
 };
+
+// FSR 4 network variants, FFX uses the first one in this order that the GPU supports
+enum class FSR4Model : uint8_t
+{
+    FP8 = 0,
+    INT8 = 1,
+    INT8_2 = 2,   // RDNA2 INT8 model
+    INT8Lite = 3, // Smaller INT8 model meant for APUs
+    Count
+};
+
+inline bool IsFsr4Int8(FSR4Support support)
+{
+    return support == FSR4Support::INT8 || support == FSR4Support::INT8_2 || support == FSR4Support::INT8Lite;
+}
 
 typedef struct _version_t
 {
@@ -248,8 +277,29 @@ Upscaler CodeToUpscaler(const std::string& code);
 // Needs this function for compatibility for now
 Upscaler CodeToUpscalerFfx(const std::string& code);
 
-// Converts enum to the string codes for config
-std::string SharpnessShaderToCode(SharpenShader sharpenShader);
+// Enum to String Code
+template <typename T> std::string EnumToCode(T value)
+{
+    for (const auto& pair : EnumConfig<T>::mapping)
+    {
+        if (pair.first == value)
+            return std::string(pair.second);
+    }
+    return "";
+}
 
-// Converts string codes into enum for config
-SharpenShader CodeToSharpnessShader(const std::string& code);
+constexpr char ToLower(char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; }
+
+// String Code to Enum
+template <typename T> T CodeToEnum(std::string_view code)
+{
+    for (const auto& [value, mappedCode] : EnumConfig<T>::mapping)
+    {
+        if (std::ranges::equal(mappedCode, code, std::ranges::equal_to {}, ToLower, ToLower))
+        {
+            return value;
+        }
+    }
+
+    return EnumConfig<T>::default_value;
+}

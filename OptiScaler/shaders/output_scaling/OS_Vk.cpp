@@ -125,6 +125,7 @@ bool OS_Vk::Dispatch(VkCommandBuffer InCmdList, const VkImageInfo& InResourceVie
     if (!_init || InCmdList == VK_NULL_HANDLE)
         return false;
 
+    ScopedGpuTime_Vk scopedGpuTime(GpuTime.get(), InCmdList);
     // The resample sizes. Output Scaling and the Magnifier keep reading them from the current feature
     // (unchanged). A Neural Rendering instance (_scalerOverride set) sizes from the passed images
     // instead: NR's supersample up/down legs resample native<->super-native, nothing to do with the

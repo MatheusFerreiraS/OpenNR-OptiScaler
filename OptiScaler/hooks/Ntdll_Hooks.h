@@ -88,11 +88,17 @@ class NtdllHooks
             {
                 LOG_TRACE("{}, caller: {}", wstring_to_string(name.data()), Util::WhoIsTheCaller(_ReturnAddress()));
                 *ModuleHandle = (HANDLE) moduleHandle;
+                LibraryLoadHooks::AfterLoadLibrary(moduleHandle);
                 return (NTSTATUS) 0x00000000L;
             }
         }
 
-        return o_LdrLoadDll(PathToFile, Flags, ModuleFileName, ModuleHandle);
+        auto result = o_LdrLoadDll(PathToFile, Flags, ModuleFileName, ModuleHandle);
+
+        if (NT_SUCCESS(result))
+            LibraryLoadHooks::AfterLoadLibrary((HMODULE) *ModuleHandle);
+
+        return result;
     }
 
     static NTSTATUS NTAPI hkNtLoadDll(PUNICODE_STRING PathToFile, PULONG Flags, PUNICODE_STRING ModuleFileName,
@@ -173,7 +179,11 @@ class NtdllHooks
                 return result.value();
         }
 
-        return o_LdrUnloadDll(lpLibrary);
+        auto unloadResult = o_LdrUnloadDll(lpLibrary);
+
+        LibraryLoadHooks::AfterFreeLibrary(lpLibrary);
+
+        return unloadResult;
     }
 
     VALIDATE_MEMBER_HOOK(hkRtlGetVersion, NtdllProxy::PFN_RtlGetVersion)

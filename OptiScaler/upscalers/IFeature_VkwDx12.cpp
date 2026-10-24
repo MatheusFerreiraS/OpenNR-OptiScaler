@@ -14,6 +14,7 @@
 #include <with_dx12/with_dx12.h>
 
 #include <misc/IdentifyGpu.h>
+#include <misc/DeferredRelease.h>
 
 #include <magic_enum.hpp>
 #include <detours/detours.h>
@@ -630,28 +631,29 @@ bool IFeature_VkwDx12::CopyTextureFromVkToDx12(VkCommandBuffer InCmdBuffer, NVSD
         OutResource->Height != InParam->Resource.ImageViewInfo.Height ||
         OutResource->Format != InParam->Resource.ImageViewInfo.Format || OutResource->VkSharedImage == VK_NULL_HANDLE)
     {
-        // Cleanup existing resources
-        if (OutResource->VkSharedImage != VK_NULL_HANDLE)
-        {
-            vkDestroyImage(VulkanDevice, OutResource->VkSharedImage, nullptr);
-            OutResource->VkSharedImage = VK_NULL_HANDLE;
-        }
+        // Cleanup existing resources, previous frames on both APIs can still be using them
+        DeferredRelease::Enqueue(
+            [device = VulkanDevice, image = OutResource->VkSharedImage, view = OutResource->VkSharedImageView,
+             memory = OutResource->VkSharedMemory]()
+            {
+                if (view != VK_NULL_HANDLE)
+                    vkDestroyImageView(device, view, nullptr);
 
-        if (OutResource->VkSharedImageView != VK_NULL_HANDLE)
-        {
-            vkDestroyImageView(VulkanDevice, OutResource->VkSharedImageView, nullptr);
-            OutResource->VkSharedImageView = VK_NULL_HANDLE;
-        }
+                if (image != VK_NULL_HANDLE)
+                    vkDestroyImage(device, image, nullptr);
 
-        if (OutResource->VkSharedMemory != VK_NULL_HANDLE)
-        {
-            vkFreeMemory(VulkanDevice, OutResource->VkSharedMemory, nullptr);
-            OutResource->VkSharedMemory = VK_NULL_HANDLE;
-        }
+                if (memory != VK_NULL_HANDLE)
+                    vkFreeMemory(device, memory, nullptr);
+            },
+            (uint64_t) VulkanDevice);
+
+        OutResource->VkSharedImage = VK_NULL_HANDLE;
+        OutResource->VkSharedImageView = VK_NULL_HANDLE;
+        OutResource->VkSharedMemory = VK_NULL_HANDLE;
 
         SAFE_CLOSE_HANDLE(OutResource->SharedHandle);
 
-        SAFE_RELEASE(OutResource->Dx12Resource);
+        DeferredRelease::Release(OutResource->Dx12Resource);
 
         ASSIGN_VK_DESC((*OutResource), (*OutResource), InParam->Resource.ImageViewInfo.Width,
                        InParam->Resource.ImageViewInfo.Height, InParam->Resource.ImageViewInfo.Format);
@@ -1468,11 +1470,11 @@ bool IFeature_VkwDx12::CopyBackOutput(VkCommandBuffer InCmdBuffer)
 
     auto AddVkBarrier = [&](VK_TEXTURE2D_RESOURCE_C* resource)
     {
-        if (resource->VkSourceImage != VK_NULL_HANDLE)
+        if (resource->VkSourceImage != VK_NULL_HANDLE && resource->VkSharedImage != VK_NULL_HANDLE)
         {
             VkImageMemoryBarrier imageBarrier {};
             imageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            imageBarrier.oldLayout = resource->VkSourceImageLayout;
+            imageBarrier.oldLayout = resource->VkSharedImageLayout;
             imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1482,9 +1484,12 @@ bool IFeature_VkwDx12::CopyBackOutput(VkCommandBuffer InCmdBuffer)
             imageBarrier.subresourceRange.levelCount = 1;
             imageBarrier.subresourceRange.baseArrayLayer = 0;
             imageBarrier.subresourceRange.layerCount = 1;
-            imageBarrier.srcAccessMask = resource->VkSourceImageAccess;
-            imageBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            imageBarrier.srcAccessMask = resource->VkSharedImageAccess;
+            imageBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             imageBarriers.push_back(imageBarrier);
+
+            resource->VkSharedImageLayout = imageBarrier.newLayout;
+            resource->VkSharedImageAccess = imageBarrier.dstAccessMask;
         }
     };
 
@@ -1624,6 +1629,8 @@ bool IFeature_VkwDx12::CopyBackOutput(VkCommandBuffer InCmdBuffer)
         vkOut.VkSourceImageAccess = copyBarriers[1].dstAccessMask;
     }
 
+    UpscalerTime->EndInterop(b.VulkanCopyCommandBuffer[frame]);
+
     vkResult = vkEndCommandBuffer(b.VulkanCopyCommandBuffer[frame]);
     if (vkResult != VK_SUCCESS)
     {
@@ -1701,6 +1708,9 @@ bool IFeature_VkwDx12::CopyBackOutput(VkCommandBuffer InCmdBuffer)
         return false;
     }
 
+    // Publish the query completion marker only after the whole transaction was prepared successfully.
+    UpscalerTime->SubmitInterop(vkSemaphoreCopyBack[frame], copyBackValue);
+
     LOG_DEBUG("Prepared Vulkan w/Dx12 transaction: resource={}, d3d12={}, copyBack={}", pendingResourceCopyValue,
               d3d12CompleteValue, copyBackValue);
     pendingResourceCopyValue = 0;
@@ -1709,6 +1719,8 @@ bool IFeature_VkwDx12::CopyBackOutput(VkCommandBuffer InCmdBuffer)
 
 void IFeature_VkwDx12::AbortPendingInterop(VkCommandBuffer InCmdBuffer, uint32_t InFrame)
 {
+    if (UpscalerTime)
+        UpscalerTime->AbortInterop();
     Vulkan_wDx12::CancelPendingSubmission(InCmdBuffer);
 
     // ProcessVulkanTextures resets the command list before validation/copy setup. Close it on every aborted Evaluate so
@@ -2043,6 +2055,8 @@ bool IFeature_VkwDx12::Init(VkInstance InInstance, VkPhysicalDevice InPD, VkDevi
         return false;
     }
 
+    UpscalerTime = std::make_unique<GpuTime_Vk>(InDevice, InPD);
+
     SetInitParameters(InParameters);
 
     // The list has to be recording, and what is recorded on it has to run.
@@ -2115,6 +2129,9 @@ bool IFeature_VkwDx12::Init(VkInstance InInstance, VkPhysicalDevice InPD, VkDevi
 
 bool IFeature_VkwDx12::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter* InParameters)
 {
+    // Frees deferred objects even when presents aren't hooked
+    DeferredRelease::Collect();
+
     LOG_FUNC();
     std::scoped_lock evaluateLock(EvaluateMutex);
 
@@ -2123,6 +2140,11 @@ bool IFeature_VkwDx12::Evaluate(VkCommandBuffer InCmdBuffer, NVSDK_NGX_Parameter
 
     auto frame = _frameCount % VKDX12_BUFFER_COUNT;
     auto cmdList = Dx12CommandList[frame];
+
+    // Ends in the copy back command buffer, covers the whole interop with D3D12 upscaling in between
+    // The start is recorded in the original CB, the end in the Vulkan copy-back CB.
+    // Query slots are guarded by copy-back timeline completion, not frame count.
+    UpscalerTime->StartInterop(InCmdBuffer);
 
     void* originalColor = nullptr;
     void* originalMotionVectors = nullptr;

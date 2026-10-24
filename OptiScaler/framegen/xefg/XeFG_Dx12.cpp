@@ -7,9 +7,7 @@
 #include <menu/menu_overlay_dx.h>
 #include <resource_tracking/ResTrack_dx12.h>
 
-#include <nvapi/fakenvapi.h>
 #include <hooks/Streamline_Hooks.h>
-
 #include <magic_enum.hpp>
 
 #include <DirectXMath.h>
@@ -51,6 +49,43 @@ void XeFG_Dx12::xefgLogCallback(const char* message, xefg_swapchain_logging_leve
     }
 }
 
+int XeFG_Dx12::QueryMaxInterpolationCount(ID3D12Device* device)
+{
+    if (device == nullptr || (XeFGProxy::Module() == nullptr && !XeFGProxy::InitXeFG()) ||
+        XeFGProxy::D3D12CreateContext() == nullptr || XeFGProxy::GetProperties() == nullptr ||
+        XeFGProxy::Destroy() == nullptr)
+    {
+        return 0;
+    }
+
+#ifndef DONT_USE_XMX
+    ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
+#endif // !DONT_USE_XMX
+
+    xefg_swapchain_handle_t context = nullptr;
+    auto result = XeFGProxy::D3D12CreateContext()(device, &context);
+
+    if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+    {
+        LOG_ERROR("D3D12CreateContext error: {} ({})", magic_enum::enum_name(result), (UINT) result);
+        return 0;
+    }
+
+    // Only maxSupportedInterpolations is reported before swapchain init
+    xefg_swapchain_properties_t props {};
+    result = XeFGProxy::GetProperties()(context, &props);
+    XeFGProxy::Destroy()(context);
+
+    if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
+    {
+        LOG_ERROR("GetProperties error: {} ({})", magic_enum::enum_name(result), (UINT) result);
+        return 0;
+    }
+
+    LOG_INFO("Max supported interpolations: {}", props.maxSupportedInterpolations);
+    return static_cast<int>(props.maxSupportedInterpolations);
+}
+
 bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
 {
     if (XeFGProxy::Module() == nullptr && !XeFGProxy::InitXeFG())
@@ -84,24 +119,11 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
             LOG_ERROR("SetLoggingCallback error: {} ({})", magic_enum::enum_name(result), (UINT) result);
         }
 
-#ifndef LOW_LATENCY_INPUTS
-        // Force fakenvapi to create XeLL for us
-        if (fakenvapi::forceMode(device, LowLatencyMode::XeLL))
+        // XeFG reads the frames of the XeLL context it gets: the XeLL output's, or its own next to a Reflex or
+        // AntiLag 2 output. Either stays valid until this context is destroyed.
+        if (auto xellContext = InputCommon::acquire_xefg_xell(device); xellContext != nullptr)
         {
-            xell_sleep_params_t sleepParams = {};
-            sleepParams.bLowLatencyMode = true;
-            sleepParams.bLowLatencyBoost = false;
-            sleepParams.minimumIntervalUs = 0;
-
-            auto xellResult =
-                XeLLProxy::SetSleepMode()((xell_context_handle_t) fakenvapi::getCurrentContext(), &sleepParams);
-            if (xellResult != XELL_RESULT_SUCCESS)
-            {
-                LOG_ERROR("SetSleepMode error: {} ({})", magic_enum::enum_name(xellResult), (UINT) xellResult);
-                return false;
-            }
-
-            result = XeFGProxy::SetLatencyReduction()(_swapChainContext, fakenvapi::getCurrentContext());
+            result = XeFGProxy::SetLatencyReduction()(_swapChainContext, xellContext);
 
             if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
             {
@@ -109,33 +131,6 @@ bool XeFG_Dx12::CreateSwapchainContext(ID3D12Device* device)
                 return false;
             }
         }
-#else
-        InputXeLL::xell_input_handle_t localXellContext;
-        if (InputXeLL::D3D12CreateContext(device, &localXellContext) == XELL_RESULT_SUCCESS)
-        {
-            localXellContext->inputContext.localContext = true; // We created this context
-
-            xell_sleep_params_t sleepParams = {};
-            sleepParams.bLowLatencyMode = true;
-            sleepParams.bLowLatencyBoost = false;
-            sleepParams.minimumIntervalUs = 0;
-
-            auto xellResult = InputXeLL::SetSleepMode(localXellContext, &sleepParams);
-            if (xellResult != XELL_RESULT_SUCCESS)
-            {
-                LOG_ERROR("SetSleepMode error: {} ({})", magic_enum::enum_name(xellResult), (UINT) xellResult);
-                return false;
-            }
-
-            result = XeFGProxy::SetLatencyReduction()(_swapChainContext, (xell_context_handle_t) localXellContext);
-
-            if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
-            {
-                LOG_ERROR("SetLatencyReduction error: {} ({})", magic_enum::enum_name(result), (UINT) result);
-                return false;
-            }
-        }
-#endif
         else
         {
             LOG_ERROR("Couldn't create XeLL");
@@ -206,6 +201,8 @@ bool XeFG_Dx12::DestroySwapchainContext()
             if (Config::Instance()->DlssNrPresent.value_or_default() ||
                 State::Instance().swapchainInteropApi == SwapchainInteropApi::Dx9wDx12)
                 _framesToInterpolate = -1;
+            // Its XeLL context isn't read anymore
+            InputCommon::release_xefg_xell();
         }
     }
 
@@ -264,47 +261,9 @@ xefg_swapchain_d3d12_resource_data_t XeFG_Dx12::GetResourceData(FG_ResourceType 
     return resourceParam;
 }
 
-bool XeFG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQueue, DXGI_SWAP_CHAIN_DESC* desc,
-                                IDXGISwapChain** swapChain, bool readyToRelease)
+bool XeFG_Dx12::CreateSwapchainInternal(IDXGIFactory* factory, ID3D12CommandQueue* cmdQueue, DXGI_SWAP_CHAIN_DESC* desc,
+                                        IDXGISwapChain** swapChain)
 {
-    if (State::Instance().currentFGSwapchain != nullptr && _hwnd == desc->OutputWindow)
-    {
-        if (Config::Instance()->FGPreserveSwapChain.value_or_default())
-        {
-            LOG_WARN("FG swapchain already created for the same output window!");
-            auto result = State::Instance().currentFGSwapchain->ResizeBuffers(
-                              desc->BufferCount, desc->BufferDesc.Width, desc->BufferDesc.Height,
-                              desc->BufferDesc.Format, desc->Flags) == S_OK;
-
-            *swapChain = State::Instance().currentFGSwapchain;
-            return result;
-        }
-        // Game is creating new swapchain without releasing old one,
-        // we need to release it to avoid errors
-        else if (readyToRelease)
-        {
-            LOG_INFO("Releasing old swapchain");
-            ReleaseSwapchain(_hwnd);
-
-            // Not sure why but XeFG sometimes doesn't release the swapchain properly
-            // so we force release it here to be able to recreate swapchain for same hwnd
-            if (State::Instance().currentRealSwapchain != nullptr)
-            {
-                UINT release = 0;
-                do
-                {
-                    release = State::Instance().currentRealSwapchain->Release();
-                    LOG_DEBUG("Releasing swapchain, ref count: {}", release);
-                } while (release > 0);
-            }
-        }
-        else
-        {
-            LOG_WARN("FG swapchain already exists for the same output window and is not ready to release!");
-            return false;
-        }
-    }
-
     if (_swapChainContext == nullptr)
     {
         LOG_DEBUG("Creating swapchain context for the first time");
@@ -396,7 +355,8 @@ bool XeFG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQu
 
     // For old libxess_fg versions we use max to control interpolation count
     if (XeFGProxy::SetNumInterpolatedFrames() == nullptr)
-        intTarget = Config::Instance()->FGXeFGInterpolationCount.value_or_default();
+        intTarget =
+            Config::Instance()->FGInterpolationCount(Config::Instance()->FGXeFGInterpolationCount.value_or_default());
 
     if (intTarget < 1 || intTarget > _maxInterpolationCount)
     {
@@ -478,47 +438,10 @@ bool XeFG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQu
     return true;
 }
 
-bool XeFG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmdQueue, HWND hwnd,
-                                 DXGI_SWAP_CHAIN_DESC1* desc, DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
-                                 IDXGISwapChain1** swapChain, bool readyToRelease)
+bool XeFG_Dx12::CreateSwapchain1Internal(IDXGIFactory* factory, ID3D12CommandQueue* cmdQueue, HWND hwnd,
+                                         DXGI_SWAP_CHAIN_DESC1* desc, DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
+                                         IDXGISwapChain1** swapChain)
 {
-    if (State::Instance().currentFGSwapchain != nullptr && _hwnd == hwnd)
-    {
-        if (Config::Instance()->FGPreserveSwapChain.value_or_default())
-        {
-            LOG_WARN("FG swapchain already created for the same output window!");
-            auto result = State::Instance().currentFGSwapchain->ResizeBuffers(
-                              desc->BufferCount, desc->Width, desc->Height, desc->Format, desc->Flags) == S_OK;
-
-            *swapChain = (IDXGISwapChain1*) State::Instance().currentFGSwapchain;
-            return result;
-        }
-        // Game is creating new swapchain without releasing old one,
-        // we need to release it to avoid errors
-        else if (readyToRelease)
-        {
-            LOG_INFO("Releasing old swapchain");
-            ReleaseSwapchain(_hwnd);
-
-            // Not sure why but XeFG sometimes doesn't release the swapchain properly
-            // so we force release it here to be able to recreate swapchain for same hwnd
-            if (State::Instance().currentRealSwapchain != nullptr)
-            {
-                UINT release = 0;
-                do
-                {
-                    release = State::Instance().currentRealSwapchain->Release();
-                    LOG_DEBUG("Releasing swapchain, ref count: {}", release);
-                } while (release > 0);
-            }
-        }
-        else
-        {
-            LOG_WARN("FG swapchain already exists for the same output window and is not ready to release!");
-            return false;
-        }
-    }
-
     if (_swapChainContext == nullptr)
     {
         // Final-image NR on D3D11 presents through a D3D12 device of its own, which is not currentD3D12Device.
@@ -572,7 +495,8 @@ bool XeFG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
 
     // For old libxess_fg versions we use max to control interpolation count
     if (XeFGProxy::SetNumInterpolatedFrames() == nullptr)
-        intTarget = Config::Instance()->FGXeFGInterpolationCount.value_or_default();
+        intTarget =
+            Config::Instance()->FGInterpolationCount(Config::Instance()->FGXeFGInterpolationCount.value_or_default());
 
     if (intTarget < 1 || intTarget > _maxInterpolationCount)
     {
@@ -705,6 +629,7 @@ void XeFG_Dx12::Activate()
 
             // FG back on: Dynamic MFG starts its averages over but keeps what it learned
             _dynamicCount.Restart();
+            _dynamicCap.Reset();
         }
 
         LOG_INFO("SetEnabled: true, result: {} ({})", magic_enum::enum_name(result), (UINT) result);
@@ -837,36 +762,155 @@ bool XeFG_Dx12::Dispatch()
                      _maxInterpolationCount);
         }
 
-        // No value set means "auto": follow the multiplier of the game's own DLSSG setting, and keep
-        // using the value we already have as long as no DLSSG request has been seen yet
-        int targetCount = Config::Instance()->FGXeFGInterpolationCount.value_or_default();
+        int targetCount = Config::Instance()->FGInterpolationCount(
+            Config::Instance()->FGXeFGInterpolationCount.value_or_default());
 
-        if (!Config::Instance()->FGXeFGInterpolationCount.has_value())
+        // No value set and not following the game through Streamline: games that create DLSS-G through raw NGX
+        // report their multiplier directly. A game without an upscaler (NR without upscaling) has no multiplier to
+        // follow, so auto is MFG with two generated frames, or 2X when the provider allows only one. XeFG also paces
+        // one generated frame per frame badly on the D3D9 presenter (about 50 ms per rendered frame at 1920x1080,
+        // against 18 ms with two)
+        if (!Config::Instance()->FGFollowsGame() && !Config::Instance()->FGXeFGInterpolationCount.has_value())
         {
             if (const int gameCount = GameRequestedInterpolationCount(); gameCount > 0)
             {
-                targetCount = gameCount > _maxInterpolationCount ? _maxInterpolationCount : gameCount;
+                targetCount = gameCount;
 
-                if (targetCount != gameCount)
+                if (gameCount > _maxInterpolationCount)
                     LOG_WARN("Game requested interpolation count {} but max supported is {}, capping to max", gameCount,
                              _maxInterpolationCount);
             }
-            // A game without an upscaler (the final image) has no multiplier to follow, so auto is MFG with two
-            // generated frames, or 2X when the provider allows only one. XeFG also paces one generated frame per
-            // frame badly on the D3D9 presenter (about 50 ms per rendered frame at 1920x1080, against 18 ms with two)
             else if (state.swapchainInteropApi == SwapchainInteropApi::Dx9wDx12 ||
                      (Config::Instance()->DlssNrPresent.value_or_default() && state.currentFeature == nullptr))
             {
-                targetCount = std::min(2, _maxInterpolationCount);
+                targetCount = 2;
             }
         }
 
-        // Dynamic MFG: the count above is the ceiling, and the count follows the real frame rate
-        if (!UpdateDynamicCount(targetCount) && _framesToInterpolate != targetCount)
+        targetCount = std::clamp(targetCount, 1, std::max(_maxInterpolationCount, 1));
+
+        // Dynamic MFG: the Frame Gen setting is the most interpolated frames, the count follows the real frame rate.
+        // At 2X it switches between off and 2X.
+        const bool dynamic =
+            Config::Instance()->FGXeFGDynamicMFG.value_or_default() && !Config::Instance()->FGFollowsGame();
+        const bool dynamicChange = dynamic && _dynamicActive;
+
+        if (dynamic)
+        {
+            const auto now = Util::MillisecondsNow();
+            const auto target = DynamicTargetFps(now);
+            const int count1 = _framesToInterpolate >= 1 ? std::min(_framesToInterpolate, targetCount) : targetCount;
+            const int current = _generationOff ? 0 : count1;
+            const auto refresh = DisplayRefreshFps(now);
+
+            // What the game waited in OptiScaler: the low latency / FPS limiter sleep and its last present (V-Sync,
+            // a full queue)
+            const double sleepMs = InputCommon::take_sleep_ms();
+            const double waitMs = sleepMs + state.lastFGPresentMs;
+            const int rounding = std::clamp(Config::Instance()->FGXeFGRoundingDMFG.value_or_default(), 0, 2);
+            const int minCount =
+                Config::Instance()->FGXeFGDynamicAllow1X.value_or_default() || targetCount == 1 ? 0 : 1;
+
+            // Use target as cap: every OptiScaler limiter holds the presented frame rate at the target
+            // (FrameLimit::targetFps), the target is at most the FPS limit. Without 1X the cap needs 3X to choose from.
+            const bool cap =
+                Config::Instance()->FGXeFGTargetAsCapDMFG.value_or_default() && target > 0.0f && targetCount > 1;
+            state.xefgDynamicCapFps = cap ? target : 0.0f;
+
+            int count = current;
+
+            if (cap)
+            {
+                // The lowest count that holds the cap: any shortfall steps up, no rounding band and no 1X
+                if (!_dynamicCapActive)
+                    _dynamicCap.Reset();
+
+                count = _dynamicCap.Update({ now, state.lastFGFrameTime, sleepMs, target, targetCount, count1 });
+
+                if (count != current || now - _dynamicLogMs >= 5000.0)
+                {
+                    static constexpr const char* reasons[] = { "", "up", "down", "try down", "undo" };
+                    const auto reason = _dynamicCap.LastReason();
+                    const auto change = count != current ? std::format(" -> {}X", count + 1) : std::string();
+                    const auto why = reason != XeFG_DynamicCap::Reason::None
+                                         ? std::format(" ({})", reasons[(int) reason])
+                                         : std::string();
+
+                    // Changes at info level, the state every 5 s at debug level
+                    spdlog::log(count != current ? spdlog::level::info : spdlog::level::debug,
+                                __FUNCTION__ " Dynamic MFG {}X{}{}: presented {:.1f} fps, target {:.1f} as cap, "
+                                             "reachable {:.1f} fps, back-off {:.0f} s",
+                                current + 1, change, why, _dynamicCap.PresentedFps(), target,
+                                _dynamicCap.ReachableFps(), _dynamicCap.BackoffMs() / 1000.0);
+
+                    _dynamicLogMs = now;
+                }
+            }
+            else
+            {
+                // Coming back from the cap: start the averages over, keep what was learned
+                if (_dynamicCapActive)
+                    _dynamicCount.Restart();
+
+                count = _dynamicCount.Update({ now, state.lastFGFrameTime, waitMs, target, refresh,
+                                               Config::Instance()->FramerateLimit.value_or_default(), targetCount,
+                                               current, rounding, minCount });
+            }
+
+            _dynamicCapActive = cap;
+
+            if (!cap && (count != current || now - _dynamicLogMs >= 5000.0))
+            {
+                static constexpr const char* reasons[] = { "", "up", "down", "try down", "undo", "no gain, back" };
+                static constexpr const char* roundings[] = { "at most", "around", "at least" };
+                const auto reason = _dynamicCount.LastReason();
+                const auto change = count != current ? std::format(" -> {}X", count + 1) : std::string();
+                const auto why = reason != XeFG_DynamicCount::Reason::None ? std::format(" ({})", reasons[(int) reason])
+                                                                           : std::string();
+
+                // Changes at info level, the state every 5 s at debug level
+                spdlog::log(count != current ? spdlog::level::info : spdlog::level::debug,
+                            __FUNCTION__ " Dynamic MFG {}X{}{}: presented {:.1f} fps, target {:.1f} (set {:.1f}, "
+                                         "rounding {}, {}, refresh {:.0f}), one step less {:.1f}, waits {:.0f}%, "
+                                         "frame cost {:.2f} ms, back-off {:.0f} s",
+                            current + 1, change, why, _dynamicCount.PresentedFps(), _dynamicCount.TargetFps(), target,
+                            roundings[rounding], _dynamicCount.Uncapped() ? "no cap" : "capped", refresh,
+                            _dynamicCount.LowerFps(), _dynamicCount.WaitShare() * 100.0, _dynamicCount.FrameCostMs(),
+                            _dynamicCount.BackoffMs() / 1000.0);
+
+                _dynamicLogMs = now;
+            }
+
+            // 1X: frame generation off. XeFG keeps its count, so nothing is rebuilt, and turns back on in microseconds;
+            // its first frame after that has no history and shows the real frame alone.
+            if ((count == 0) != _generationOff)
+                SetGenerationOff(count == 0);
+
+            targetCount = count >= 1 ? count : count1;
+        }
+        else if (_dynamicActive)
+        {
+            _dynamicCount.Reset();
+            _dynamicCap.Reset();
+            _dynamicCapActive = false;
+
+            if (_generationOff)
+                SetGenerationOff(false);
+        }
+
+        // The cap is set every frame Dynamic runs, also a new FG context mustn't inherit it
+        if (!dynamic)
+            state.xefgDynamicCapFps = 0.0f;
+
+        _dynamicActive = dynamic;
+
+        if (_framesToInterpolate != targetCount)
         {
             LOG_INFO("Interpolation count changed {} -> {}", _framesToInterpolate, targetCount);
 
-            state.WAR_xefgRequestFGToggle = true;
+            // XeFG 3.x changes the count at the next frame, Dynamic MFG's own changes skip the FG toggle
+            if (!dynamicChange)
+                state.WAR_xefgRequestFGToggle = true;
 
 #ifndef DONT_USE_XMX
             ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
@@ -1157,98 +1201,6 @@ XeFG_Dx12::~XeFG_Dx12() { Shutdown(); }
 
 bool XeFG_Dx12::SetInterpolatedFrameCount(UINT interpolatedFrameCount) { return true; }
 
-bool XeFG_Dx12::UpdateDynamicCount(int maxCount)
-{
-    auto config = Config::Instance();
-    auto& state = State::Instance();
-
-    // XeFG 3.x changes its count at the next frame, so a change needs no FG toggle
-    const bool dynamic = config->FGXeFGDynamicMFG.value_or_default() && maxCount > 1 && XeFGProxy::Version().major >= 3;
-
-    if (!dynamic)
-    {
-        if (_dynamicActive)
-        {
-            _dynamicCount.Reset();
-
-            if (_generationOff)
-                SetGenerationOff(false);
-
-            _dynamicActive = false;
-        }
-
-        // The fixed count path applies the setting again
-        return false;
-    }
-
-    _dynamicActive = true;
-
-    const auto now = Util::MillisecondsNow();
-    const auto target = DynamicTargetFps(now);
-    const int count1 = _framesToInterpolate >= 1 ? std::min(_framesToInterpolate, maxCount) : maxCount;
-    const int current = _generationOff ? 0 : count1;
-    const auto refresh = DisplayRefreshFps(now);
-
-    // What the game waited in OptiScaler: the low latency / FPS limiter sleep and its last present (V-Sync, a full
-    // queue)
-    const double waitMs = state.lastLowLatencySleepMs.exchange(0.0, std::memory_order_relaxed) + state.lastFGPresentMs;
-    const int rounding = std::clamp(config->FGXeFGRoundingDMFG.value_or_default(), 0, 2);
-    const int minCount = config->FGXeFGDynamicAllow1X.value_or_default() ? 0 : 1;
-    const int count =
-        _dynamicCount.Update({ now, state.lastFGFrameTime, waitMs, target, refresh,
-                               config->FramerateLimit.value_or_default(), maxCount, current, rounding, minCount });
-
-    if (count != current || now - _dynamicLogMs >= 5000.0)
-    {
-        static constexpr const char* reasons[] = { "", "up", "down", "try down", "undo", "no gain, back" };
-        static constexpr const char* roundings[] = { "down", "nearest", "up" };
-        const auto reason = _dynamicCount.LastReason();
-        const auto change = count != current ? std::format(" -> {}X", count + 1) : std::string();
-        const auto why =
-            reason != XeFG_DynamicCount::Reason::None ? std::format(" ({})", reasons[(int) reason]) : std::string();
-
-        // Changes at info level, the state every 5 s at debug level
-        spdlog::log(count != current ? spdlog::level::info : spdlog::level::debug,
-                    __FUNCTION__ " Dynamic MFG {}X{}{}: presented {:.1f} fps, target {:.1f} (set {:.1f}, rounding {}, "
-                                 "refresh {:.0f}), one step less {:.1f}, waits {:.0f}%, frame cost {:.2f} ms, "
-                                 "back-off {:.0f} s",
-                    current + 1, change, why, _dynamicCount.PresentedFps(), _dynamicCount.TargetFps(), target,
-                    roundings[rounding], refresh, _dynamicCount.LowerFps(), _dynamicCount.WaitShare() * 100.0,
-                    _dynamicCount.FrameCostMs(), _dynamicCount.BackoffMs() / 1000.0);
-
-        _dynamicLogMs = now;
-    }
-
-    // 1X: frame generation off. XeFG keeps its count, so nothing is rebuilt, and turns back on in microseconds; its
-    // first frame after that has no history and shows the real frame alone.
-    if ((count == 0) != _generationOff)
-        SetGenerationOff(count == 0);
-
-    const int targetCount = count >= 1 ? count : count1;
-    if (_framesToInterpolate != targetCount)
-    {
-#ifndef DONT_USE_XMX
-        ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
-#endif // !DONT_USE_XMX
-
-        const auto result = XeFGProxy::SetNumInterpolatedFrames()(_swapChainContext, targetCount);
-
-        if (result != XEFG_SWAPCHAIN_RESULT_SUCCESS)
-        {
-            // Back to the fixed count for this session
-            LOG_ERROR("Dynamic MFG SetNumInterpolatedFrames({}) error: {} ({}), switching Dynamic MFG off", targetCount,
-                      magic_enum::enum_name(result), (UINT) result);
-            config->FGXeFGDynamicMFG.set_volatile_value(false);
-            return UpdateDynamicCount(maxCount);
-        }
-
-        LOG_INFO("Dynamic MFG interpolation count {} -> {}", _framesToInterpolate, targetCount);
-        _framesToInterpolate = targetCount;
-    }
-
-    return true;
-}
-
 void XeFG_Dx12::SetGenerationOff(bool off)
 {
     if (_swapChainContext == nullptr || XeFGProxy::SetEnabled() == nullptr)
@@ -1319,7 +1271,7 @@ void XeFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
     _infiniteDepth = static_cast<bool>(fgConstants.flags & FG_Flags::InfiniteDepth);
 
     // If FG Enabled from menu
-    if (Config::Instance()->FGEnabled.value_or_default())
+    if (Config::Instance()->IsFGEnabled())
     {
         // If FG context is nullptr
         if (_fgContext == nullptr)
@@ -1351,6 +1303,8 @@ void XeFG_Dx12::EvaluateState(ID3D12Device* device, FG_Constants& fgConstants)
     {
         LOG_DEBUG("!FGEnabled");
         Deactivate();
+        ReleaseResourceCopies();
+        _depthInvert.reset();
 
         state.clearCapturedHudlesses = true;
         Hudfix_Dx12::ResetCounters();
@@ -1399,6 +1353,8 @@ void XeFG_Dx12::ReleaseObjects()
     _mvFlip.reset();
     _depthFlip.reset();
     _depthInvert.reset();
+
+    ReleaseResourceCopies();
 }
 
 void XeFG_Dx12::CreateObjects(ID3D12Device* InDevice)
@@ -1540,7 +1496,6 @@ bool XeFG_Dx12::Present()
     {
         auto ui = GetResource(FG_ResourceType::UIColor, fIndex);
         if (ui && (ui->validity == FG_ResourceValidity::UntilPresent ||
-                   ui->validity == FG_ResourceValidity::JustTrackCmdlist ||
                    ui->validity == FG_ResourceValidity::UntilPresentFromDispatch))
         {
             LOG_DEBUG("UI[{}] resource: {:X}, copy: {}", fIndex, (size_t) ui->resource, (size_t) ui->copy);
@@ -1576,7 +1531,6 @@ bool XeFG_Dx12::Present()
         {
             auto hudless = GetResource(FG_ResourceType::HudlessColor, fIndex);
             if (hudless && (hudless->validity == FG_ResourceValidity::UntilPresent ||
-                            hudless->validity == FG_ResourceValidity::JustTrackCmdlist ||
                             hudless->validity == FG_ResourceValidity::UntilPresentFromDispatch))
             {
                 LOG_DEBUG("Hudless[{}] resource: {:X}, copy: {}", fIndex, (size_t) hudless->resource,
@@ -1821,8 +1775,7 @@ bool XeFG_Dx12::SetResource(Dx12Resource* inputResource)
         _noHudless[fIndex] = false;
 
     if ((type == FG_ResourceType::Depth || type == FG_ResourceType::Velocity) ||
-        (fResource->validity != FG_ResourceValidity::UntilPresent &&
-         fResource->validity != FG_ResourceValidity::JustTrackCmdlist))
+        fResource->validity != FG_ResourceValidity::UntilPresent)
     {
         fResource->validity = (fResource->validity != FG_ResourceValidity::ValidNow || willFlip)
                                   ? FG_ResourceValidity::UntilPresent
@@ -1933,11 +1886,12 @@ bool XeFG_Dx12::ReleaseSwapchain(HWND hwnd)
 
     if (!State::Instance().isShuttingDown)
     {
+        State::Instance().currentFGSwapchain = nullptr;
+
         if (_swapChainContext != nullptr)
             DestroySwapchainContext();
 
         _swapChainContext = nullptr;
-        State::Instance().currentFGSwapchain = nullptr;
     }
 
     ReleaseObjects();

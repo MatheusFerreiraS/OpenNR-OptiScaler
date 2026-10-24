@@ -45,6 +45,13 @@ std::string Util::WhoIsTheCaller(void* returnAddress)
     return "";
 }
 
+std::filesystem::path Util::ModulePath(HMODULE module)
+{
+    wchar_t path[MAX_PATH] = { 0 };
+    GetModuleFileNameW(module, path, MAX_PATH);
+    return std::filesystem::path(path);
+}
+
 HMODULE Util::GetCallerModule(void* returnAddress)
 {
     HMODULE hModule = NULL;
@@ -370,6 +377,18 @@ std::filesystem::path Util::ExePath()
     return exe;
 }
 
+// ReShade checks for "d3d12" in its own name so also accept d3d12-ReShade64.dll
+std::filesystem::path Util::ReShadePath()
+{
+    auto dir = ExePath().parent_path();
+    auto rsFile = dir / L"ReShade64.dll";
+
+    if (!std::filesystem::exists(rsFile) && std::filesystem::exists(dir / L"d3d12-ReShade64.dll"))
+        rsFile = dir / L"d3d12-ReShade64.dll";
+
+    return rsFile;
+}
+
 static BOOL CALLBACK EnumWindowsCallback(HWND handle, LPARAM lParam)
 {
     const auto isMainWindow = [handle]()
@@ -484,9 +503,60 @@ bool Util::GetFileVersion(std::wstring dllPath, version_t* fileVersionOut, versi
     return true;
 }
 
+// ProductVersion string from the version resource, falling back to FileVersion
+std::string Util::GetFileVersionString(std::wstring dllPath)
+{
+    DWORD handle = 0;
+    DWORD versionSize = GetFileVersionInfoSizeW(dllPath.c_str(), &handle);
+    if (versionSize == 0)
+        return {};
+
+    std::vector<BYTE> versionInfo(versionSize);
+    if (!GetFileVersionInfoW(dllPath.c_str(), handle, versionSize, versionInfo.data()))
+        return {};
+
+    struct LANGANDCODEPAGE
+    {
+        WORD wLanguage;
+        WORD wCodePage;
+    }* lpTranslate = nullptr;
+
+    UINT cbTranslate = 0;
+    if (!VerQueryValueW(versionInfo.data(), L"\\VarFileInfo\\Translation", (LPVOID*) &lpTranslate, &cbTranslate) ||
+        cbTranslate < sizeof(LANGANDCODEPAGE))
+    {
+        return {};
+    }
+
+    for (const wchar_t* name : { L"ProductVersion", L"FileVersion" })
+    {
+        std::wstring query = std::format(L"\\StringFileInfo\\{:04x}{:04x}\\{}", lpTranslate[0].wLanguage,
+                                         lpTranslate[0].wCodePage, name);
+
+        LPWSTR value = nullptr;
+        UINT size = 0;
+
+        if (VerQueryValueW(versionInfo.data(), query.c_str(), reinterpret_cast<LPVOID*>(&value), &size) && value &&
+            size > 1)
+        {
+            return wstring_to_string(value);
+        }
+    }
+
+    return {};
+}
+
 bool Util::IsSubpath(const std::filesystem::path& path, const std::filesystem::path& base)
 {
-    auto rel = std::filesystem::relative(path, base);
+    auto lowerPath = path.lexically_normal().wstring();
+    auto lowerBase = base.lexically_normal().wstring();
+    to_lower_in_place(lowerPath);
+    to_lower_in_place(lowerBase);
+
+    auto rel = std::filesystem::path(lowerPath).lexically_relative(lowerBase);
+    if (rel.empty())
+        return false;
+
     auto first = *rel.begin();
     return first != "." && first != "..";
 }
@@ -932,4 +1002,27 @@ std::map<Util::Luid, std::filesystem::path> Util::GetDriverStore()
         NtdllProxy::FreeLibrary_Ldr(hGdi32);
 
     return result;
+}
+
+uint64_t Util::GetTimestamp()
+{
+    FILETIME fileTime;
+    GetSystemTimePreciseAsFileTime(&fileTime);
+
+    uint64_t time = (static_cast<uint64_t>(fileTime.dwHighDateTime) << 32) | fileTime.dwLowDateTime;
+
+    return time * 100;
+}
+
+void Util::SetFlagEnvVar(const wchar_t* name, bool enabled)
+{
+    const wchar_t* crtValue = enabled ? L"1" : L"";
+    _wputenv_s(name, crtValue);
+    SetEnvironmentVariableW(name, enabled ? L"1" : nullptr);
+
+    if (auto ucrt = GetModuleHandleW(L"ucrtbase.dll"))
+    {
+        if (auto ucrtPutenv = reinterpret_cast<decltype(&_wputenv_s)>(GetProcAddress(ucrt, "_wputenv_s")))
+            ucrtPutenv(name, crtValue);
+    }
 }

@@ -261,9 +261,9 @@ struct NVNGX_Parameters : public NVSDK_NGX_Parameter
  */
 NVNGX_Parameters* GetNGXParameters(API api, bool isPersistent);
 
-template <typename T>
-static bool TryGetToggleableNGXParam(const NVSDK_NGX_Parameter& ngxParams, const char* key,
-                                     const CustomOptional<bool>& isEnabled, T& outValue)
+template <typename T, typename Option>
+static bool TryGetToggleableNGXParam(const NVSDK_NGX_Parameter& ngxParams, const char* key, const Option& isEnabled,
+                                     T& outValue)
 {
     return isEnabled.value_or_default() && (ngxParams.Get(key, &outValue) == NVSDK_NGX_Result_Success);
 }
