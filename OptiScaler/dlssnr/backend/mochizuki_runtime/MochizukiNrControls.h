@@ -205,7 +205,7 @@ extern "C"
         float preprocess_ev;         /* the preprocess's auto exposure in EV, bias included; NaN when not metering */
         float white_point; /* the white point the last frame used, the game's exposure applied (linear colour) */
         /* While building: 1 planning, 2 reading the weights, 3 uploading them, 4 making the pipelines (build_done of
-           build_total), 5 finishing; 0 otherwise. */
+           build_total), 5 finishing, 6 the RX 7000's pipeline check (once per driver); 0 otherwise. */
         uint32_t build_stage;
         uint32_t build_done, build_total;
         uint32_t renodx_effective; /* 1: the network the frames run on is the RenoDX stage's */

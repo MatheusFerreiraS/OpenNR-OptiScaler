@@ -809,12 +809,18 @@ void RenderMenu(Config* config, float menuResScale)
                     info.struct_size >= offsetof(MochizukiNrInfo, build_total) + sizeof info.build_total;
                 const uint32_t stage = fields ? info.build_stage : 0;
                 // Planning and the weights are quick; the pipelines are most of a build.
-                float progress = stage <= 1 ? 0.02f : stage == 2 ? 0.05f : stage == 3 ? 0.10f : 0.98f;
+                float progress = stage <= 1 || stage == 6 ? 0.02f : stage == 2 ? 0.05f : stage == 3 ? 0.10f : 0.98f;
                 if (stage == 4)
                     progress = 0.12f + 0.85f * (info.build_total ? float(info.build_done) / info.build_total : 0.f);
-                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
-                                   "Building the network: NR shows when it is ready. The first build in a"
-                                   "\ngame can take a minute; the next ones a few seconds.");
+                if (stage == 6)
+                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
+                                       "Checking the RX 7000 network: on a new driver every pipeline is compiled"
+                                       "\nonce apart from the game first. This takes 1 to 2 minutes; NR shows"
+                                       "\nwhen it is ready.");
+                else
+                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
+                                       "Building the network: NR shows when it is ready. The first build in a"
+                                       "\ngame can take a minute; the next ones a few seconds.");
                 char label[48];
                 if (stage == 4 && info.build_total)
                     std::snprintf(label, sizeof label, "pipelines %u / %u", info.build_done, info.build_total);
@@ -823,6 +829,7 @@ void RenderMenu(Config* config, float menuResScale)
                                   stage == 2   ? "reading the weights"
                                   : stage == 3 ? "uploading the weights"
                                   : stage == 5 ? "finishing"
+                                  : stage == 6 ? "checking the RX 7000 pipelines"
                                                : "planning");
                 ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f), label);
             }

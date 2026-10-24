@@ -3413,8 +3413,10 @@ struct Session
                      files.size());
             bool ran = false;
             std::string note;
+            nr::g_build_stage = 6;
             why = mzr3::PipelineCheck(device->GetAdapterLuid(), files, DataDirectory() + L"\\dlssnr-amd\\rdna3-check",
                                      &abandon, ran, note);
+            nr::g_build_stage = 1;
             if (abandon)
                 throw std::runtime_error("stopped: the session is being destroyed");
             if (!ran)
