@@ -5,7 +5,8 @@
 // Built for x86 beside the 32-bit dxgi.dll proxy (tools\dx9-x86\proxy_dxgi.cpp), whose host in OptiScaler64\ runs
 // OptiScaler and presents the frames itself: then it checks the frames the host presented and the host's logs.
 //
-//   dx10_final_image_smoke.exe [seconds] [d3d10_1|d3d10] [full]
+//   dx10_final_image_smoke.exe [seconds] [d3d10_1|d3d10] [full|r10]
+// r10: an R10G10B10A2 back buffer in the default sRGB colour space (64-bit only).
 // full: the swap chain is made fullscreen; on x86 the window must turn borderless over its monitor and the game be
 // told it is fullscreen. On x86 a DirectInput mouse is made too, which the proxy hooks for the menu.
 #define NOMINMAX
@@ -49,6 +50,7 @@ int wmain(int argc, wchar_t** argv)
     const int seconds = argc > 1 ? _wtoi(argv[1]) : 40;
     const bool ten1 = argc > 2 && !wcscmp(argv[2], L"d3d10_1");
     const bool full = argc > 3 && !wcscmp(argv[3], L"full");
+    const bool r10 = argc > 3 && !wcscmp(argv[3], L"r10");
     wchar_t self[MAX_PATH] {};
     GetModuleFileNameW(nullptr, self, MAX_PATH);
     const fs::path dir = fs::path(self).parent_path();
@@ -74,7 +76,7 @@ int wmain(int argc, wchar_t** argv)
     DXGI_SWAP_CHAIN_DESC desc {};
     desc.BufferDesc.Width = w;
     desc.BufferDesc.Height = h;
-    desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.BufferDesc.Format = r10 ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
     desc.SampleDesc.Count = 1;
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     desc.BufferCount = 1;
@@ -133,7 +135,9 @@ int wmain(int argc, wchar_t** argv)
                 const float v = 0.5f + 0.25f * std::sin(fx) * std::cos(fy) + 0.1f * std::sin(fx * 7.1f + fy * 3.3f);
                 const uint32_t n = (x * 73856093u ^ y * 19349663u ^ frames * 83492791u) >> 27;
                 const auto c = [&](float k) { return uint32_t(std::clamp(v * k * 255.f + n, 0.f, 255.f)); };
-                pixels[size_t(y) * w + x] = c(1.f) | c(0.8f) << 8 | c(0.6f) << 16 | 0xFF000000u;
+                const auto c10 = [&](float k) { return uint32_t(std::clamp((v * k * 255.f + n) * 4.f, 0.f, 1023.f)); };
+                pixels[size_t(y) * w + x] = r10 ? c10(1.f) | c10(.8f) << 10 | c10(.6f) << 20 | 3u << 30
+                                                : c(1.f) | c(0.8f) << 8 | c(0.6f) << 16 | 0xFF000000u;
             }
         device->UpdateSubresource(source.Get(), 0, nullptr, pixels.data(), w * 4, 0);
         device->CopyResource(back.Get(), source.Get());
@@ -152,8 +156,12 @@ int wmain(int argc, wchar_t** argv)
                     {
                         const uint32_t a = static_cast<const uint32_t*>(map.pData)[size_t(y) * (map.RowPitch / 4) + x];
                         const uint32_t b = pixels[size_t(y) * w + x];
-                        for (int k = 0; k < 24; k += 8)
-                            diff += std::abs(int((a >> k) & 255) - int((b >> k) & 255));
+                        if (r10)
+                            for (int k = 0; k < 30; k += 10)
+                                diff += std::abs(int((a >> k) & 1023) - int((b >> k) & 1023)) / 4;
+                        else
+                            for (int k = 0; k < 24; k += 8)
+                                diff += std::abs(int((a >> k) & 255) - int((b >> k) & 255));
                     }
                 staging->Unmap(0);
                 changed = double(diff) / (double(w) * h * 3);

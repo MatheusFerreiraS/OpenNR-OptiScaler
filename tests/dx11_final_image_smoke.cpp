@@ -10,6 +10,7 @@
 //
 //   dx11_final_image_smoke.exe fg|nr|keys|focus|fgoff|resize|recreate|menu|pace|artefacts|bars
 //   [seconds per phase] [log level] [Section/Key=Value ...] [sync=1] [bgra=1] [tearing=1] [full=1] [blt=1] [srgb=1]
+//   [r10=1]
 #define NOMINMAX
 #include <windows.h>
 #include <d3d11.h>
@@ -46,6 +47,7 @@ static bool tearing = false; // tearing=1: a swapchain that allows tearing, pres
 static bool full = false;    // full=1: a borderless window over the whole primary screen, as a game in fullscreen
 static bool blt = false;     // blt=1: one back buffer and the bit-block transfer model, as older D3D11 games
 static bool srgb = false;    // srgb=1: an R8G8B8A8_UNORM_SRGB back buffer, resized with that format again, as Unity does
+static bool r10 = false;     // r10=1: an R10G10B10A2 back buffer in the default sRGB colour space, as Unreal games have
 
 static void check(HRESULT hr, const char* what)
 {
@@ -555,6 +557,7 @@ struct Game
         desc.BufferDesc.Height = height;
         desc.BufferDesc.Format = bgra ? DXGI_FORMAT_B8G8R8A8_UNORM
                                  : srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+                                 : r10  ? DXGI_FORMAT_R10G10B10A2_UNORM
                                         : DXGI_FORMAT_R8G8B8A8_UNORM;
         desc.SampleDesc.Count = 1;
         desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -871,6 +874,8 @@ int wmain(int argc, wchar_t** argv)
                 blt = _wtoi(argv[i] + 4) != 0;
             else if (wcsncmp(argv[i], L"srgb=", 5) == 0)
                 srgb = _wtoi(argv[i] + 5) != 0;
+            else if (wcsncmp(argv[i], L"r10=", 4) == 0)
+                r10 = _wtoi(argv[i] + 4) != 0;
         const bool fg = mode == L"fg" || mode == L"focus" || mode == L"fgoff" || mode == L"resize" || mode == L"menu" ||
                         mode == L"pace" || mode == L"recreate" || mode == L"artefacts" || mode == L"bars";
         fs::remove(dir / "OptiScaler.log");

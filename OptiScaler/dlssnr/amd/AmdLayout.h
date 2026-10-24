@@ -139,6 +139,92 @@ struct AmdLayout
     // as the ReShade add-on's FixedSeed does. 0 = not mapped.
     std::uint32_t seedCounter = 0;
     std::uint32_t seedSelfCheck = 0;
+    // 0.8.0 and later (NeuralHub). abi 1 is the version.dll the host isolates (RuntimeHostLoad::Load, Packet);
+    // abi 2 is NeuralHub's host module (RuntimeHostLoad::LoadHost, PacketV2): it is loaded as neuralhub_host.dll,
+    // whose DllMain does nothing, and the host runs its process init after making DetourAttachEx a no-op success
+    // and RequestStage a return, so the runtime hooks nothing and installs no interceptor. onceFlag is the byte
+    // NeuralHub_HostStart takes, which DLL_PROCESS_DETACH needs to stop and detach the init threads. formatEnum
+    // maps a DXGI_FORMAT to the runtime's own format number for PacketV2's descriptors. prepareWeights builds
+    // dlssnr_on_amd_weights.bin from nvngx_dlssnr.dll beside the module (weightsOnce is its once-flag), and
+    // initCallback is set to base + initCallbackFn before init, as the runtime's own first present does.
+    std::uint32_t abi = 1;
+    std::uint32_t processInit = 0;
+    std::uint32_t onceFlag = 0;
+    std::uint32_t detourAttachEx = 0;
+    std::uint32_t requestStage = 0;
+    std::uint32_t formatEnum = 0;
+    std::uint32_t prepareWeights = 0;
+    std::uint32_t weightsOnce = 0;
+    std::uint32_t initCallback = 0;
+    std::uint32_t initCallbackFn = 0;
+    // 0.8.0 runs its passes itself, inside one job of one module ([DLSS-NR] Passes): passCount is the int it copies
+    // into each job (1 to 3), and passStyle (ints), passStructure, passSkin and passTone (floats) are arrays of three,
+    // one per pass, of which the job reads entries 1 and 2 (pass 1 takes style, structure, skin and tone above).
+    // 0 = the runtime has no multipass of its own (the host loads one module per pass).
+    std::uint32_t passCount = 0;
+    std::uint32_t passStyle = 0;
+    std::uint32_t passStructure = 0;
+    std::uint32_t passSkin = 0;
+    std::uint32_t passTone = 0;
+    // 0.8.0 NGX host path (all RVAs from GATE-REPORT-0.8.0.md). ngxPublishSlot is the host-services
+    // GetState slot (0x1a01268, written by services init 0x13820 @0x13998); it holds base + ngxPublishFn
+    // (0xa4a0, the "publish Present state" leaf: it writes the present queue, the wait state and
+    // ngxPresentFlag when the published device is set). ngxPresentFlag is the descriptor's dword +0x208
+    // (RVA 0x1a15630): the SR/RR evaluate gates (0x386c0 / 0x5bc80) bail "HIP not initialised yet" /
+    // "the HIP device is not chosen yet" while it is 0. The remaining six are the gate bytes the
+    // CreateFeature-once functions (SR 0x3ca80, RR 0x5fcc0) write behind that flag: init (0x1a02e48 /
+    // 0x1a03a50, "present published"), gpu (0x1a02e49 / 0x1a03a51, bit0 of the RDNA3/4 check 0x96c10,
+    // which CreateFeature runs itself) and weights (0x1a02e21 / 0x1a03a29, "SR/RR: weights from ...").
+    // A host-mode client must call the publisher once and may then write these six bytes itself.
+    // 0 = not mapped for this runtime (before 0.8.0).
+    std::uint32_t ngxPublishSlot = 0;
+    std::uint32_t ngxPublishFn = 0;
+    std::uint32_t ngxPresentFlag = 0;
+    std::uint32_t ngxGateSrInit = 0;
+    std::uint32_t ngxGateSrGpu = 0;
+    std::uint32_t ngxGateSrWeights = 0;
+    std::uint32_t ngxGateRrInit = 0;
+    std::uint32_t ngxGateRrGpu = 0;
+    std::uint32_t ngxGateRrWeights = 0;
+    // 0.8.0 NGX stage isolation & D3D12 SR/RR submission notification:
+    // nrStageCallback (0x2e8a0) is the internal DLSS-NR stage callback registered on the stage dispatcher (0x849e0);
+    // in host mode it must return 0 so NVSDK_NGX_D3D12_EvaluateFeature does not fire an internal pre-upscale NR pass
+    // alongside the host's own AmdPreSr::Backend::Record pass. ngxNotifyChain (0x1a01240) is the function-pointer head
+    // called by Notify (0x12380 @0x1239c) that dispatches SR (0x313d0) and RR (0x33570) D3D12 submission notifications.
+    std::uint32_t nrStageCallback = 0;
+    std::uint32_t ngxNotifyChain = 0;
+    std::uint32_t ngxSrPendingList = 0;
+    std::uint32_t ngxSrJobNotified = 0;
+    std::uint32_t ngxSrJobDone = 0;
+    std::uint32_t ngxRrPendingList = 0;
+    std::uint32_t ngxRrJobNotified = 0;
+    std::uint32_t ngxRrJobDone = 0;
+    // 0.8.0 compute runtime. computeMode (0x1a15728) is the int [Compute] Backend resolves to at process init, 2 for
+    // D3D12. There every addon's HIP kernels run as D3D12 pipelines whose code objects are bound when the host opens
+    // its D3D12 runtime: computeOpen (0xd9b20, bool(ID3D12Device*, std::string* reason)), called by EnsureCompute
+    // (0x96c10) at the first present, which then sets computeState (0x1a157a8) to 1 (-1 failed, 0 not yet). Host mode
+    // has no present of the host's own, so the client opens it. The HIP engine's init (.init) must not run there: its
+    // hipMemcpyToSymbol(g_e4m3_lut) finds no code object and the host stops the process ("compute FATAL").
+    std::uint32_t computeMode = 0;
+    std::uint32_t computeOpen = 0;
+    std::uint32_t computeState = 0;
+    // 0.8.0 present stage. The host's Present detour (0x12950) runs presentBefore (0x12650, void(IDXGISwapChain*):
+    // the present stage's "before" dispatch, then the present and host frame counters every addon and the D3D12
+    // runtime's per-frame rings read), the present, then stageDispatch (0x849e0, void(int stage, int phase, void*
+    // context)) with stage 3 phase 2, the "after" dispatch carrying the HRESULT. Host mode has no detour of its own:
+    // the client calls both around each present, or the counters stay at 0 / 1 ("host frame 1 at present 0").
+    // fgMultiFrameCountMax (0x1a04654) is the generated-frame ceiling the FG addon publishes as
+    // DLSSG.MultiFrameCountMax ([DLSS-FG] MaxMultiplier; Auto is 3, 4x).
+    std::uint32_t presentBefore = 0;
+    // The host's present counter (0x1a04e48): moves when presentBefore takes the present.
+    std::uint32_t presentCounter = 0;
+    std::uint32_t stageDispatch = 0;
+    std::uint32_t fgMultiFrameCountMax = 0;
+    // swapchainCreated (0x11f10, void(IUnknown* queue, IDXGISwapChain*)) is what the host's CreateSwapChain detour runs:
+    // it maps the swapchain to its queue, which presentBefore's device check (0x12140) looks up first, and tells the
+    // addons (stage 0 phase 4). Host mode has no such detour, and the game's swapchain under Streamline answers no
+    // GetDevice(ID3D12CommandQueue), so every present was turned away ("not on our device") until the client called it.
+    std::uint32_t swapchainCreated = 0;
 };
 
 // 0.2.17 pass DLL, SHA256 bc97f3b0...
@@ -675,8 +761,119 @@ inline constexpr AmdLayout kAmd060 {
     .seedSelfCheck = 0xbddc8,
 };
 
-inline constexpr const AmdLayout* kAmdLayouts[] = { &kAmd0217, &kAmd03,  &kAmd031, &kAmd040, &kAmd041,
-                                                    &kAmd042,  &kAmd043, &kAmd050, &kAmd051, &kAmd060 };
+// 0.8.0 runtime (SHA be9172b6), public since 2026-10-16. It is no longer a setup's version.dll but the host module
+// NeuralHub_v0.8.0_setup.exe carries inside neuralhub.exe (file offset 0x320562, size 0x610de00) and installs as
+// %LOCALAPPDATA%\Danielblnc\NeuralHub\runtime\v0.8.0\neuralhub_host.dll. The host side was rewritten (an add-on host
+// with NGX, FSR and XeSS interceptors and a D3D12 compute backend), but the HIP path keeps 0.6.0's contract: the same
+// Init, a Record whose packet grew to 0xd0 bytes (PacketV2), the same Notify on the game's queue and the same in-place
+// correction when nativePre is 0. Mapped from 0.6.0 by instruction alignment, string anchors and the shared function
+// tables (danielblnc-0.8.0 notes beside this repository); run on an RX 9070 XT through the HIP backend, 48 of 48 frames
+// recorded and completed. The options are no longer read by an INI reader: a settings registry refreshes them from
+// neuralhub.ini on its own present events only, which a host-mode load never delivers, so the host's writes stand.
+// UseFsrInputs, Async and SpinDraw left the settings (fsrInputs 0); D3DCompile is not imported.
+inline constexpr AmdLayout kAmd080 {
+    .name = "0.8.0",
+    .size = 101768704,
+    .sha256 = Sha256FromHex("be9172b68d0e77f98f04f941f4e2abe2c73eb01b8aafe94b26ee31eefefb5eb8"),
+    .d3dCompileIat = 0,
+    .init = 0x97350,
+    .record = 0x24140,
+    .notify = 0x12380,
+    .shutdown = 0x22a20,
+    .trampoline = 0x1a01208,
+    .device = 0x1a14d98,
+    .queue = 0x1a14da0,
+    .engine = 0x1a01d58,
+    .historyView = 0x1a01ee8,
+    .historyValid = 0x1a01ef0,
+    .initDone = 0x1a02560,
+    .nativeFailure = 0x1a02562,
+    .configuredInline = 0x1a025d0,
+    .jobDone = 0x1a14cdc,
+    .timeoutCount = 0x1a14ce0,
+    .watchdog = 0x1a14cf4,
+    .interop = 0x1a026c0,
+    .pendingList = 0x1a15360,
+    .jobId = 0x1a02704,
+    .depthInverted = 0x1a0271c,
+    .explicitDepth = 0x1a02720,
+    .enabled = 0x1a02731,
+    .temporal = 0x1a02732,
+    .fsrInputs = 0,
+    .depthPresent = 0x1a02733,
+    .tonemap = 0x1a02734,
+    .tone = 0x1a02744,
+    .structure = 0x1a02748,
+    .skin = 0x1a0274c,
+    .charMask = 0x1a02754,
+    .toneChannels = 0x1a02758,
+    .hipOrdinal = 0x1a15718,
+    .recreate = 0x1a027ca,
+    .recordLock = 0x1a02778,
+    .gate4c = 0x1a026f0,
+    .gate68 = 0x1a15368,
+    .counter78 = 0x1a02710,
+    .spinDraw = 0x1a15400,
+    .graphicsPso = 0x1a152b8,
+    .predicateReady = 0x1a15290,
+    .graphicsWaitBegin = 0x8f50,
+    .graphicsWaitEnd = 0x96a0,
+    .waitDispatchInit = 0x916d,
+    .waitDispatchFallback = 0x9500,
+    .waitDispatchSlices = 0x955a,
+    .waitDispatchFinish = 0x964f,
+    .scale = 0x1a02750,
+    .style = 0x1a0275c,
+    .toneCurve = 0x1a02760,
+    .toneLift = 0x1a02764,
+    .useGameExposure = 0x1a02768,
+    .quality = 0x1a02769,
+    .seedCounter = 0x1a01da4,
+    .seedSelfCheck = 0x1a01ea0,
+    .abi = 2,
+    .processInit = 0x69410,
+    .onceFlag = 0x1a04ccc,
+    .detourAttachEx = 0x1693a0,
+    .requestStage = 0x98100,
+    .formatEnum = 0x5a90,
+    .prepareWeights = 0x25630,
+    .weightsOnce = 0x1a02561,
+    .initCallback = 0x1a02410,
+    .initCallbackFn = 0x71cf0,
+    .passCount = 0x1a02850,
+    .passStyle = 0x1a02854,
+    .passStructure = 0x1a02860,
+    .passSkin = 0x1a0286c,
+    .passTone = 0x1a02878,
+    .ngxPublishSlot = 0x1a01268,
+    .ngxPublishFn = 0xa4a0,
+    .ngxPresentFlag = 0x1a15630,
+    .ngxGateSrInit = 0x1a02e48,
+    .ngxGateSrGpu = 0x1a02e49,
+    .ngxGateSrWeights = 0x1a02e21,
+    .ngxGateRrInit = 0x1a03a50,
+    .ngxGateRrGpu = 0x1a03a51,
+    .ngxGateRrWeights = 0x1a03a29,
+    .nrStageCallback = 0x2e8a0,
+    .ngxNotifyChain = 0x1a01240,
+    .ngxSrPendingList = 0x19f9320,
+    .ngxSrJobNotified = 0x1a02ecc,
+    .ngxSrJobDone = 0x1a02ed0,
+    .ngxRrPendingList = 0x19fa900,
+    .ngxRrJobNotified = 0x1a03af0,
+    .ngxRrJobDone = 0x1a03af4,
+    .computeMode = 0x1a15728,
+    .computeOpen = 0xd9b20,
+    .computeState = 0x1a157a8,
+    .presentBefore = 0x12650,
+    .presentCounter = 0x1a04e48,
+    .stageDispatch = 0x849e0,
+    .fgMultiFrameCountMax = 0x1a04654,
+    .swapchainCreated = 0x11f10,
+};
+
+inline constexpr const AmdLayout* kAmdLayouts[] = { &kAmd0217, &kAmd03,  &kAmd031, &kAmd040, &kAmd041, &kAmd042,
+                                                    &kAmd043,  &kAmd050, &kAmd051, &kAmd060, &kAmd080 };
 
 // Compile-time sanity: the hex helper must land on the first/last digest byte
 // of each known runtime. A wrong-length literal already fails Sha256FromHex;
@@ -691,4 +888,5 @@ static_assert(kAmd043.sha256.bytes[0] == 0xd1 && kAmd043.sha256.bytes[31] == 0x5
 static_assert(kAmd050.sha256.bytes[0] == 0xcd && kAmd050.sha256.bytes[31] == 0x1a);
 static_assert(kAmd051.sha256.bytes[0] == 0x49 && kAmd051.sha256.bytes[31] == 0xcd);
 static_assert(kAmd060.sha256.bytes[0] == 0x19 && kAmd060.sha256.bytes[31] == 0x21);
+static_assert(kAmd080.sha256.bytes[0] == 0xbe && kAmd080.sha256.bytes[31] == 0xb8);
 } // namespace AmdPreSr

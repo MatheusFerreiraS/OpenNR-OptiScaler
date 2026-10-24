@@ -11,6 +11,7 @@
 #include <hooks/Reflex_Hooks.h>
 #include <hooks/DxgiFactory_Hooks.h>
 #include <hooks/Streamline_Hooks.h>
+#include <dlssnr/amd/AmdBridge.h>
 
 #include <magic_enum.hpp>
 
@@ -75,6 +76,14 @@ bool DLSSG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
     if (StreamlineProxy::Module() == nullptr)
     {
         LOG_ERROR("Streamline proxy can't find sl.interposer.dll!");
+        return false;
+    }
+
+    // Resources are tagged per frame: a Streamline without slSetTagForFrame (2.7.1 has none) left a null call in
+    // SetResource.
+    if (StreamlineProxy::SetTagForFrame() == nullptr)
+    {
+        LOG_ERROR("The Streamline in the streamline folder has no slSetTagForFrame: too old for the DLSSG output");
         return false;
     }
 
@@ -179,6 +188,12 @@ bool DLSSG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmd
     if (StreamlineProxy::Module() == nullptr)
     {
         LOG_ERROR("Streamline proxy can't find sl.interposer.dll!");
+        return false;
+    }
+
+    if (StreamlineProxy::SetTagForFrame() == nullptr)
+    {
+        LOG_ERROR("The Streamline in the streamline folder has no slSetTagForFrame: too old for the DLSSG output");
         return false;
     }
 
@@ -358,10 +373,26 @@ bool DLSSG_Dx12::Dispatch()
     options.numFramesToGenerate = _framesToInterpolate;
     options.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
 
+    // Dynamic MFG only where it is served: NeuralHub's DLSS-FG generated nothing once Streamline was asked for eDynamic
+    // (The Sims 4: every feature after the switch released after 0 evaluates).
     if (Config::Instance()->FGDLSSGForceDMFG.value_or_default())
     {
-        options.mode = sl::DLSSGMode::eDynamic;
-        options.dynamicTargetFrameRate = Config::Instance()->FGDLSSGFramerateTargetDMFG.value_or_default();
+        const bool neuralHubFg = DlssNr::AmdBridge::NeuralHubFgInstalled();
+        if (_supportsDMFG && !neuralHubFg)
+        {
+            options.mode = sl::DLSSGMode::eDynamic;
+            options.dynamicTargetFrameRate = Config::Instance()->FGDLSSGFramerateTargetDMFG.value_or_default();
+        }
+        else
+        {
+            static bool reported = false;
+            if (!reported)
+            {
+                reported = true;
+                LOG_WARN("Dynamic MFG asked for, but {}: fixed multiplier instead",
+                         neuralHubFg ? "NeuralHub's DLSS-FG does not serve it" : "Streamline reports it unsupported");
+            }
+        }
     }
 
     // StreamlineProxy holds the raw export, so this push bypasses hkslDLSSGSetOptions and its

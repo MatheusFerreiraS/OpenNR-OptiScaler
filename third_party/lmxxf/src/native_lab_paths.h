@@ -36,7 +36,9 @@ inline float*NativeMotionVectorScale(){static float s[2]={0.f,0.f};return s;}
 #include <cstdint>
 #include <cstring>
 #include "native_config_layers.h"
+inline std::wstring&NativeLabRootOverride(){static std::wstring v;return v;}
 inline const std::wstring&NativeLabRoot(){
+ if(!NativeLabRootOverride().empty())return NativeLabRootOverride();
  static std::wstring root;if(!root.empty())return root;
  HMODULE h=nullptr;wchar_t path[MAX_PATH]{};
  if(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&NativeLabRoot),&h)&&GetModuleFileNameW(h,path,MAX_PATH)){

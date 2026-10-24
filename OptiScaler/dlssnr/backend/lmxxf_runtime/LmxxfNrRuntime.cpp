@@ -388,7 +388,18 @@ hip_reference::Options RuntimeOptions(unsigned w, unsigned h, const std::wstring
                   hip_reference::VitStreamCompatible(opt) ? opt.vit_stream : 0u,
                   unsigned(hip_reference::SwinRunCompatible(opt)), unsigned(opt.pdl));
     OutputDebugStringA(note);
+    opt.small_geometry = NativeCurrentNetworkGeometry().small_model;
     return opt;
+}
+
+// Upstream 0.44's Small model: its weights in <weights>\small (model-manifest.json and the 93 files, checked by size)
+// and the kernels it runs on, which an older module set lacks.
+bool SmallModelUsable(const std::wstring& weightsDir, const std::wstring& modulesDir)
+{
+    auto has = [&](const wchar_t* name) { return FileExists(JoinPath(modulesDir, name)); };
+    return !weightsDir.empty() && has(L"c32-wave1.hsaco") && has(L"c64-wave2.hsaco") && has(L"c512-m32-mh.hsaco") &&
+           has(L"c512-m32-deep.hsaco") && has(L"vit-wide-deep.hsaco") &&
+           hip_reference::SmallAssetsAvailable(Utf8(JoinPath(weightsDir, L"small")));
 }
 
 struct Job
@@ -435,7 +446,9 @@ class OutputSmooth
             if (p)
                 p->Release();
     }
-    void Create(ID3D12Device* d, const std::wstring& dir, bool residual = false)
+    // validWidth: the colour's row width, when the network's (processingWidth) is wider (the Small model's geometry).
+    void Create(ID3D12Device* d, const std::wstring& dir, bool residual = false, UINT processingWidth = 0,
+                UINT validWidth = 0)
     {
         ID3D12RootSignature*& root = residual ? residualRoot : this->root;
         ID3D12PipelineState*& pso = residual ? residualPso : this->pso;
@@ -462,7 +475,12 @@ class OutputSmooth
         if (FAILED(hr))
             throw std::runtime_error("output smooth root");
         blob = error = nullptr;
-        const D3D_SHADER_MACRO macros[] = { { "SMOOTH_RESIDUAL", "1" }, { nullptr, nullptr } };
+        const std::string pw = std::to_string(processingWidth), vw = std::to_string(validWidth);
+        const D3D_SHADER_MACRO macros[] = { { "SMOOTH_RESIDUAL", "1" },
+                                            { processingWidth != validWidth ? "NATIVE_RGB_PROCESSING_WIDTH" : nullptr,
+                                              pw.c_str() },
+                                            { "NATIVE_VALID_WIDTH", vw.c_str() },
+                                            { nullptr, nullptr } };
         hr = CompileNativeShader(dir + L"\\native_output_smooth.hlsl", residual ? macros : nullptr,
                                  residual ? "residual_main" : "main", &blob, &error);
         if (FAILED(hr))
@@ -555,6 +573,19 @@ struct TemporalChain
     float scaleX = 0, scaleY = 0;
     ~TemporalChain()
     {
+        // NativeCreateCommittedResource keeps the big buffers in its residency list with a reference of its own, which
+        // the vendored temporal classes never give back: every chain made again (a new colour size, a model switch)
+        // left its samplers' 35 MB behind.
+        for (auto& f : feeds)
+        {
+            NativeUntrackResource(f.Motion());
+            NativeUntrackResource(f.History());
+        }
+        NativeUntrackResource(coordinates.Output());
+        for (auto& s : samplers)
+            NativeUntrackResource(s.Output());
+        NativeUntrackResource(residualSampler.Output());
+        NativeUntrackResource(residual);
         if (residual)
             residual->Release();
     }
@@ -570,8 +601,9 @@ struct TemporalChain
 // reads as the game's exposure (NATIVE_CODEC_EXPOSURE), so the codec itself is unchanged. Its own estimate (25 points,
 // every frame, toward mid-grey both ways) made a dark scene clean but pulsed with the camera and dimmed bright scenes
 // (KCD2). This is a log average of 16x16 points of the colour, so one light barely moves it, eased over about half a
-// second, and only ever a gain: a dark scene is lifted toward lmxxf's mid-grey, at most 8x, and a scene already that
-// bright gets 1x, as with the option off.
+// second, and only ever a gain. A log average sits well below the plain mean, so a lit outdoor scene measures a stop
+// or two under mid-grey; the gain in stops is the distance below lmxxf's mid-grey through a soft knee: 1x (as with the
+// option off) down to 1 stop below, the full distance from 3.5 stops below, at most 3 stops (8x).
 static const char kAutoExposureHlsl[] = R"(
 Texture2D<float4> Colour : register(t0);
 RWTexture2D<float> Exposure : register(u0);
@@ -594,8 +626,9 @@ void main(uint3 t : SV_GroupThreadID)
     if (i == 0)
     {
         // lmxxf's white point for a mean is mean / 0.2086 (WhitePointForMean: mid-grey 0.45 encoded); as a gain on
-        // the colour, 0.2086 / mean.
-        const float target = clamp(0.2086 / exp2(logs[0] / 256.0), 1.0, 8.0);
+        // the colour, 0.2086 / mean, here in stops.
+        const float below = log2(0.2086) - logs[0] / 256.0;
+        const float target = exp2(clamp(below * smoothstep(1.0, 3.5, below), 0.0, 3.0));
         const float previous = Exposure[uint2(0, 0)];
         Exposure[uint2(0, 0)] = Reset != 0 || !(previous >= 1.0 && previous <= 8.0)
             ? target : exp2(lerp(log2(previous), log2(target), Blend));
@@ -763,6 +796,8 @@ struct Session
     uint32_t builtStyle = 1;
     // The network size it was built for: the 1080 tier's rows can change it without the colour changing.
     unsigned builtProcW = 0, builtProcH = 0;
+    // Upstream 0.44's Small model: whether this install has it (checked once), and whether the network runs it.
+    bool smallChecked = false, smallReady = false, builtSmall = false;
     bool zeroOutputFallback = false;
     bool failed = false; /* Fail-closed poisoning */
     hip_reference::D3D12Bridge* bridge = nullptr;
@@ -1126,7 +1161,7 @@ void EnsureTemporal(Session* s, const Job& j)
                 throw std::runtime_error("residual buffer");
             t->residualSampler.Create(s->device, t->residual, t->coordinates.Output(), ng.valid_width, ng.valid_height,
                                       ng.processing_width * ng.processing_height, s->shaderDir, true);
-            t->smooth.Create(s->device, s->shaderDir, true);
+            t->smooth.Create(s->device, s->shaderDir, true, ng.processing_width, ng.valid_width);
         }
     }
     catch (...)
@@ -1385,7 +1420,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 LMXXF_NR_FRAME_FLAG_STRENGTH | LMXXF_NR_FRAME_FLAG_DEBUG_VIEW | LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH |
                 LMXXF_NR_FRAME_FLAG_TEMPORAL | LMXXF_NR_FRAME_FLAG_SMOOTH_RESIDUAL | LMXXF_NR_FRAME_FLAG_STYLE |
                 LMXXF_NR_FRAME_FLAG_VIT_REUSE | LMXXF_NR_FRAME_FLAG_COMPACT_1080 | LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE |
-                LMXXF_NR_FRAME_FLAG_SKIN_PROTECT | LMXXF_NR_FRAME_FLAG_FIRST_PASS | LMXXF_NR_FRAME_FLAG_AUTO_WHITE;
+                LMXXF_NR_FRAME_FLAG_SKIN_PROTECT | LMXXF_NR_FRAME_FLAG_FIRST_PASS | LMXXF_NR_FRAME_FLAG_AUTO_WHITE |
+                LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL;
             if ((info->flags & ~allowedFlags) != 0)
                 return Fail(LMXXF_NR_INVALID_ARGUMENT, "PrepareFrame: unknown flags");
             if (session->shaderDir.empty())
@@ -1484,15 +1520,36 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                                      !(cw == 1600 && ch == 900) && NativeNetworkGeometry::FreeFits(cw, ch);
                 _putenv_s("DLSS5_NETWORK_FREE_RES", freeRes ? "1" : "0");
             }
+            // The Small model of NVIDIA's 310.9.16 DLL (upstream 0.44's 0.5x mode): 31 blocks, the default when its
+            // weights are in <weights>\small, at any pass count. ORIGINAL_MODEL runs the 71-block model. A codec
+            // passthrough frame keeps the model the frames around it run.
+            if (!session->smallChecked)
+            {
+                session->smallReady = SmallModelUsable(session->weightsDir, session->modulesDir);
+                session->smallChecked = true;
+                OutputDebugStringA(session->smallReady ? "lmxxf: Small model found\n"
+                                                       : "lmxxf: no Small model; the original one runs\n");
+            }
+            const bool smallModel =
+                (info->flags & LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH) && session->hipPrepared
+                    ? session->builtSmall
+                    : session->smallReady && !(info->flags & LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL);
+            // The network reads the mode as it is built (dlss5_mode::Requested); the geometry follows the model.
+            dlss5_mode::Request(smallModel ? 0u : 1u);
+            NativeSmallGeometryEnabled() = smallModel;
             NativeResolveNetworkGeometry(session->drsWidth, session->drsHeight);
             const auto tier = NativeCurrentNetworkGeometry();
+            // A model change builds the network again, even at the 1080 tier where both models have one size:
+            // upstream's in-place switch (Network::SetModelMode) keeps the other model's weights, and a model it
+            // returns to differs from a fresh one as soon as a history comes in (46 dB on the frame after).
             if (session->hipPrepared &&
                 (session->builtStyle != style || session->builtProcW != tier.processing_width ||
-                 session->builtProcH != tier.processing_height))
+                 session->builtProcH != tier.processing_height || session->builtSmall != smallModel))
             {
                 if (FAILED(session->DrainGpu()))
-                    return Fail(LMXXF_NR_UNAVAILABLE,
-                                "PrepareFrame: style or tier change; GPU drain failed (retry or rebuild session)");
+                    return Fail(
+                        LMXXF_NR_UNAVAILABLE,
+                        "PrepareFrame: style, tier or model change; GPU drain failed (retry or rebuild session)");
                 session->TeardownCodecChain();
                 session->job = {};
             }
@@ -1508,11 +1565,15 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 session->builtStyle = style;
                 session->builtProcW = geo.processing_width;
                 session->builtProcH = geo.processing_height;
+                session->builtSmall = session->bridge->EffectiveModelMode() == 0;
+                if (smallModel && !session->builtSmall)
+                    session->smallReady = false; // the network turned it down; the next frame builds the original
                 session->hipPrepared = true;
                 char geoMsg[192] {};
-                std::snprintf(geoMsg, sizeof geoMsg, "lmxxf: HIP lazy Create color=%ux%u network=%ux%u (proc %ux%u)",
+                std::snprintf(geoMsg, sizeof geoMsg,
+                              "lmxxf: HIP lazy Create color=%ux%u network=%ux%u (proc %ux%u) model=%s",
                               info->color_width, info->color_height, geo.valid_width, geo.valid_height,
-                              geo.processing_width, geo.processing_height);
+                              geo.processing_width, geo.processing_height, session->builtSmall ? "small" : "original");
                 OutputDebugStringA(geoMsg);
                 OutputDebugStringA("\n");
                 SetError(geoMsg);
@@ -1556,12 +1617,15 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                     session->builtStyle = style;
                     session->builtProcW = geo.processing_width;
                     session->builtProcH = geo.processing_height;
+                    session->builtSmall = session->bridge->EffectiveModelMode() == 0;
+                    if (smallModel && !session->builtSmall)
+                        session->smallReady = false;
                     session->hipPrepared = true;
                     char geoMsg[192] {};
-                    std::snprintf(geoMsg, sizeof geoMsg,
-                                  "lmxxf: HIP lazy Create color=%ux%u network=%ux%u (proc %ux%u)", info->color_width,
-                                  info->color_height, geo.valid_width, geo.valid_height, geo.processing_width,
-                                  geo.processing_height);
+                    std::snprintf(
+                        geoMsg, sizeof geoMsg, "lmxxf: HIP lazy Create color=%ux%u network=%ux%u (proc %ux%u) model=%s",
+                        info->color_width, info->color_height, geo.valid_width, geo.valid_height, geo.processing_width,
+                        geo.processing_height, session->builtSmall ? "small" : "original");
                     OutputDebugStringA(geoMsg);
                     OutputDebugStringA("\n");
                     SetError(geoMsg);
@@ -2058,8 +2122,8 @@ int32_t RecordOutputs(void* context, void* job, void* command_list)
                     TemporalChain* t = session->temporal;
                     t->smooth.RecordResidual(list, session->bridge->Output(), t->residualSampler.Output(),
                                              session->rgbInput->PostBase(), t->residual, t->residualWritten,
-                                             j->smoothThreshold, j->smoothStrength, ng.valid_width * ng.valid_height,
-                                             j->residualHistory);
+                                             j->smoothThreshold, j->smoothStrength,
+                                             ng.processing_width * ng.valid_height, j->residualHistory);
                     residualRecorded = t->residualWritten = true;
                 }
                 else if (j->temporal && session->temporal && j->smoothStrength > 0.f && (j->histories >> last & 1u))
@@ -2067,7 +2131,7 @@ int32_t RecordOutputs(void* context, void* job, void* command_list)
                     const auto ng = NativeCurrentNetworkGeometry();
                     session->temporal->smooth.Record(list, session->bridge->Output(),
                                                      session->temporal->samplers[last].Output(), j->smoothThreshold,
-                                                     j->smoothStrength, ng.valid_width * ng.valid_height);
+                                                     j->smoothStrength, ng.processing_width * ng.valid_height);
                 }
                 session->rgbTex->Record(list);
             }
@@ -2243,9 +2307,10 @@ int32_t GetStatus(void* context, char* buf, uint32_t buf_chars)
             {
                 auto geo = NativeCurrentNetworkGeometry();
                 std::snprintf(text, sizeof text,
-                              "lmxxf modules_ok=%u hip=1 net=%ux%u color_job=%ux%u weights=%u temporal=%s",
+                              "lmxxf modules_ok=%u hip=1 net=%ux%u color_job=%ux%u weights=%u model=%s temporal=%s",
                               static_cast<unsigned>(session->hsacoCount), geo.valid_width, geo.valid_height,
                               session->job.width, session->job.height, session->weightsDir.empty() ? 0u : 1u,
+                              session->builtSmall ? "small" : "original",
                               session->temporal                ? "on"
                               : session->temporalError.empty() ? "off"
                                                                : session->temporalError.c_str());

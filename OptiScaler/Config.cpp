@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 
 #include "Config.h"
 
@@ -7,6 +7,7 @@
 #include "nvapi/fakenvapi.h"
 #include <hooks/Streamline_Hooks.h>
 #include <misc/IdentifyGpu.h>
+#include <dlssnr/amd/AmdBridge.h>
 #include <menu/input/shortcut_keys.h>
 
 #include <SimpleIni.h>
@@ -575,8 +576,9 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdSpinDraw.set_from_config(readInt("DlssNr", "AmdSpinDraw"));
             AmdGraphicsWait.set_from_config(readInt("DlssNr", "AmdGraphicsWait"));
             AmdStallStandDownMs.set_from_config(readInt("DlssNr", "AmdStallStandDownMs"));
-            AmdAsync.set_from_config(readBool("DlssNr", "AmdAsync"));
             NrBackend.set_from_config(readString("DlssNr", "NrBackend", true));
+            HostComputeBackend.set_from_config(readString("DlssNr", "HostComputeBackend"));
+            HostZeroCopy.set_from_config(readBool("DlssNr", "HostZeroCopy"));
             LmxxfDiagnostic.set_from_config(readString("DlssNr", "LmxxfDiagnostic", true));
             // true/false only; missing or "auto" => false (do not enable FitLarge by accident).
             {
@@ -598,6 +600,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             LmxxfStyle.set_from_config(readUInt("DlssNr", "LmxxfStyle"));
             LmxxfVitReuse.set_from_config(readBool("DlssNr", "LmxxfVitReuse"));
             LmxxfCompact1080.set_from_config(readBool("DlssNr", "LmxxfCompact1080"));
+            LmxxfOriginalModel.set_from_config(readBool("DlssNr", "LmxxfOriginalModel"));
             LmxxfPassEstimate.set_from_config(readBool("DlssNr", "LmxxfPassEstimate"));
             LmxxfSkinProtect.set_from_config(readBool("DlssNr", "LmxxfSkinProtect"));
             LmxxfAutoExposure.set_from_config(readBool("DlssNr", "LmxxfAutoExposure"));
@@ -1097,8 +1100,15 @@ bool Config::Reload(std::filesystem::path iniPath)
             // Enable HAGS when DLSS-G will be used
             if (!SpoofHAGS.has_value())
             {
+                // The library folder as the INI names it: Config::Instance() is still being constructed here.
+                std::filesystem::path library(readWString("Libraries", "OptiDllPath").value_or(L"OptiScaler"));
+                if (library.is_relative())
+                    library = Util::DllPath().parent_path() / library;
+                const bool neuralHubFg =
+                    DlssNr::AmdBridge::NeuralHubFgInstalled(library, HostComputeBackend.value_or_default());
                 SpoofHAGS.set_volatile_value(FGInput.value_or_default() == FGInput::NvngxFG ||
-                                             FGInput.value_or_default() == FGInput::DLSSG);
+                                             FGInput.value_or_default() == FGInput::DLSSG ||
+                                             neuralHubFg);
             }
         }
 
@@ -1783,8 +1793,10 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "AmdGraphicsWait", GetIntValue(Instance()->AmdGraphicsWait.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdStallStandDownMs",
                      GetIntValue(Instance()->AmdStallStandDownMs.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "AmdAsync", GetBoolValue(Instance()->AmdAsync.value_for_config()).c_str());
         ini.SetValue("DlssNr", "NrBackend", Instance()->NrBackend.value_for_config().value_or("auto").c_str());
+        ini.SetValue("DlssNr", "HostComputeBackend",
+                     Instance()->HostComputeBackend.value_for_config().value_or("auto").c_str());
+        ini.SetValue("DlssNr", "HostZeroCopy", GetBoolValue(Instance()->HostZeroCopy.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LmxxfDiagnostic",
                      Instance()->LmxxfDiagnostic.value_for_config().value_or("auto").c_str());
         ini.SetValue("DlssNr", "LmxxfFitLarge", GetBoolValue(Instance()->LmxxfFitLarge.value_for_config()).c_str());
@@ -1799,6 +1811,8 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "LmxxfVitReuse", GetBoolValue(Instance()->LmxxfVitReuse.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LmxxfCompact1080",
                      GetBoolValue(Instance()->LmxxfCompact1080.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "LmxxfOriginalModel",
+                     GetBoolValue(Instance()->LmxxfOriginalModel.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LmxxfPassEstimate",
                      GetBoolValue(Instance()->LmxxfPassEstimate.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LmxxfSkinProtect",
@@ -1834,7 +1848,7 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "MochizukiDynamicResolution",
                      Instance()->MochizukiDynamicResolution.value_for_config().value_or("auto").c_str());
         ini.SetValue("DlssNr", "MochizukiPreprocess",
-                     GetBoolValue(Instance()->MochizukiPreprocess.value_for_config()).c_str());
+                     GetBoolValue(Instance()->MochizukiPreprocess.value_as_chosen()).c_str());
         ini.SetValue("DlssNr", "MochizukiPreprocessExposure",
                      GetIntValue(Instance()->MochizukiPreprocessExposure.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiPreprocessBias",
@@ -1861,6 +1875,9 @@ bool Config::SaveIni()
 #undef MZR_F
 #undef MZR_U
 #undef MZR_B
+        // RE9's quirk acts on auto (GameQuirk::MochizukiGameExposureFeed): the player's Auto stays 0
+        ini.SetValue("DlssNr", "MochizukiRenoFeedMode",
+                     GetIntValue(Instance()->MochizukiRenoFeedMode.value_as_chosen()).c_str());
         ini.SetValue("DlssNr", "AmdGraphicsUnsafe",
                      GetIntValue(Instance()->AmdGraphicsUnsafe.value_for_config()).c_str());
         ini.SetValue("AmdRtgi", "Enabled", GetBoolValue(Instance()->AmdRtgiEnabled.value_for_config()).c_str());

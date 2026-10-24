@@ -73,6 +73,7 @@ class LmxxfBackend final : public Host
         ULONGLONG interval = 0; // from the frame before it, 0 when unknown
     } lastFrame;
     bool repeatLogged = false;
+    bool boundaryLogged = false;
     // Person protection: the last Record's first pass (LMXXF_NR_FRAME_FLAG_FIRST_PASS), and whether the runtime
     // refused the flag (one from before it), which then is not asked again.
     ID3D12Resource* firstPass = nullptr;

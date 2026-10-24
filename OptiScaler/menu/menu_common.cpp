@@ -610,8 +610,9 @@ void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, co
     {
         for (auto opt : options)
         {
-            // Check if GPU is capable of a given backend
-            if (opt == Upscaler::DLSS && !primaryGpu.dlssCapable)
+            // Check if GPU is capable of a given backend; the AmdPreSr NeuralHub host
+            // makes DLSS-SR/DLSS-RR a live provider on an AMD GPU once armed.
+            if (opt == Upscaler::DLSS && !primaryGpu.dlssCapable && !State::Instance().NeuralHubArmOk)
                 continue;
 
             // Not all Intel GPUs support native DX11 XeSS but don't think we have a good way to check exactly
@@ -2837,6 +2838,8 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
         ImGui::PushItemWidth(180.0f * menuResScale);
 
         const bool usesDlssd = currentFeature->GetUpscalerType() == Upscaler::DLSSD;
+        const bool canSwitchRrOnDx12 =
+            state.api == DX12 && primaryGpu.vendorId != VendorId::Nvidia && FfxApiProxy::IsDenoiserApiImplementedDx12();
         const bool usesDx12CompatLayer = currentFeature->IsWithDx12();
 
         switch (state.api)
@@ -2873,7 +2876,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             spoofingText = config->DxgiSpoofing.value_or_default() ? "On" : "Off";
             ImGui::Text("| Spoof: %s", spoofingText.c_str());
 
-            if (!usesDlssd)
+            if (!usesDlssd || canSwitchRrOnDx12)
                 AddDx12Backends(currentBackend);
 
             break;
@@ -2909,7 +2912,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
 
         ImGui::PopItemWidth();
 
-        if (!usesDlssd)
+        if (!usesDlssd || canSwitchRrOnDx12)
         {
             ImGui::SameLine(0.0f, 6.0f);
 
@@ -5453,7 +5456,7 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     inputOptions[optiFgIndex].set_disabled(
         childWindowFgApi && !childWindowFinalImageFg,
         "XeFG on Vulkan and OpenGL requires NR without upscaling on the danielblnc or mochizuki runtime");
-    // NR without upscaling feeds OptiFG to XeFG only; picking OptiFG switches the output to XeFG below.
+    // NR without upscaling feeds OptiFG to XeFG or the DLSSG output only; any other output switches to XeFG below.
     const bool finalImageOptiFg =
         config->DlssNrPresent.value_or_default() && config->FGInput.value_or_default() == FGInput::Upscaler;
 
@@ -5506,11 +5509,18 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     // DLSSG output requirements
     auto constexpr dlssgOutputIndex = (uint32_t) FGOutput::DLSSG;
-    const bool supportsDlssg = primaryGpu.nvidiaArchInfo.architecture_id >= NV_GPU_ARCHITECTURE_AD100;
+    // NeuralHub 0.8.0 serves real DLSS-FG networks on AMD through the same Streamline path.
+    const bool neuralHubDlssg = DlssNr::AmdBridge::NeuralHubFgInstalled();
+    const bool supportsDlssg = primaryGpu.nvidiaArchInfo.architecture_id >= NV_GPU_ARCHITECTURE_AD100 || neuralHubDlssg;
     const bool hasDlssgReplacement =
         state.nukemsFgFileAvailable || state.artursFgFileAvailable || FfxApiProxy::IsFGReady(false);
 
-    if (!supportsDlssg && hasDlssgReplacement)
+    if (neuralHubDlssg && primaryGpu.nvidiaArchInfo.architecture_id < NV_GPU_ARCHITECTURE_AD100)
+    {
+        outputOptions[dlssgOutputIndex].tooltip =
+            "DLSS-FG served by NeuralHub (danielblnc 0.8.0)\nNeeds OptiScaler\\streamline (sl.interposer.dll etc.)";
+    }
+    else if (!supportsDlssg && hasDlssgReplacement)
     {
         outputOptions[dlssgOutputIndex].tooltip =
             "No real DLSSG, unsupported hardware\nOnly Nvngx FG replacements available";
@@ -5544,11 +5554,13 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
 
     if (finalImageOptiFg)
     {
-        const std::string xefgOnly = "With NR without upscaling, OptiFG runs on XeFG only";
+        const std::string xefgOnly = "With NR without upscaling, OptiFG runs on XeFG or DLSSG only";
         outputOptions[fsrfgOutputIndex].set_disabled(true, xefgOnly);
-        outputOptions[dlssgOutputIndex].set_disabled(true, xefgOnly);
 
-        if (config->FGOutput.value_or_default() != FGOutput::XeFG && !outputOptions[xefgOutputIndex].disabled)
+        const auto output = config->FGOutput.value_or_default();
+        const bool finalImageOutput =
+            output == FGOutput::XeFG || (output == FGOutput::DLSSG && !outputOptions[dlssgOutputIndex].disabled);
+        if (!finalImageOutput && !outputOptions[xefgOutputIndex].disabled)
             config->FGOutput = FGOutput::XeFG;
     }
 
@@ -9808,7 +9820,8 @@ void MenuCommon::RenderMainMenuStatusPills(RenderMenuContext& ctx)
     };
 
     const Pill dlssPills[] { { "nvngx_dlss", state.NVNGX_DLSS_Path.has_value() },
-                             { "nvngx_dlssd", state.NVNGX_DLSSD_Path.has_value() } };
+                             { "nvngx_dlssd", state.NVNGX_DLSSD_Path.has_value() },
+                             { "nvngx_dlssg", state.NVNGX_DLSSG_Path.has_value() } };
     const Pill nvngxPills[] { { "nvngx.dll", state.nvngxExists },
                               { "nvngx replacement", state.nvngxReplacement.has_value() } };
     const Pill otherPills[] { { "libxess", xessThere },

@@ -7,6 +7,7 @@
 #include "ResidualStabilizer.h"
 #include "StallWatch.h"
 #include <Config.h>
+#include <State.h>
 #include <Logger.h>
 #include <wrl/client.h>
 #include <d3dcompiler.h>
@@ -48,6 +49,19 @@ inline void Check(HRESULT h)
 {
     if (FAILED(h))
         throw std::runtime_error("NR without upscaling: D3D12 failure " + std::to_string((UINT) h));
+}
+// The backbuffers NR takes: 8-bit, and 10-bit while the game presents it as sRGB. A 10-bit one in HDR10 (ST.2084)
+// holds PQ values the runtimes would take for sRGB, so it is left alone.
+inline bool SdrBackBuffer(DXGI_FORMAT f)
+{
+    if (f == DXGI_FORMAT_R8G8B8A8_UNORM || f == DXGI_FORMAT_B8G8R8A8_UNORM)
+        return true;
+    return f == DXGI_FORMAT_R10G10B10A2_UNORM &&
+           State::Instance().outputColorSpace.dxgiColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+}
+inline const char* UnsupportedNote(DXGI_FORMAT f)
+{
+    return f == DXGI_FORMAT_R10G10B10A2_UNORM ? "10-bit in an HDR colour space" : "not RGBA8, BGRA8 or 10-bit SDR";
 }
 inline void Transition(ID3D12GraphicsCommandList* c, ID3D12Resource* r, D3D12_RESOURCE_STATES a,
                        D3D12_RESOURCE_STATES b)
@@ -538,18 +552,18 @@ struct Context
             return false;
         }
         auto desc = back->GetDesc();
+        // Every frame: a game can switch the same backbuffer to HDR10 in its settings.
+        if (!SdrBackBuffer(desc.Format))
+        {
+            if (!formatReported)
+                LOG_WARN("NR without upscaling: backbuffer format {} is {}; no NR and no XeFG guides",
+                         (UINT) desc.Format, UnsupportedNote(desc.Format));
+            formatReported = true;
+            status = "NR without upscaling: unsupported backbuffer format";
+            return false;
+        }
         if (!input)
         {
-            if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM && desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM)
-            {
-                if (!formatReported)
-                    LOG_WARN(
-                        "NR without upscaling: backbuffer format {} is not RGBA8 or BGRA8; no NR and no XeFG guides",
-                        (UINT) desc.Format);
-                formatReported = true;
-                status = "NR without upscaling: unsupported backbuffer format";
-                return false;
-            }
             if (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM && !(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET))
             {
                 status = "NR without upscaling: BGRA backbuffer cannot be a render target";
@@ -559,7 +573,8 @@ struct Context
             height = desc.Height;
             format = desc.Format;
             input = Texture(format, D3D12_RESOURCE_FLAG_NONE);
-            if (format == DXGI_FORMAT_R8G8B8A8_UNORM)
+            // BGRA is drawn back (ComposeBgra); RGBA8 and R10G10B10A2 are written by the compose shader and copied.
+            if (format != DXGI_FORMAT_B8G8R8A8_UNORM)
                 output = Texture(format, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
             motion = Texture(DXGI_FORMAT_R16G16_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
             depth = Texture(DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
@@ -1325,12 +1340,12 @@ struct Bridge11
         const DXGI_FORMAT sharedFormat = desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB   ? DXGI_FORMAT_R8G8B8A8_UNORM
                                          : desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ? DXGI_FORMAT_B8G8R8A8_UNORM
                                                                                           : desc.Format;
-        if (desc.SampleDesc.Count != 1 ||
-            (sharedFormat != DXGI_FORMAT_R8G8B8A8_UNORM && sharedFormat != DXGI_FORMAT_B8G8R8A8_UNORM))
+        if (desc.SampleDesc.Count != 1 || !SdrBackBuffer(sharedFormat))
         {
             status = "NR without upscaling: D3D11 backbuffer format or MSAA unsupported";
             if (!formatReported)
-                LOG_WARN("{} (format {}, samples {})", status, static_cast<UINT>(desc.Format), desc.SampleDesc.Count);
+                LOG_WARN("{} (format {}, samples {}{})", status, static_cast<UINT>(desc.Format), desc.SampleDesc.Count,
+                         SdrBackBuffer(sharedFormat) ? "" : std::string(", ") + UnsupportedNote(sharedFormat));
             formatReported = true;
             return;
         }
@@ -1500,11 +1515,12 @@ struct Bridge10
         const DXGI_FORMAT twin = desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB   ? DXGI_FORMAT_R8G8B8A8_UNORM
                                  : desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ? DXGI_FORMAT_B8G8R8A8_UNORM
                                                                                   : desc.Format;
-        if (desc.SampleDesc.Count != 1 || (twin != DXGI_FORMAT_R8G8B8A8_UNORM && twin != DXGI_FORMAT_B8G8R8A8_UNORM))
+        if (desc.SampleDesc.Count != 1 || !SdrBackBuffer(twin))
         {
             status = "NR without upscaling: D3D10 backbuffer format or MSAA unsupported";
             if (!reported)
-                LOG_WARN("{} (format {}, samples {})", status, static_cast<UINT>(desc.Format), desc.SampleDesc.Count);
+                LOG_WARN("{} (format {}, samples {}{})", status, static_cast<UINT>(desc.Format), desc.SampleDesc.Count,
+                         SdrBackBuffer(twin) ? "" : std::string(", ") + UnsupportedNote(twin));
             reported = true;
             back.Reset();
             return nullptr;

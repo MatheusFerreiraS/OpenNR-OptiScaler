@@ -65,6 +65,10 @@ enum class GameQuirk : uint64_t
     ForceFGRenderSizeMVs,
     CreateSLOnThe2ndDevice,
     UnlockPathTracingMenu,
+    MochizukiGameExposureFeed,
+    HideFsr4FromGame,
+    DisableXeSSInputs,
+    MochizukiPreprocessOn,
     // Don't forget to add the new entry to printQuirks
     _
 };
@@ -191,10 +195,12 @@ static const QuirkEntry quirkTable[] = {
                 GameQuirk::DisableHudfix, GameQuirk::RestoreComputeSigOnNvidia, GameQuirk::PregmataFixDLSSModes),
     QUIRK_ENTRY("pragmata_sketchbook.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
                 GameQuirk::RestoreComputeSigOnNvidia, GameQuirk::AllowedFrameAhead2, GameQuirk::PregmataFixDLSSModes),
+    // MochizukiGameExposureFeed: the RenoDX stage's range guard trips in RE9's dark scenes and hands the HDR divisor
+    // to the content meter, which pumps; the game's exposure alone is steady (as in 0.5.3)
     QUIRK_ENTRY("re9.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
-                GameQuirk::RestoreComputeSigOnNvidia),
+                GameQuirk::RestoreComputeSigOnNvidia, GameQuirk::MochizukiGameExposureFeed),
     QUIRK_ENTRY("re9demo.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
-                GameQuirk::RestoreComputeSigOnNvidia),
+                GameQuirk::RestoreComputeSigOnNvidia, GameQuirk::MochizukiGameExposureFeed),
     QUIRK_ENTRY("monster_hunter_stories_3_twisted_reflection.exe", GameQuirk::RestoreComputeSigOnNonNvidia,
                 GameQuirk::DisableDxgiSpoofing, GameQuirk::RestoreComputeSigOnNvidia),
     QUIRK_ENTRY("pragmata.exe", GameQuirk::RestoreComputeSigOnNonNvidia, GameQuirk::DisableDxgiSpoofing,
@@ -352,7 +358,10 @@ static const QuirkEntry quirkTable[] = {
 
     // Crimson Desert
     // Spoofing disabled due to "unsupported GPU" error
-    QUIRK_ENTRY("crimsondesert.exe", GameQuirk::DisableDxgiSpoofing),
+    // Answered by our XeSS inputs, its XeSS 3.0 entry has no name and selecting it crashes; FSR 4.1 is the input NR uses
+    // mochizuki's pre-process on: without it NR barely shows on its finished look
+    QUIRK_ENTRY("crimsondesert.exe", GameQuirk::DisableDxgiSpoofing, GameQuirk::DisableXeSSInputs,
+                GameQuirk::MochizukiPreprocessOn),
 
     // Assassin's Creed Mirage
     // Game not loading SL plugin even while spoofing, also avoids the "unsupported video driver" notification,
@@ -611,6 +620,12 @@ static const QuirkEntry quirkTable[] = {
     // DOOM: The Dark Ages
     // Disabled Dxgi spoofing to avoid crash on boot, D3D12 for FSR 4 w/dx12
     QUIRK_ENTRY("doomthedarkages.exe", GameQuirk::DisableDxgiSpoofing, GameQuirk::ForceCreateD3D12Device),
+
+    // BeamNG.drive
+    // With every upscaler available (DLSS through us, FSR 3, FSR 4, XeSS) its options menu gets an empty list of
+    // unavailable modes as {} and the graphics page stays blank; FSR 4 left out of its version list keeps one there.
+    // The upscaler is OptiScaler's to pick anyway, FSR 4 included.
+    QUIRK_ENTRY("beamng.drive.x64.exe", GameQuirk::HideFsr4FromGame),
 
 };
 

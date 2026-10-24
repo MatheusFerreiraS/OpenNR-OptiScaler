@@ -1,5 +1,6 @@
 #include "AmdPreSr.h"
 #include "AmdLayout.h"
+#include "AmdBridge.h"
 #ifdef AMD_RETIRE_DIAGNOSTICS
 #include "RetirementDiagnostics.h"
 #endif
@@ -16,6 +17,9 @@
 #define AMD_GRAPHICS_SOURCE_ID "unfingerprinted"
 #endif
 #include <Config.h>
+#include <State.h>
+#include <Logger.h>
+#include <proxies/NVNGX_Proxy.h>
 #include "ColorEncoding.h"
 #include "AmdLookShader.h"
 #include "RtgiNative.h"
@@ -24,17 +28,27 @@
 #include <bcrypt.h>
 #include <array>
 #include <atomic>
+#include <dxgi.h>
 #include <chrono>
 #include <algorithm>
+#include <functional>
 #include <fstream>
 #include <mutex>
 #include <vector>
 #include <map>
+#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 #include <cmath>
 
 using Microsoft::WRL::ComPtr;
+namespace dlssnr
+{
+namespace crashsnap
+{
+void EnableCrashSnap();
+}
+}
 namespace AmdPreSr
 {
 namespace
@@ -85,8 +99,40 @@ static_assert(sizeof(Packet) == 0x68 && offsetof(Packet, scaleX) == 0x44);
 static_assert(offsetof(Packet, nativePre) == 0x4c && offsetof(Packet, renderWidth) == 0x50);
 static_assert(offsetof(Packet, renderHeight) == 0x54 && offsetof(Packet, jitterX) == 0x58);
 static_assert(offsetof(Packet, jitterY) == 0x5c && offsetof(Packet, preExposure) == 0x60);
+// abi 2 (0.8.0). Each resource is a descriptor the runtime's interceptors fill from GetDesc: the resource, the API (1,
+// D3D12), the runtime's own format number, the DXGI format, the D3D12_RESOURCE_STATES it is in (raw states now: the
+// 4 the old packet took is RENDER_TARGET here, and the runtime's pre-upscale copy fails with E_INVALIDARG on it), and
+// the size. An absent input is all zero. The list handle is {list, api 1, tag 3}, as every bundle builder writes it.
+struct ResourceV2
+{
+    ID3D12Resource* resource;
+    UINT api, format, dxgi, state, width, height;
+    UINT64 reserved;
+};
+struct PacketV2
+{
+    ID3D12GraphicsCommandList* list;
+    UINT listApi, listTag;
+    ResourceV2 colour, motion, depth, exposure;
+    float scaleX, scaleY;
+    // 0: the correction is written into colour (the host's own FP16 staging), as with the old packet. 1 is the
+    // runtime's pre-upscale mode, which keeps colour and returns its own copy; the host does not use it.
+    uint8_t nativePre;
+    uint8_t padb9[3];
+    UINT renderWidth, renderHeight;
+    float jitterX, jitterY;
+    float preExposure = 1.0f;
+};
+static_assert(sizeof(ResourceV2) == 0x28 && sizeof(PacketV2) == 0xd0);
+static_assert(offsetof(PacketV2, colour) == 0x10 && offsetof(PacketV2, motion) == 0x38);
+static_assert(offsetof(PacketV2, depth) == 0x60 && offsetof(PacketV2, exposure) == 0x88);
+static_assert(offsetof(PacketV2, scaleX) == 0xb0 && offsetof(PacketV2, nativePre) == 0xb8);
+static_assert(offsetof(PacketV2, renderWidth) == 0xbc && offsetof(PacketV2, jitterX) == 0xc4);
+static_assert(offsetof(PacketV2, preExposure) == 0xcc);
 using InitFn = bool(__fastcall*)(void*, const std::string*);
 using RecordFn = void(__fastcall*)(Packet*);
+using RecordV2Fn = bool(__fastcall*)(PacketV2*);
+using FormatEnumFn = UINT(__fastcall*)(DXGI_FORMAT);
 using NotifyFn = void(__fastcall*)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
 using HipSetFn = int (*)(int);
 constexpr char CopyShader[] = R"(
@@ -187,11 +233,399 @@ const AmdLayout* IdentifyRuntime(const std::filesystem::path& file)
             return layout;
     return nullptr;
 }
+ResourceV2 DescribeV2(HMODULE runtime, const AmdLayout* L, ID3D12Resource* resource, D3D12_RESOURCE_STATES state)
+{
+    if (!resource)
+        return {};
+    const auto d = resource->GetDesc();
+    const auto format = reinterpret_cast<FormatEnumFn>(reinterpret_cast<uintptr_t>(runtime) + L->formatEnum)(d.Format);
+    return { resource, 1, format, static_cast<UINT>(d.Format), static_cast<UINT>(state), static_cast<UINT>(d.Width),
+             d.Height, 0 };
+}
 } // namespace
 const char* IdentifyRuntimeName(const std::filesystem::path& passDll)
 {
     auto* layout = IdentifyRuntime(passDll);
     return layout ? layout->name : nullptr;
+}
+// ---- NeuralHub 0.8.0 NGX arming (GATE-REPORT-0.8.0.md; validated by harness080/ngx_probe) ----
+// 0 = not armed, 1 = armed, -1 = arming attempted and failed (permanent for the session).
+std::atomic<int> g_ngxArm { 0 };
+std::atomic<HMODULE> g_ngxHostModule { nullptr };
+std::atomic<const AmdLayout*> g_ngxLayout { nullptr };
+
+namespace
+{
+ID3D12CommandList* MatchNgxPendingLists(HMODULE h, const AmdLayout* L, UINT n, ID3D12CommandList* const* lists,
+                                        bool& outSr, bool& outRr, int* outIndex = nullptr)
+{
+    outSr = false;
+    outRr = false;
+    if (outIndex)
+        *outIndex = -1;
+    if (!lists || !n || !h || !L || !L->ngxNotifyChain)
+        return nullptr;
+    ID3D12CommandList* srList =
+        L->ngxSrPendingList ? At<ID3D12CommandList* volatile>(h, L->ngxSrPendingList) : nullptr;
+    ID3D12CommandList* rrList =
+        L->ngxRrPendingList ? At<ID3D12CommandList* volatile>(h, L->ngxRrPendingList) : nullptr;
+    if (!srList && !rrList)
+        return nullptr;
+    ID3D12CommandList* matched = nullptr;
+    for (UINT i = 0; i < n; ++i)
+    {
+        if (srList && lists[i] == srList)
+        {
+            outSr = true;
+            if (!matched)
+            {
+                matched = lists[i];
+                if (outIndex)
+                    *outIndex = static_cast<int>(i);
+            }
+        }
+        if (rrList && lists[i] == rrList)
+        {
+            outRr = true;
+            if (!matched)
+            {
+                matched = lists[i];
+                if (outIndex)
+                    *outIndex = static_cast<int>(i);
+            }
+        }
+    }
+    return matched;
+}
+
+void WaitNgxInFlight(HMODULE h, const AmdLayout* L, bool checkSr, bool checkRr,
+                     const std::function<void(const std::string&)>& log = {})
+{
+    if (!h || !L)
+        return;
+    const auto waitJob = [&](uint32_t notifiedRva, uint32_t doneRva, const char* label)
+    {
+        if (!notifiedRva || !doneRva)
+            return;
+        const UINT target = static_cast<UINT>(
+            InterlockedCompareExchange(reinterpret_cast<volatile LONG*>(&At<UINT>(h, notifiedRva)), 0, 0));
+        if (!target)
+            return;
+        const auto start = std::chrono::steady_clock::now();
+        unsigned spins = 0;
+        while (static_cast<UINT>(
+                   InterlockedCompareExchange(reinterpret_cast<volatile LONG*>(&At<UINT>(h, doneRva)), 0, 0)) < target)
+        {
+            const auto elapsedMs =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+            if (elapsedMs > 500)
+            {
+                if (log)
+                    log(std::string("AMD NGX ") + label + " completion wait timeout (target=" + std::to_string(target) +
+                        ")");
+                break;
+            }
+            if (++spins < 2000)
+                YieldProcessor();
+            else if (spins < 10000)
+                SwitchToThread();
+            else
+                Sleep(1);
+        }
+    };
+    if (checkSr)
+        waitJob(L->ngxSrJobNotified, L->ngxSrJobDone, "SR");
+    if (checkRr)
+        waitJob(L->ngxRrJobNotified, L->ngxRrJobDone, "RR");
+}
+
+void NotifyNgxLists(HMODULE h, const AmdLayout* L, ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* const* lists,
+                    bool waitCompletion, const std::function<void(const std::string&)>& log = {})
+{
+    bool srMatched = false, rrMatched = false;
+    if (!MatchNgxPendingLists(h, L, n, lists, srMatched, rrMatched))
+        return;
+    if (queue && L->queue && At<ID3D12CommandQueue*>(h, L->queue) != queue)
+    {
+        auto old = At<ID3D12CommandQueue*>(h, L->queue);
+        queue->AddRef();
+        At<ID3D12CommandQueue*>(h, L->queue) = queue;
+        if (old)
+            old->Release();
+    }
+    auto chain = At<NotifyFn volatile>(h, L->ngxNotifyChain);
+    if (!chain)
+        return;
+    chain(queue, n, lists);
+    if (waitCompletion)
+        WaitNgxInFlight(h, L, srMatched, rrMatched, log);
+}
+} // namespace
+
+int NgxPendingListIndex(UINT count, ID3D12CommandList* const* lists)
+{
+    HMODULE h = g_ngxHostModule.load(std::memory_order_acquire);
+    const AmdLayout* L = g_ngxLayout.load(std::memory_order_acquire);
+    bool sr = false, rr = false;
+    int idx = -1;
+    MatchNgxPendingLists(h, L, count, lists, sr, rr, &idx);
+    return idx;
+}
+
+void NgxSubmitted(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* const* lists)
+{
+    if (!queue || !lists || !n)
+        return;
+    HMODULE h = g_ngxHostModule.load(std::memory_order_acquire);
+    const AmdLayout* L = g_ngxLayout.load(std::memory_order_acquire);
+    NotifyNgxLists(h, L, queue, n, lists, false);
+}
+
+// A present can pass two of the callers (the wrapped swapchain and the frame generation swapchain's hook, one inside
+// the other): only the outermost pair reaches the host, so its counters advance once per present.
+static thread_local int ngxPresentDepth = 0;
+// The host took the present (its present counter moved): only then does its "after" stage run. A swapchain it turns
+// away ("not on our device") left the "after" stage running alone.
+static thread_local bool ngxPresentTaken = false;
+
+// A host stage call above 20 ms, once a second at most (The Sims 4: 100 ms in every D3D12 present once FG had run).
+static void ReportSlowNgxStage(const char* stage, std::chrono::steady_clock::time_point start)
+{
+    const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    static std::atomic<long long> lastReport { 0 };
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now().time_since_epoch())
+                         .count();
+    if (ms > 20.0 && now - lastReport.load() > 1000)
+    {
+        lastReport = now;
+        LOG_WARN("NeuralHub present stage {} took {:.1f} ms", stage, ms);
+    }
+}
+
+void NgxPresentBefore(IUnknown* swapchain, IUnknown* queueHint)
+{
+    if (ngxPresentDepth++ != 0)
+        return;
+    ngxPresentTaken = false;
+    HMODULE h = g_ngxHostModule.load(std::memory_order_acquire);
+    const AmdLayout* L = g_ngxLayout.load(std::memory_order_acquire);
+    if (!swapchain || !h || !L || !L->presentBefore || !L->presentCounter ||
+        g_ngxArm.load(std::memory_order_acquire) != 1)
+        return;
+    // The host finds a swapchain's queue in the map its CreateSwapChain detour fills, then asks the swapchain itself;
+    // host mode has no such detour, and under Streamline the swapchain answers no GetDevice(ID3D12CommandQueue), so every
+    // present was turned away ("not on our device") and the FG's frame counters never moved. Tell it once per
+    // swapchain, with the queue the game made it on (or the game's render queue).
+    static IUnknown* registered = nullptr;
+    if (L->swapchainCreated && swapchain != registered)
+    {
+        // A D3D11 game's swapchain hands its D3D11 device instead: the bridge's render queue then.
+        ID3D12CommandQueue* queue = nullptr;
+        if (!queueHint || FAILED(queueHint->QueryInterface(IID_PPV_ARGS(&queue))))
+            if (auto* render = State::Instance().currentCommandQueue)
+                render->QueryInterface(IID_PPV_ARGS(&queue));
+        if (queue)
+        {
+            reinterpret_cast<void (*)(IUnknown*, IUnknown*)>(reinterpret_cast<std::uintptr_t>(h) +
+                                                            L->swapchainCreated)(queue, swapchain);
+            queue->Release();
+            registered = swapchain;
+        }
+    }
+    const auto counter = At<volatile std::uint64_t>(h, L->presentCounter);
+    const auto start = std::chrono::steady_clock::now();
+    reinterpret_cast<void (*)(IUnknown*)>(reinterpret_cast<std::uintptr_t>(h) + L->presentBefore)(swapchain);
+    ReportSlowNgxStage("before", start);
+    ngxPresentTaken = At<volatile std::uint64_t>(h, L->presentCounter) != counter;
+    // Still turned away: the queue's device is not the one the host was seeded with. Said once.
+    static bool reported = false;
+    if (!ngxPresentTaken && !reported)
+    {
+        reported = true;
+        ID3D12Device* queueDevice = nullptr;
+        if (auto* queue = At<ID3D12CommandQueue*>(h, L->queue))
+            queue->GetDevice(IID_PPV_ARGS(&queueDevice));
+        LOG_WARN("NeuralHub's present stage turned swapchain {:X} away: host queue {:X} on device {:X}, host seeded with "
+                 "device {:X}",
+                 (size_t) swapchain, (size_t) At<ID3D12CommandQueue*>(h, L->queue), (size_t) queueDevice,
+                 (size_t) At<ID3D12Device*>(h, L->device));
+        if (queueDevice)
+            queueDevice->Release();
+    }
+}
+
+void NgxPresentAfter(IUnknown* swapchain, HRESULT result)
+{
+    if (ngxPresentDepth > 0 && --ngxPresentDepth != 0)
+        return;
+    const bool taken = ngxPresentTaken;
+    ngxPresentTaken = false;
+    HMODULE h = g_ngxHostModule.load(std::memory_order_acquire);
+    const AmdLayout* L = g_ngxLayout.load(std::memory_order_acquire);
+    if (!taken || !swapchain || !h || !L || !L->stageDispatch || g_ngxArm.load(std::memory_order_acquire) != 1)
+        return;
+    // The context the host's detour (0x12950) builds for stage 3 phase 2: size 0x58 and version 1, the swapchain,
+    // two {1, kind} tags around the present queue, and the HRESULT.
+    struct PresentContext
+    {
+        std::uint32_t size = 0x58;
+        std::uint32_t version = 1;
+        std::uint8_t reserved[0x28] {};
+        IUnknown* swapchain = nullptr;
+        std::uint32_t swapchainTag[2] { 1, 4 };
+        ID3D12CommandQueue* queue = nullptr;
+        std::uint32_t queueTag[2] { 1, 2 };
+        HRESULT result = S_OK;
+        std::uint32_t pad = 0;
+    } context;
+    static_assert(sizeof(PresentContext) == 0x58 && offsetof(PresentContext, swapchain) == 0x30 &&
+                  offsetof(PresentContext, queue) == 0x40 && offsetof(PresentContext, result) == 0x50);
+    context.swapchain = swapchain;
+    context.queue = At<ID3D12CommandQueue*>(h, L->queue);
+    context.result = result;
+    const auto start = std::chrono::steady_clock::now();
+    reinterpret_cast<void (*)(int, int, void*)>(reinterpret_cast<std::uintptr_t>(h) + L->stageDispatch)(3, 2,
+                                                                                                         &context);
+    ReportSlowNgxStage("after", start);
+}
+
+unsigned int NgxFgMultiFrameCountMax()
+{
+    HMODULE h = g_ngxHostModule.load(std::memory_order_acquire);
+    const AmdLayout* L = g_ngxLayout.load(std::memory_order_acquire);
+    if (!h || !L || !L->fgMultiFrameCountMax || g_ngxArm.load(std::memory_order_acquire) != 1)
+        return 0;
+    return At<std::uint32_t>(h, L->fgMultiFrameCountMax);
+}
+
+std::string RvaHex(std::uint32_t rva)
+{
+    std::string out("0x");
+    char digits[12];
+    snprintf(digits, sizeof(digits), "%x", rva);
+    return out + digits;
+}
+
+bool NeuralHubArmOk()
+{
+    return g_ngxArm.load(std::memory_order_acquire) == 1;
+}
+
+bool ArmDlssNgx(HMODULE hostModule, const AmdLayout* L, const char* tag,
+                const std::function<void(const std::string&)>& log)
+{
+    ::dlssnr::crashsnap::EnableCrashSnap();
+    if (!hostModule || !L || !L->ngxPublishSlot || !L->ngxPresentFlag || !log)
+        return false;
+    std::string name = tag ? tag : L->name;
+    if (g_ngxArm.load(std::memory_order_acquire) != 0)
+        return g_ngxArm.load(std::memory_order_acquire) == 1;
+    int expected = 0;
+    if (!g_ngxArm.compare_exchange_strong(expected, -1))
+        return g_ngxArm.load(std::memory_order_acquire) == 1;
+    bool armed = false;
+    try
+    {
+        // Step 1a: the host services init (0x13820) writes GetState into the slot; wait for it.
+        auto* slot =
+            reinterpret_cast<void* volatile*>(reinterpret_cast<std::uintptr_t>(hostModule) + L->ngxPublishSlot);
+        for (int waited = 0; *slot == nullptr && waited < 2000; waited += 10)
+            Sleep(10);
+        if (*slot == nullptr)
+        {
+            log("AMD NGX arm: " + name + ": host services never wrote the GetState slot " +
+                RvaHex(L->ngxPublishSlot) + "; publish failed");
+        }
+        else
+        {
+            // Step 1b: publish the "first Present" snapshot (the pinned leaf 0xa4a0, no arguments).
+            // It writes the published queue (0x1a15628), the wait state (0x1a15620) and
+            // ngxPresentFlag (0x1a15630 = the seeded device is set), while the CreateFeature-once
+            // functions read exactly that dword at state+0x208.
+            auto* publish = *reinterpret_cast<void* (__fastcall* volatile*)()>(slot);
+            void* state = publish();
+            const std::uint32_t presentFlag = At<volatile std::uint32_t>(hostModule, L->ngxPresentFlag);
+            log("AMD NGX arm: " + name + ": host GetState -> " +
+                std::to_string(reinterpret_cast<std::uintptr_t>(state)) + " firstPresentFlag=" +
+                std::to_string(presentFlag) + " (" + RvaHex(L->ngxPresentFlag) + ")");
+            // Step 1c: only a verified publish arms the gates.
+            if (state && presentFlag == 1)
+            {
+                // Step 2: arm the SR/RR evaluate-gate bytes. init ("present published"), gpu
+                // (the CreateFeature-once functions run the module's own RDNA3/4 check afterwards)
+                // and weights ("weights: " byte; writing it removes the extract race the probe
+                // saw work). The Record/Notify flow (record/notify RVAs below) does not touch
+                // these, so packet plumbing is unchanged.
+                At<volatile std::uint8_t>(hostModule, L->ngxGateSrInit) = 1;
+                At<volatile std::uint8_t>(hostModule, L->ngxGateSrGpu) = 1;
+                At<volatile std::uint8_t>(hostModule, L->ngxGateSrWeights) = 1;
+                At<volatile std::uint8_t>(hostModule, L->ngxGateRrInit) = 1;
+                At<volatile std::uint8_t>(hostModule, L->ngxGateRrGpu) = 1;
+                At<volatile std::uint8_t>(hostModule, L->ngxGateRrWeights) = 1;
+                log("AMD NGX arm: " + name + ": gates SR init=1 gpu=1 weights=1 (" +
+                    RvaHex(L->ngxGateSrInit) + "/" + RvaHex(L->ngxGateSrGpu) + "/" +
+                    RvaHex(L->ngxGateSrWeights) + ") RR init=1 gpu=1 weights=1 (" +
+                    RvaHex(L->ngxGateRrInit) + "/" + RvaHex(L->ngxGateRrGpu) + "/" +
+                    RvaHex(L->ngxGateRrWeights) + ")");
+                armed = true;
+            }
+        }
+    }
+    catch (const std::exception& e)
+    {
+        log("AMD NGX arm: " + name + ": failed: " + e.what());
+    }
+    if (armed)
+    {
+        g_ngxHostModule.store(hostModule, std::memory_order_release);
+        g_ngxLayout.store(L, std::memory_order_release);
+    }
+    g_ngxArm.store(armed ? 1 : -1, std::memory_order_release);
+    if (!armed)
+        return false;
+    // Step 4: route the NGX front end into the host module, and let the DLSS DLL search find the
+    // delivered nvngx_dlss(.d).dll that sit next to neuralhub_host.dll (GetModuleHandle never
+    // reloads children the host already has in-process).
+    const HMODULE routed = NVNGXProxy::NVNGXModule();
+    if (routed == nullptr || routed == hostModule)
+    {
+        NVNGXProxy::InitNVNGX(hostModule);
+        if (NVNGXProxy::NVNGXModule() == hostModule && NVNGXProxy::D3D12_CreateFeature() != nullptr)
+            log("AMD NGX arm: " + name + ": NVNGXProxy routed to neuralhub_host exports (NVSDK_NGX_D3D12_*)");
+        else
+            log("AMD NGX arm: " + name + ": NVNGXProxy routed, but D3D12 NGX exports are missing");
+    }
+    else
+        log("AMD NGX arm: " + name + ": another NVNGX module is already live; front end not rerouted");
+    wchar_t modulePath[MAX_PATH] {};
+    const DWORD pathLength = GetModuleFileNameW(hostModule, modulePath, MAX_PATH);
+    if (pathLength && pathLength < MAX_PATH)
+    {
+        const auto hostFolder = std::filesystem::path(modulePath).parent_path();
+        const auto dlss = hostFolder / L"nvngx_dlss.dll";
+        const auto dlssd = hostFolder / L"nvngx_dlssd.dll";
+        const auto dlssg = hostFolder / L"nvngx_dlssg.dll";
+        std::error_code ec;
+        if (std::filesystem::exists(dlss, ec))
+            State::Instance().NVNGX_DLSS_Path = dlss.wstring();
+        if (std::filesystem::exists(dlssd, ec))
+            State::Instance().NVNGX_DLSSD_Path = dlssd.wstring();
+        if (std::filesystem::exists(dlssg, ec) && !DlssNr::AmdBridge::HostKeptOnHip())
+            State::Instance().NVNGX_DLSSG_Path = dlssg.wstring();
+        if (State::Instance().NVNGX_DLSS_Path.has_value() || State::Instance().NVNGX_DLSSD_Path.has_value() ||
+            State::Instance().NVNGX_DLSSG_Path.has_value())
+            log("AMD NGX arm: " + name + ": DLSS provider DLLs found next to neuralhub_host: " +
+                HipRuntimeLoad::Utf8(hostFolder.wstring()));
+    }
+    else
+        log("AMD NGX arm: " + name + ": could not resolve the host module folder for the DLSS DLLs");
+    // The DLSS upscaler path must be treated as available from now on (menus, feature provider,
+    // intercepted game NGX calls). Volatile: the ini is not rewritten by an arm step.
+    Config::Instance()->DLSSEnabled.set_volatile_value(true);
+    State::Instance().NeuralHubArmOk = true;
+    log("AMD NGX arm: " + name + ": DLSS-SR/DLSS-RR via NeuralHub host armed");
+    return true;
 }
 struct Backend::Impl
 {
@@ -222,6 +656,9 @@ struct Backend::Impl
     std::wstring modules = L"dlssnr_amd_pass";
     std::string status = "AMD pre-SR: not initialized";
     std::atomic<bool> failed { false };
+    // The 0.8.0 host runs on its D3D12 compute runtime (DLSS-FG armed): its NR goes through the host's own D3D12 entry
+    // (0x2d8a0), not Record, whose HIP engine is never initialised there. Record refuses NR until that is wired.
+    bool hostD3d12 = false;
     std::atomic<bool> resetRequested { true };
     Settings lastSettings {};
     bool haveSettings = false;
@@ -288,6 +725,7 @@ struct Backend::Impl
         // UINT_MAX = never recorded this slot. 0 is a real value (the runtime refused).
         static constexpr UINT kPassUnset = 0xffffffffu;
         UINT passCount = kPassUnset;
+        bool afterUpscale = false;
         SubmissionState submission;
         ComPtr<ID3D12CommandQueue> submissionQueue;
         std::unique_ptr<ColorEncoding> decode, encode;
@@ -414,10 +852,8 @@ struct Backend::Impl
     bool deviceLostReported = false;
     bool shutDown = false;
     UINT width = 0, height = 0, activePasses = 0, lastPasses = 0;
-    // The runtime's timing, set before the first pass loads. In async its job counter (L->jobDone) never moves:
-    // a slot is done once its list ran, since the runtime copied the inputs into its own staging there.
-    bool async = false;
-    UINT64 asyncRefusals = 0;
+    // 0.8.0: the passes its one module runs inside each job (activePasses is 1 there).
+    UINT runtimePasses = 1;
     HipSetFn hipSet = nullptr;
     int hipDevice = -1;
     const AmdLayout* L = nullptr;
@@ -554,7 +990,7 @@ struct Backend::Impl
         bool timedOut = false;
         // Use this slot's recorded pass count, not the global config.
         // 0 is valid (the runtime refused); only kPassUnset means "never recorded".
-        const UINT passCount = (sl.passCount == Slot::kPassUnset || async) ? 0u : sl.passCount;
+        const UINT passCount = sl.passCount == Slot::kPassUnset ? 0u : sl.passCount;
         for (UINT i = 0; i < passCount; ++i)
         {
             const auto done = static_cast<UINT>(
@@ -712,7 +1148,7 @@ struct Backend::Impl
 #endif
         // Use THIS slot's recorded pass count, not the global activePasses
         // (the next Record may already have rewritten it).
-        const UINT slotPasses = (slots[k].passCount == Slot::kPassUnset || async) ? 0u : slots[k].passCount;
+        const UINT slotPasses = (slots[k].passCount == Slot::kPassUnset) ? 0u : slots[k].passCount;
         unsigned iterations = 0;
 #ifdef AMD_RETIRE_DIAGNOSTICS
         bool nativeAtEntry = true; // first poll result: did we wait at all?
@@ -771,6 +1207,177 @@ struct Backend::Impl
         hipDevice = selected.device;
         hipSet = selected.setDevice;
     }
+    // abi 2: the runtime has to be loaded under the name neuralhub_host.dll, and in that mode it reads its settings,
+    // writes its log and builds its weights in its own folder, so it gets one beside the pass files. Copied from
+    // pass 1 when missing or of another runtime, as passes 2 and 3 are for the older runtimes. Its neuralhub.ini is
+    // rewritten on every load: no add-on of its own asks for a stage (the host feeds the network itself), and the
+    // compute backend follows [DlssNr] HostComputeBackend. HIP (the default) runs the network on AMD's HIP runtime
+    // with the inline wait on the game's queue; D3D12 runs the same kernels in the game's command list, where there
+    // is no second queue and no inline wait (the host itself suggests it when the HIP inline wait times out).
+    std::filesystem::path PrepareHostModule(const std::filesystem::path& pass)
+    {
+        const auto folder = directory / L"dlssnr_amd_host";
+        std::error_code ec;
+        std::filesystem::create_directories(folder, ec);
+        if (ec)
+            throw std::runtime_error("Could not create dlssnr_amd_host: " + ec.message());
+        const auto module = folder / L"neuralhub_host.dll";
+        if (IdentifyRuntime(module) != L)
+        {
+            std::filesystem::copy_file(pass, module, std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec)
+                throw std::runtime_error("Could not copy " + pass.filename().string() +
+                                         " to dlssnr_amd_host\\neuralhub_host.dll: " + ec.message());
+            Log("AMD runtime: dlssnr_amd_host\\neuralhub_host.dll copied from " + pass.filename().string());
+        }
+        // NVIDIA's DLLs come from OptiScaler's library folder first: a copy there is the one the user chose, so the
+        // host's follows it whenever they differ. The game's own copies only fill a gap, and never replace a newer
+        // one already beside the host.
+        const auto library = DlssNr::AmdBridge::LibraryFolder();
+        for (const auto& name : { L"nvngx_dlss.dll", L"nvngx_dlssd.dll", L"nvngx_dlssg.dll" })
+        {
+            const auto dst = folder / name;
+            const auto chosen = library / name;
+            const bool fromLibrary = std::filesystem::exists(chosen, ec);
+            const auto src = fromLibrary ? chosen : directory / name;
+            if (!std::filesystem::exists(src, ec))
+                continue;
+            bool copy = !std::filesystem::exists(dst, ec);
+            if (!copy && fromLibrary)
+                copy = std::filesystem::file_size(src, ec) != std::filesystem::file_size(dst, ec) ||
+                       std::filesystem::last_write_time(src, ec) != std::filesystem::last_write_time(dst, ec);
+            if (!copy)
+                continue;
+            std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec)
+                Log("AMD runtime: could not copy " + HipRuntimeLoad::Utf8(src.wstring()) + " to dlssnr_amd_host: " +
+                    ec.message());
+            else
+                Log("AMD runtime: dlssnr_amd_host\\" + HipRuntimeLoad::Utf8(name) + " copied from " +
+                    (fromLibrary ? "OptiScaler's library folder" : "game folder"));
+        }
+        // NVIDIA's DLSS provider DLLs next to the host module arm the DLSS-SR/DLSS-RR
+        // evaluate gates (GATE-REPORT-0.8.0.md): with them present this build's arm step
+        // takes the game's NGX evaluates through DLSS's own network. Without them the
+        // module's FSR provider would answer the DLSS evaluates with the game's loaded
+        // FFX API, whose version may differ from the driver's DLL this provider expects
+        // (a DLSS evaluate crashed on the game's FFX 2.3.0: exception 0xc0000005 after
+        // "replaced by FSR provider"), so Passthrough stays the fallback.
+        const bool armNgx = std::filesystem::exists(folder / L"nvngx_dlss.dll", ec);
+        const bool hip = DlssNr::AmdBridge::HostKeptOnHip();
+        const bool armFg = !hip && (std::filesystem::exists(folder / L"nvngx_dlssg.dll", ec) ||
+                                    std::filesystem::exists(directory / L"nvngx_dlssg.dll", ec));
+        std::ofstream ini(folder / L"neuralhub.ini", std::ios::binary | std::ios::trunc);
+        ini << "; Written by OptiScaler on every load: the runtime is hosted";
+        if (armNgx)
+        {
+            ini << "; NVIDIA's nvngx_dlss(.d).dll arm the DLSS-SR/DLSS-RR gates\r\n"
+                   "[Upscaling]\r\nProvider=DLSS-SR\r\n[RayReconstruction]\r\nProvider=DLSS-RR\r\n";
+            Log("AMD runtime: neuralhub.ini arms DLSS-SR/DLSS-RR providers (NVngx DLLs in dlssnr_amd_host)");
+        }
+        else
+        {
+            ini << ", its own add-ons stay idle.\r\n"
+                   "[Upscaling]\r\nProvider=Passthrough\r\n[RayReconstruction]\r\nProvider=Passthrough\r\n";
+        }
+        if (armFg)
+        {
+            ini << "[FrameGeneration]\r\nProvider=DLSS-FG\r\n";
+            Log("AMD runtime: neuralhub.ini arms DLSS-FG provider (nvngx_dlssg.dll present)");
+        }
+        else
+        {
+            ini << "[FrameGeneration]\r\nProvider=Off\r\n";
+        }
+        // auto follows the FG: D3D12 for it, HIP for danielblnc's NR. HIP and D3D12 are taken as asked.
+        std::string hostBackend = Config::Instance()->HostComputeBackend.value_or_default();
+        if (_stricmp(hostBackend.c_str(), "auto") == 0)
+            hostBackend = armFg ? "D3D12" : "HIP";
+        else if (hip)
+            Log("AMD runtime: HostComputeBackend=HIP keeps danielblnc's NR running; NeuralHub's DLSS-FG stays off");
+        ini << "[Enhancement]\r\nProvider=Off\r\n[Compute]\r\nBackend="
+            << hostBackend << "\r\n";
+        if (armFg)
+        {
+            ini << "[Compatibility]\r\nGpuSpoof=Streamline\r\nIgnoreHagsForFrameGeneration=Auto\r\n";
+            Log("AMD runtime: neuralhub.ini enables GpuSpoof=Streamline and IgnoreHagsForFrameGeneration=Auto for DLSS-FG");
+        }
+        else
+        {
+            ini << "[Compatibility]\r\nGpuSpoof=Off\r\nIgnoreHagsForFrameGeneration=Off\r\n";
+        }
+        // [Debug] HipZeroCopy: inline mode needs zero-copy; without it the host copies the inputs and
+        // runs the network asynchronously (no inline wait, so a staging re-create cannot deadlock it).
+        const bool zeroCopy = Config::Instance()->HostZeroCopy.value_or_default();
+        ini << "[Debug]\r\nHipZeroCopy=" << (zeroCopy ? 1 : 0) << "\r\n";
+        if (!ini)
+            throw std::runtime_error("Could not write dlssnr_amd_host\\neuralhub.ini");
+        Log("AMD runtime: neuralhub.ini [Compute] Backend=" + hostBackend +
+            ", [Debug] HipZeroCopy=" + (zeroCopy ? "1" : "0"));
+        return folder;
+    }
+    // abi 2 without dlssnr_on_amd_weights.bin beside the passes: the runtime builds it from nvngx_dlssnr.dll in its
+    // own folder (copied there from beside the passes or the game's executable), as its first present would.
+    std::filesystem::path BuildHostWeights(HMODULE h, const std::filesystem::path& folder)
+    {
+        const auto built = folder / L"dlssnr_on_amd_weights.bin";
+        if (!std::filesystem::exists(built))
+        {
+            const auto snippet = folder / L"nvngx_dlssnr.dll";
+            if (!std::filesystem::exists(snippet))
+            {
+                wchar_t exe[MAX_PATH] {};
+                GetModuleFileNameW(nullptr, exe, MAX_PATH);
+                for (const auto& source : { directory / L"nvngx_dlssnr.dll",
+                                            std::filesystem::path(exe).parent_path() / L"nvngx_dlssnr.dll" })
+                {
+                    std::error_code ec;
+                    if (std::filesystem::exists(source) &&
+                        std::filesystem::copy_file(source, snippet, std::filesystem::copy_options::overwrite_existing,
+                                                   ec))
+                        break;
+                }
+            }
+            if (!std::filesystem::exists(snippet))
+                throw std::runtime_error("dlssnr_on_amd_weights.bin is required (or nvngx_dlssnr.dll to build it)");
+            At<uint8_t>(h, L->weightsOnce) = 1;
+            reinterpret_cast<void (*)()>(reinterpret_cast<uintptr_t>(h) + L->prepareWeights)();
+            if (!std::filesystem::exists(built))
+                throw std::runtime_error("AMD runtime could not build dlssnr_on_amd_weights.bin from nvngx_dlssnr.dll "
+                                         "(see dlssnr_amd_host\\dlssnr_on_amd.log)");
+            Log("AMD runtime: dlssnr_on_amd_weights.bin built from nvngx_dlssnr.dll");
+        }
+        return built;
+    }
+    // EnsureCompute's D3D12 branch without its env log (which reads a swapchain the host has not seen yet): open
+    // the runtime on the seeded device and record it open, so the addons' own EnsureCompute calls return at once.
+    void OpenHostD3d12(HMODULE h)
+    {
+        if (!L->computeOpen || !L->computeState)
+            throw std::runtime_error("AMD runtime " + std::string(L->name) + " has no D3D12 compute runtime mapped");
+        if (At<int>(h, L->computeState) == 1)
+            return;
+        // The host's std::string (MSVC layout), as EnsureCompute builds it: empty, inline buffer. A longer reason
+        // lands in the host's heap and stays there (once per process).
+        struct HostString
+        {
+            char buffer[16] {};
+            std::size_t size = 0;
+            std::size_t capacity = 15;
+        } reason;
+        using OpenFn = bool (*)(ID3D12Device*, HostString*);
+        const bool open = reinterpret_cast<OpenFn>(reinterpret_cast<uintptr_t>(h) + L->computeOpen)(device.Get(), &reason);
+        const char* text = reason.capacity >= sizeof(reason.buffer) ? *reinterpret_cast<const char* const*>(reason.buffer)
+                                                                    : reason.buffer;
+        if (!open)
+        {
+            At<int>(h, L->computeState) = -1;
+            throw std::runtime_error("AMD runtime: the host's D3D12 compute runtime did not open: " +
+                                     std::string(text, reason.size));
+        }
+        At<int>(h, L->computeState) = 1;
+        Log("AMD runtime: host D3D12 compute runtime open (see dlssnr_amd_host\\dlssnr_on_amd.log)");
+    }
     void InitPass(UINT i)
     {
         // A module that loaded but whose initialization failed stays loaded (see below) and refuses every Record:
@@ -781,6 +1388,8 @@ struct Backend::Impl
                 throw std::runtime_error("AMD pass " + std::to_string(i + 1) + " failed to initialize earlier");
             return;
         }
+        if (i > 0 && L && L->abi >= 2)
+            throw std::runtime_error("AMD runtime " + std::string(L->name) + " runs its passes in one module");
         InitHip();
         auto path = directory / (modules + std::to_wstring(i + 1) + L".dll");
         // One module per pass, so one file per pass: passes 2 and 3 are copies of pass 1, made here when missing or
@@ -806,17 +1415,33 @@ struct Backend::Impl
         L = identified;
         Log(std::string("AMD runtime ") + L->name);
         auto weights = directory / L"dlssnr_on_amd_weights.bin";
-        if (!std::filesystem::exists(weights))
+        const bool host = L->abi >= 2;
+        if (!std::filesystem::exists(weights) && !(host && L->prepareWeights))
             throw std::runtime_error("dlssnr_on_amd_weights.bin is required");
-        // A's standalone DllMain normally creates its own hook thread. Isolate
-        // the pinned bootstrap BEFORE it can run; a post-LoadLibrary patch races it.
-        HMODULE h = RuntimeHostLoad::Load(path.c_str(), L);
-        // Retain module even on failure: CRT registered HIP kernels; no unsafe unloading.
-        runtime[i] = h;
-        auto isolated = std::string("AMD runtime bootstrap isolated: host owns submission and configuration");
-        if (RuntimeHostLoad::LastPathFailures())
-            isolated += " (module path spelling differed from load path)";
-        Log(isolated);
+        HMODULE h {};
+        std::filesystem::path hostFolder;
+        if (host)
+        {
+            hostFolder = PrepareHostModule(path);
+            h = RuntimeHostLoad::LoadHost((hostFolder / L"neuralhub_host.dll").c_str(), L);
+            runtime[i] = h;
+            Log("AMD runtime host mode: loaded as neuralhub_host.dll, its hooks and interceptors off; host owns "
+                "submission and configuration");
+            if (!std::filesystem::exists(weights))
+                weights = BuildHostWeights(h, hostFolder);
+        }
+        else
+        {
+            // A's standalone DllMain normally creates its own hook thread. Isolate
+            // the pinned bootstrap BEFORE it can run; a post-LoadLibrary patch races it.
+            h = RuntimeHostLoad::Load(path.c_str(), L);
+            // Retain module even on failure: CRT registered HIP kernels; no unsafe unloading.
+            runtime[i] = h;
+            auto isolated = std::string("AMD runtime bootstrap isolated: host owns submission and configuration");
+            if (RuntimeHostLoad::LastPathFailures())
+                isolated += " (module path spelling differed from load path)";
+            Log(isolated);
+        }
         // The hash above fixes this private module's import layout. Older games
         // ship a 2013 D3DCompiler that rejects the FP16 typed UAV load shader.
         // Bind only this module's compiler import; leave the game's DLL intact.
@@ -854,12 +1479,22 @@ struct Backend::Impl
         At<ID3D12CommandQueue*>(h, L->queue) = queue.Get();
         queue->AddRef();
         At<int>(h, L->hipOrdinal) = hipDevice;
-        At<uint8_t>(h, L->configuredInline) = async ? 0 : 1;
-        if (async)
-            Log("AMD runtime async: the game's queue does not wait for the network; the result lands a frame late");
+        // [Compute] Backend=D3D12 (DLSS-FG needs it): open the host's D3D12 runtime with the seeded device before
+        // anything dispatches, as its EnsureCompute does at the first present (AmdLayout.h, computeOpen).
+        hostD3d12 = host && L->computeMode && At<int>(h, L->computeMode) == 2;
+        if (hostD3d12)
+            OpenHostD3d12(h);
+        // NeuralHub 0.8.0 NGX host arming (GATE-REPORT-0.8.0.md): with device, queue and HIP
+        // ordinal seeded, publish the "first Present" state once through the host's own
+        // GetState (0xa4a0) and write the SR/RR evaluate-gate bytes, so NGX DLSS-SR/DLSS-RR
+        // routed into this module pass the gates on an AMD GPU. Idempotent, once per process.
+        if (L->ngxPublishSlot)
+            ArmDlssNgx(h, L, L->name, [this](const std::string& s) { Log(s); });
+        At<uint8_t>(h, L->configuredInline) = 1;
         At<uint8_t>(h, L->interop) = 1;
         At<uint8_t>(h, L->enabled) = 1;
-        At<uint8_t>(h, L->fsrInputs) = 1;
+        if (L->fsrInputs)
+            At<uint8_t>(h, L->fsrInputs) = 1;
         At<uint8_t>(h, L->depthPresent) = 1;
         At<int>(h, L->tonemap) = -1;
         // 0.4.x reads these from dlssnr_on_amd.ini in DllMain, and only its own Present detour
@@ -875,9 +1510,18 @@ struct Backend::Impl
         if (L->useGameExposure)
             At<uint8_t>(h, L->useGameExposure) = 1;
         std::string file = weights.string();
-        if (hipSet(hipDevice) != 0 || !reinterpret_cast<InitFn>(reinterpret_cast<uintptr_t>(h) + L->init)(
-                                          reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(h) + L->engine), &file))
+        if (L->initCallback)
+            At<uintptr_t>(h, L->initCallback) = reinterpret_cast<uintptr_t>(h) + L->initCallbackFn;
+        // On D3D12 the host's own NR setup (0x2bd90) skips the HIP engine's init too: the network's weights load into
+        // VRAM at its first upscale.
+        if (hostD3d12)
+            Log("AMD runtime: D3D12 compute, the HIP engine's init is skipped (NR weights load at the first upscale)");
+        else if (hipSet(hipDevice) != 0 || !reinterpret_cast<InitFn>(reinterpret_cast<uintptr_t>(h) + L->init)(
+                                               reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(h) + L->engine), &file))
             throw std::runtime_error("AMD engine initialization failed");
+        // 0.8.0 keeps the inline switch in the engine object, which init constructs with inline on.
+        if (host)
+            At<uint8_t>(h, L->configuredInline) = 1;
         // SpinDraw must be set before the first staging Record so A can create
         // its 1-pixel-draw PSO. AmdGraphicsWait=1 requests new wait; otherwise original wait.
         if (L->spinDraw)
@@ -968,11 +1612,15 @@ Backend::Backend(ID3D12Device* d, ID3D12CommandQueue* q, const std::filesystem::
     // not be told apart.
     p->LogDiagnostic("AMD graphics build source=" AMD_GRAPHICS_SOURCE_ID);
     p->Log("AMD submission revision 20260927-1.8.9: multi-slot default; 0.3.1/0.4.x new wait with guarded restore; "
-           "Every-frame back on Ins menu; runtime 0.5.1, 0.5.0, 0.4.3, 0.4.2 or 0.4.1, or the 0.6.0 supporter build" +
+           "Every-frame back on Ins menu; runtime 0.8.0 (host mode), 0.6.0, 0.5.1, 0.5.0, 0.4.3, 0.4.2 or 0.4.1" +
            std::string(kBuildTag));
     try
     {
         Check(d->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&p->fence)), "Completion fence");
+        const auto pass1 = dir / (std::wstring(modules) + L"1.dll");
+        const AmdLayout* layout = IdentifyRuntime(pass1);
+        if (layout && layout->abi >= 2 && layout->ngxPublishSlot)
+            p->InitPass(0);
     }
     catch (const std::exception& e)
     {
@@ -1005,6 +1653,18 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
 #endif
     if (p->failed || !cmd || !f.colour || !f.motion || !f.depth)
         return nullptr;
+    if (p->hostD3d12)
+    {
+        static const std::string refused =
+            "AMD runtime: danielblnc's NR does not run while its host is on D3D12 for DLSS-FG; choose lmxxf or "
+            "mochizuki for NR, or set [DlssNr] HostComputeBackend=HIP for danielblnc's NR without NeuralHub's FG";
+        if (p->status != refused)
+        {
+            p->status = refused;
+            p->Log(refused);
+        }
+        return nullptr;
+    }
     const auto listType = cmd->GetType();
     if (listType != D3D12_COMMAND_LIST_TYPE_DIRECT && listType != D3D12_COMMAND_LIST_TYPE_COMPUTE)
         return nullptr;
@@ -1266,11 +1926,18 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         }
         if (f.motion->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL)
             throw std::runtime_error("Unsupported depth-stencil motion buffer: " + Layout(f.motion));
-        if (!p->runtime[0])
-            p->async = cfg.async;
-        p->activePasses = p->async ? 1u : std::clamp(cfg.passes, 1u, 3u);
-        bool passChange = p->lastPasses != p->activePasses;
-        p->lastPasses = p->activePasses;
+        p->activePasses = std::clamp(cfg.passes, 1u, 3u);
+        // 0.8.0 is one module whatever the pass count, and runs the passes itself; pass 1 tells which runtime this is.
+        if (p->activePasses > 1 && !p->runtime[0])
+            p->InitPass(0);
+        if (p->L && p->L->abi >= 2)
+        {
+            p->runtimePasses = p->L->passCount ? p->activePasses : 1u;
+            p->activePasses = 1;
+        }
+        const UINT passKey = p->L && p->L->abi >= 2 ? p->runtimePasses : p->activePasses;
+        bool passChange = p->lastPasses != passKey;
+        p->lastPasses = passKey;
         for (UINT i = 0; i < p->activePasses; ++i)
             p->InitPass(i);
         const AmdLayout* L = p->L;
@@ -1680,6 +2347,27 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                 At<uint8_t>(r, L->useGameExposure) = cfg.gameExposure ? 1 : 0;
             At<UINT>(r, L->toneChannels) = cfg.toneChannels ? 1u : 0u;
             At<UINT>(r, L->charMask) = 1; // Enable native semantic character-mask channel.
+            if (L->passCount)
+            {
+                // The runtime's own passes take what one module per pass took: the same style, structure and skin,
+                // the tone on the first pass only. A new count rebuilds its staging, as its own settings refresh
+                // does when Passes changes.
+                const int count = static_cast<int>(p->runtimePasses);
+                if (At<int>(r, L->passCount) != count)
+                {
+                    At<int>(r, L->passCount) = count;
+                    if (L->recreate)
+                        At<uint8_t>(r, L->recreate) = 1;
+                    p->Log("AMD runtime passes: " + std::to_string(count) + " (inside the runtime's job)");
+                }
+                for (UINT k = 0; k < 3; ++k)
+                {
+                    At<int>(r, L->passStyle + 4 * k) = int(cfg.style);
+                    At<float>(r, L->passStructure + 4 * k) = cfg.structure;
+                    At<float>(r, L->passSkin + 4 * k) = cfg.skin;
+                    At<float>(r, L->passTone + 4 * k) = k == 0 ? cfg.tone : 0;
+                }
+            }
             // The old shader ceiling expired at high render resolutions even
             // when inference finished well inside the original runtime's watchdog.
             // Scale the spin allowance with pixels, but retain a hard ceiling
@@ -1737,7 +2425,27 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                   L->waitDispatchSlices ? nativeBase + L->waitDispatchSlices : 0,
                   L->waitDispatchFinish ? nativeBase + L->waitDispatchFinish : 0 });
             const auto callStart = std::chrono::steady_clock::now();
-            reinterpret_cast<RecordFn>(nativeBase + L->record)(&packet);
+            if (L->abi >= 2)
+            {
+                // Every input is in NON_PIXEL_SHADER_RESOURCE here (the barriers above), the state PacketV2 now
+                // states as itself.
+                constexpr auto read = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+                PacketV2 v2 {};
+                v2.list = cmd;
+                v2.listApi = 1;
+                v2.listTag = 3;
+                v2.colour = DescribeV2(r, L, packet.colour, read);
+                v2.motion = DescribeV2(r, L, packet.motion, read);
+                v2.depth = DescribeV2(r, L, packet.depth, read);
+                v2.exposure = DescribeV2(r, L, packet.exposure, read);
+                v2.scaleX = packet.scaleX;
+                v2.scaleY = packet.scaleY;
+                v2.renderWidth = packet.renderWidth;
+                v2.renderHeight = packet.renderHeight;
+                reinterpret_cast<RecordV2Fn>(nativeBase + L->record)(&v2);
+            }
+            else
+                reinterpret_cast<RecordFn>(nativeBase + L->record)(&packet);
             const auto callMicros =
                 std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - callStart)
                     .count();
@@ -1852,10 +2560,6 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                 p->Log("AMD pass native failure: " + std::to_string(i + 1) + " job=" + std::to_string(sl->jobs[i]));
                 break;
             }
-            // Async declines every frame that arrives while the network is still on an earlier one, so there a
-            // refusal is routine and only a sample is logged.
-            if (!recorded && p->async && ++p->asyncRefusals % 600 != 1)
-                break;
             if (!recorded)
             {
                 // No matching pending list means we must not claim publication.
@@ -1885,6 +2589,7 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         p->activePasses = accepted;
         // Bind this slot's notify/retire pass count to what was actually recorded.
         sl->passCount = accepted;
+        sl->afterUpscale = f.afterUpscale;
 #ifdef AMD_RETIRE_DIAGNOSTICS
         timing.event.accepted = accepted;
 #endif
@@ -2060,7 +2765,7 @@ int Backend::PendingListIndex(UINT count, ID3D12CommandList* const* lists) const
             if (lists[i] == pending)
                 return static_cast<int>(i);
     }
-    return -1;
+    return NgxPendingListIndex(count, lists);
 }
 void Backend::TraceBoundary(const std::string& reason)
 {
@@ -2133,17 +2838,26 @@ void Backend::Submitted(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* co
     std::array<ID3D12CommandList*, Impl::kMaxSlots> candPending {};
     const UINT cands = p->FindPendingCandidates(n, lists, candSlots, candPending);
     if (!cands)
+    {
+        NgxSubmitted(queue, n, lists);
         return;
+    }
     std::lock_guard guard(p->lock);
     const AmdLayout* L = p->L;
     if (!L)
+    {
+        NgxSubmitted(queue, n, lists);
         return;
+    }
     // A reused command-list pointer can also match an older submitted slot;
     // only the current unsubmitted generation may be published here.
     UINT slot = 0;
     ID3D12CommandList* pending = nullptr;
     if (!p->PickUnsubmitted(candSlots, candPending, cands, slot, pending))
+    {
+        NgxSubmitted(queue, n, lists);
         return;
+    }
     auto& sl = p->slots[slot];
     if (sl.submissionQueue.Get() != queue)
     {
@@ -2153,12 +2867,43 @@ void Backend::Submitted(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* co
     }
     // Notify uses this slot's recorded pass count. 0 = the runtime refused (no HIP job).
     const UINT passCount = (sl.passCount == Impl::Slot::kPassUnset) ? 0u : sl.passCount;
-    const auto notifyPass = [&](UINT i)
+    bool ngxSrMatched = false, ngxRrMatched = false;
+    const bool hasNgxOnList =
+        p->runtime[0] && MatchNgxPendingLists(p->runtime[0], L, n, lists, ngxSrMatched, ngxRrMatched) != nullptr;
+    if (passCount == 0)
+    {
+        if (hasNgxOnList)
+            NotifyNgxLists(p->runtime[0], L, queue, n, lists, false, [this](const std::string& s) { p->Log(s); });
+    }
+    else if (hasNgxOnList && sl.afterUpscale)
+    {
+        // Post-upscale: DLSS-SR / DLSS-RR is recorded ahead of NR on the same D3D12 command list.
+        // Wake SR/RR and wait for its HIP worker to finish before waking NR; otherwise NR's GPU
+        // capture-wait kernel (0x1544c0) occupies the HIP stream while NR's D3D12 capture sits
+        // behind SR/RR's D3D12 spin-wait.
+        NotifyNgxLists(p->runtime[0], L, queue, n, lists, true, [this](const std::string& s) { p->Log(s); });
+    }
+    else if (p->runtime[0] && L->ngxNotifyChain)
+    {
+        // Ensure no earlier frame's SR/RR job is still occupying the HIP stream before waking NR.
+        WaitNgxInFlight(p->runtime[0], L, true, true, [this](const std::string& s) { p->Log(s); });
+    }
+    const auto notifyPass = [&](UINT i, bool suppressNgxChain)
     {
         auto h = p->runtime[i];
         const bool matched = At<ID3D12CommandList*>(h, L->pendingList) == pending;
         if (matched)
+        {
+            NotifyFn savedChain = nullptr;
+            if (suppressNgxChain && L->ngxNotifyChain)
+            {
+                savedChain = At<NotifyFn volatile>(h, L->ngxNotifyChain);
+                At<NotifyFn volatile>(h, L->ngxNotifyChain) = nullptr;
+            }
             reinterpret_cast<NotifyFn>(reinterpret_cast<uintptr_t>(h) + L->notify)(queue, n, lists);
+            if (suppressNgxChain && L->ngxNotifyChain)
+                At<NotifyFn volatile>(h, L->ngxNotifyChain) = savedChain;
+        }
         if (!matched || At<ID3D12CommandList*>(h, L->pendingList) != nullptr)
         {
             p->failed = true;
@@ -2169,9 +2914,36 @@ void Backend::Submitted(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* co
         }
         return true;
     };
+    const auto waitNrPass = [&](UINT i)
+    {
+        auto h = p->runtime[i];
+        auto start = GetTickCount64();
+        unsigned spins = 0;
+        while (static_cast<UINT>(InterlockedCompareExchange(reinterpret_cast<volatile LONG*>(&At<UINT>(h, L->jobDone)),
+                                                            0, 0)) < sl.jobs[i])
+        {
+            if (GetTickCount64() - start > 5000)
+            {
+                p->failed = true;
+                p->Log("HIP completion timeout pass " + std::to_string(i + 1));
+                break;
+            }
+            if (++spins < 2000)
+                YieldProcessor();
+            else if (spins < 10000)
+                SwitchToThread();
+            else
+                Sleep(1);
+        }
+    };
     if (passCount == 1)
     {
-        notifyPass(0);
+        const bool deferNgxAfterNr = hasNgxOnList && !sl.afterUpscale;
+        if (notifyPass(0, deferNgxAfterNr) && deferNgxAfterNr)
+        {
+            waitNrPass(0);
+            NotifyNgxLists(p->runtime[0], L, queue, n, lists, false, [this](const std::string& s) { p->Log(s); });
+        }
         auto value = ++p->serial;
         if (FAILED(queue->Signal(p->fence.Get(), value)))
         {
@@ -2185,26 +2957,17 @@ void Backend::Submitted(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* co
         p->WaitAfterSubmitIfEveryFrame(slot);
         return;
     }
+    const bool deferNgxAfterNr = hasNgxOnList && !sl.afterUpscale;
     for (UINT i = 0; i < passCount; ++i)
     {
-        auto h = p->runtime[i];
-        if (!notifyPass(i))
+        if (!notifyPass(i, deferNgxAfterNr))
             break;
         // All runtimes use HIP stream 0. Publish the next pass only once the previous
         // worker finished; otherwise its capture-wait kernel could block the first pass.
-        auto start = GetTickCount64();
-        while (static_cast<UINT>(InterlockedCompareExchange(reinterpret_cast<volatile LONG*>(&At<UINT>(h, L->jobDone)),
-                                                            0, 0)) < sl.jobs[i])
-        {
-            if (GetTickCount64() - start > 5000)
-            {
-                p->failed = true;
-                p->Log("HIP completion timeout pass " + std::to_string(i + 1));
-                break;
-            }
-            Sleep(1);
-        }
+        waitNrPass(i);
     }
+    if (deferNgxAfterNr)
+        NotifyNgxLists(p->runtime[0], L, queue, n, lists, false, [this](const std::string& s) { p->Log(s); });
     UINT64 value = ++p->serial;
     if (FAILED(queue->Signal(p->fence.Get(), value)))
     {

@@ -1,19 +1,19 @@
 <#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.5.5-opennr, the version in OptiScaler/resource.h.
-  The danielblnc runtime it drives is 0.5.1 (0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1, 0.3.0 and the 0.6.0 supporter build
-  still accepted), supplied by the user.
+  Default product: OptiScaler-0.5.7-opennr, the version in OptiScaler/resource.h.
+  The danielblnc runtime it drives is 0.8.0 (NeuralHub's neuralhub_host.dll; 0.6.0, 0.5.1, 0.5.0, 0.4.3, 0.4.2, 0.4.1,
+  0.4.0, 0.3.1 and 0.3.0 still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
   installer or a local build supplies it, and its model is never in this package.
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.5.5-opennr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.5.7-opennr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.5.5-opennr',
+    [string]$Version = '0.5.7-opennr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',
@@ -179,10 +179,11 @@ $ini = [regex]::Replace($ini, '(?ms)(\[FrameGen\].*?^Enabled=)[^\r\n]*', '$1fals
 $ini = [regex]::Replace($ini, '(?ms)^\[DlssNr\].*?(?=^\[|\z)', @"
 [DlssNr]
 ; Product $Version - NR slots default 3 (2-5 in-game, 1-5 here).
-; Requires DLSS-NR-on-AMD 0.6.0 (0.5.1, 0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1 and 0.3.0 still work;
-; https://github.com/danielblnc/DLSS-NR-on-AMD)
-; as dlssnr_amd_pass1-3.dll (Setup copies version.dll from the package folder, or takes it
-; out of dlssnr_on_amd_setup.exe).
+; Requires DLSS-NR-on-AMD 0.8.0 (NeuralHub; 0.6.0, 0.5.1, 0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1 and
+; 0.3.0 still work; https://github.com/danielblnc/DLSS-NR-on-AMD)
+; as dlssnr_amd_pass1.dll (0.8.0, one module, hosted from dlssnr_amd_host\) or dlssnr_amd_pass1-3.dll
+; (Setup finds an installed NeuralHub, copies version.dll or neuralhub_host.dll from the package
+; folder, or takes it out of neuralhub.exe or dlssnr_on_amd_setup.exe).
 ; AmdEveryFrame=false keeps the model's temporal history (Ins menu: "Disable temporal
 ; stabilization", off by default).
 ; AmdGraphicsWait=1 is New wait mode (1-pixel draw of 0.3.1 and later; still testing).
@@ -218,6 +219,9 @@ LmxxfStyle=1
 LmxxfVitReuse=false
 ; lmxxf: run the 1080 tier on 1088 rows instead of 1152, about 4% faster, slightly lossy at the bottom.
 LmxxfCompact1080=false
+; lmxxf: the 71-block model instead of the Small one of NVIDIA's 310.9.16 DLL, which runs at any number of passes
+; when native-game-tiled-assets\small\ is there (about a third faster).
+LmxxfOriginalModel=false
 ; lmxxf, three passes: run two and work out the third from them, about a third less time, close to a
 ; real third pass. Skin protection (two or three passes): skin-coloured areas keep pass 1's result
 ; (by colour, so brown and orange surfaces too).
@@ -253,7 +257,8 @@ MochizukiDynamicResolution=auto
 ; Off by default. Exposure 0 off, 1 auto (for games that do not hand their exposure over), 2 fixed
 ; (bias alone), either replacing the RenoDX stage's divisor; bias -8..8 EV; curve 0 none, 1 neutral,
 ; 2 reinhard, 3 filmic, 4 gt, 5 aces, 6 agx, in place of the stage's; contrast 0.5-2; saturation 0.05-2.
-MochizukiPreprocess=false
+; auto is off unless the game is one that needs it (Crimson Desert); true or false is kept as chosen.
+MochizukiPreprocess=auto
 MochizukiPreprocessExposure=1
 MochizukiPreprocessBias=0
 MochizukiPreprocessCurve=3
@@ -344,7 +349,7 @@ MochizukiRenoProxyAnchor=4
 MochizukiRenoPaperWhiteScale=2.5375
 MochizukiRenoDiffuseWhiteNits=203
 MochizukiRenoPQCalibration=1
-MochizukiRenoFeedMode=0
+MochizukiRenoFeedMode=auto
 MochizukiRenoNormGovernor=2
 MochizukiRenoNormCutAware=true
 MochizukiRenoNormAttackStops=4
@@ -367,9 +372,6 @@ AmdGraphicsWait=1
 AmdGraphicsUnsafe=0
 ; One danielblnc job the GPU holds this long (ms) switches NR off; switch it on again to retry. 0 turns it off.
 AmdStallStandDownMs=2000
-; danielblnc async: the game's queue does not wait for the network, the result lands a frame later (after the
-; finished frame, one pass). Read when the game starts.
-AmdAsync=false
 AmdNeuralLighting=true
 AmdNeuralLightingStrength=0.5
 ; auto: 0 and 2 with an upscaler, 0.8 and 4 on the final image (PresentWithoutUpscaler).
@@ -548,9 +550,13 @@ Copy-Item $readme (Join-Path $stage 'README.md') -Force
 # Keep this filename-only and case-insensitive: the same expression validates the
 # staged tree and every entry in the finished archive.
 # version-<ver>.dll is an older author runtime that Setup renamed next to Setup.bat.
-$forbidden = '(?i)^(nvngx.*\.dll|dlssnr_amd_pass.*\.dll|dlssnr_on_amd_weights\.bin|version(-[0-9.]+)?\.dll|dlssnr_on_amd_setup\.exe)$'
+# NeuralHub (0.8.0): neuralhub_host.dll (the runtime), neuralhub_stub.dll, neuralhub.exe and
+# NeuralHub_v*_setup.exe. dlssnr_amd_host\ is what OptiScaler makes in a game folder for 0.8.0
+# (runtime copy, nvngx copy, built weights): nothing under it may ship, whatever its name.
+$forbidden = '(?i)^(nvngx.*\.dll|dlssnr_amd_pass.*\.dll|dlssnr_on_amd_weights\.bin|version(-[0-9.]+)?\.dll|dlssnr_on_amd_setup\.exe|neuralhub_host\.dll|neuralhub_stub\.dll|neuralhub.*\.exe)$'
+$forbiddenDir = '(?i)(^|[\\/])dlssnr_amd_host([\\/]|$)'
 $badAll = Get-ChildItem -LiteralPath $stage -Recurse -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match $forbidden }
+    Where-Object { $_.Name -match $forbidden -or $_.FullName.Substring($stage.Length) -match $forbiddenDir }
 if ($badAll) {
     throw "Refusing to package proprietary/user-supplied file: $(($badAll | ForEach-Object { $_.FullName.Substring($stage.Length+1) }) -join ', ')"
 }
@@ -598,7 +604,8 @@ try {
     $archive = [IO.Compression.ZipFile]::OpenRead($zip)
     try {
         $badZip = @($archive.Entries |
-            Where-Object { -not [string]::IsNullOrEmpty($_.Name) -and $_.Name -match $forbidden } |
+            Where-Object { ($_.FullName -match $forbiddenDir) -or
+                (-not [string]::IsNullOrEmpty($_.Name) -and $_.Name -match $forbidden) } |
             ForEach-Object { $_.FullName })
     } finally {
         $archive.Dispose()

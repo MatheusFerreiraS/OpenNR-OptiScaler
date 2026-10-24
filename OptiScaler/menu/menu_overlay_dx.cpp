@@ -872,7 +872,9 @@ void MenuOverlayDx::FinalImageFrameGen(IDXGISwapChain* fgSwapChain)
     // No NR while the window is minimized, as without frame generation; XeFG keeps its guides.
     const bool neural = config.DlssNrEnabled.value_or_default() && !(desc.OutputWindow && IsIconic(desc.OutputWindow));
     const bool fgEnabled = config.FGEnabled.value_or_default();
-    const bool xefg = state.activeFgOutput == FGOutput::XeFG && state.activeFgInput == FGInput::Upscaler;
+    // XeFG, or the DLSSG output (OptiScaler's own Streamline, which NeuralHub's DLSS-FG serves on AMD).
+    const bool dlssg = state.activeFgOutput == FGOutput::DLSSG;
+    const bool xefg = (state.activeFgOutput == FGOutput::XeFG || dlssg) && state.activeFgInput == FGInput::Upscaler;
     AmdPresentExperimental::Guides guides;
     bool ready = false;
 
@@ -936,8 +938,9 @@ void MenuOverlayDx::FinalImageFrameGen(IDXGISwapChain* fgSwapChain)
         return;
 
     // XeFG generates: OptiScaler spaces its presents and the pacing hooks forward, until a quarter second after the
-    // last such frame.
-    SpaceFrameGeneration();
+    // last such frame. Streamline paces DLSSG's presents itself.
+    if (!dlssg)
+        SpaceFrameGeneration();
 
     // Optical flow has no camera: an identity view, a nominal projection and pixel motion at output size.
     fg->SetCameraValues(0.1f, 1000.0f, 1.5707963f, float(guides.width) / float(guides.height));

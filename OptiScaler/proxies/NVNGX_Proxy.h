@@ -179,7 +179,9 @@ static feature_version GetVersionUsingNGXSnippet(const std::vector<std::string>&
         {
             LOG_TRACE("_GetSnippetVersion ptr from {}: {:X}", dll, (ULONG64) _GetSnippetVersion);
             uint32_t version = _GetSnippetVersion();
-            highestVersion = std::max(version, highestVersion);
+            // std::max here collides with a min/max macro some TU chains still carry.
+            if (version > highestVersion)
+                highestVersion = version;
         }
     }
 

@@ -1,12 +1,34 @@
 #pragma once
 #include <d3d12.h>
 #include <filesystem>
+#include <functional>
 #include <string>
 
 namespace AmdPreSr
 {
+struct AmdLayout;
 // Identify pass DLL by SHA+size. Returns kAmdLayouts[].name or nullptr.
 const char* IdentifyRuntimeName(const std::filesystem::path& passDll);
+// 0.8.0 host NGX arming (GATE-REPORT-0.8.0.md): wait for the host services' GetState slot
+// (ngxPublishSlot), call the publisher (its RVA ngxPublishFn, no arguments) so the "first
+// Present" dword (ngxPresentFlag) is written from the seeded device, then arm the SR and RR
+// evaluate-gate bytes (init/gpu/weights). Logs every step through `log`. Idempotent: the
+// second and later calls return the first result without touching the module again.
+// Returns false when the publish verification fails (and no gate was written).
+bool ArmDlssNgx(HMODULE hostModule, const AmdLayout* layout, const char* tag,
+                const std::function<void(const std::string&)>& log);
+// True once ArmDlssNgx completed (publish verified, gates armed); false before or on failure.
+bool NeuralHubArmOk();
+// 0.8.0 NGX D3D12 SR/RR submission hooks: isolate and notify SR/RR command lists even when NR
+// did not record on that list (or when NR is off / settling / skipped).
+int NgxPendingListIndex(UINT count, ID3D12CommandList* const* lists);
+void NgxSubmitted(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* const* lists);
+// 0.8.0 host present stage (AmdLayout.h, presentBefore): what the host's own Present detour runs around every present
+// of the real swapchain, generated frames included. Nothing before the host is armed.
+void NgxPresentBefore(IUnknown* swapchain, IUnknown* queueHint = nullptr);
+void NgxPresentAfter(IUnknown* swapchain, HRESULT result);
+// The host's DLSS-FG generated-frame ceiling (DLSSG.MultiFrameCountMax), 0 before the host is armed.
+unsigned int NgxFgMultiFrameCountMax();
 struct Frame
 {
     ID3D12Resource *colour = nullptr, *motion = nullptr, *depth = nullptr, *exposure = nullptr;
@@ -56,8 +78,6 @@ struct RtgiSettings
 struct Settings
 {
     UINT encoding = 1; // 1 Linear, 2 sRGB, 3 Gamma 2.2
-    // The runtime's async timing (AmdBridge::AsyncSession): latched when the first pass loads.
-    bool async = false;
     bool everyFrame = false;
     bool fixedSeed = false;
     // How many frames may be running at the NR stage at once. Too few and a frame that

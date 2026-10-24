@@ -4,14 +4,14 @@ This directory contains precompiled AMD GPU code objects (`.hsaco`) loaded by th
 
 ## Provenance
 - **Upstream Repository**: https://github.com/lmxxf/dlss5-on-amd-9070xt-porting
-- **Commit Base**: `1a0579839b025e6b2b041c1414c4531aa7a4ce03`
+- **Commit Base**: `8181b5f2ffd2c085ad2e05d4309a0c8d06b672cc` (0.45)
 - **Target GPU Architecture**: AMD RDNA4 `gfx1201` (RX 9070, RX 9070 XT)
 - **License**: MIT, Copyright (c) 2026 Kien (`../LICENSE`)
 
 ## Build Method
 These modules were compiled from `../hip/*.hip` sources using AMD's Runtime Compiler tool (`rtc_compile.cpp`) through the driver's `amd_comgr_3.dll` (no full HIP SDK required). See `../hip/README.md` and `../hip/build-modules.ps1` for compilation recipes and defines.
 
-## Contents (38 Code Objects)
+## Contents (40 Code Objects)
 - `boundary-fast.hsaco`, `boundary_reference.hsaco`
 - `c32_fast.hsaco`, `c32_fast_attention.hsaco`, `c32_fused_attention.hsaco`
 - `c32_fused_ffn_attention-packed.hsaco`, `c32_fused_ffn_attention.hsaco`
@@ -26,7 +26,8 @@ These modules were compiled from `../hip/*.hip` sources using AMD's Runtime Comp
 - Since 0.40-0.41: `c32-wave1-rtz.hsaco` (1080 tier C32), the fast-numeric twins `c32-wave1-fast.hsaco`,
   `c64-wave2-fast.hsaco`, `deep_fast-packed-fast.hsaco`, `vit-stream-fast.hsaco` (`DLSS5_FAST_NUMERIC=1`, the
   runtime's default), and `multi-pass-predict.hsaco`, `multi-pass-skin.hsaco` (upstream's own multi pass, not used
-  here). Upstream builds five rows with LLVM 23.1.2; here all 38 come from the driver's COMGR (LLVM 21), as before.
+  here). Upstream builds five rows with LLVM 23.1.2; here all of them come from the driver's COMGR (LLVM 21), as before.
+- Since 0.42: `c32-wave1-fast-norm900.hsaco`, `swin-persistent-fast.hsaco`.
 - `modules.json`: Module metadata and layout definitions.
 - `runtime-manifest.json`: Runtime loading configuration.
 - `SHA256SUMS`: Checksums of all module files.

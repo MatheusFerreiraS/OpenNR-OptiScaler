@@ -54,6 +54,9 @@ class InstallerExitTests(unittest.TestCase):
         # runtime with its default module discovery, like a double-click.
         self.env.pop("PSMODULEPATH", None)
         self.env["PATH"] = str(PS.parent) + os.pathsep + self.env.get("PATH", "")
+        # NeuralHub's own test-mode store: keeps an installed NeuralHub (HKCU, %LOCALAPPDATA%) out of the tests.
+        self.hub_store = self.root / "neuralhub store"
+        self.env["NEURALHUB_STORE"] = str(self.hub_store)
         source = (REPO / "tools/PACKAGE_RELEASE.ps1").read_text(encoding="utf-8-sig")
         for title_name, script, file_name in (
             ("Setup", "install", "Setup"),
@@ -195,7 +198,7 @@ class InstallerExitTests(unittest.TestCase):
         self.assertEqual((self.package / "version.dll").read_bytes(), blob)
 
     def trust(self, **digests):
-        """Replace the named trusted runtime SHAs ($expectedA030 / A031 / A040 / A041) in the fixture Setup."""
+        """Replace the named trusted runtime SHAs ($expectedA030 / A031 / A040 / A041 / A080) in the fixture Setup."""
         script = self.package / "Setup.ps1"
         source = script.read_text(encoding="utf-8-sig")
         for var, data in digests.items():
@@ -284,7 +287,7 @@ class InstallerExitTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("WARNING: dlssnr_on_amd_setup.exe holds runtime 0.4.1, newer than the 0.3.0 given by -AuthorDll",
                       output)
-        self.assertIn("NOTE: runtime 0.3.0 is supported, but 0.5.1 is recommended", output)
+        self.assertIn("NOTE: runtime 0.3.0 is supported, but 0.8.0 (NeuralHub) is recommended", output)
         self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), old)
 
     def test_unknown_author_dll_does_not_hold_back_a_newer_setup(self):
@@ -299,6 +302,185 @@ class InstallerExitTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("holds runtime 0.4.1, newer than the 0.3.0", output)
         self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), new)
+
+    def nvngx(self, version, name="nvngx_dlssnr.dll", where=None):
+        """A harmless .NET library whose version resource says it is nvngx_dlssnr.dll <version>, padded past 1 MB."""
+        path = (where or self.package) / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        source = ('using System.Reflection;\n[assembly: AssemblyFileVersion("' + version + '")]\n'
+                  'public class NvngxVersionFixture { }\n')
+        script = ("Add-Type -TypeDefinition $env:FIXTURE_SOURCE -OutputAssembly $env:FIXTURE_OUT "
+                  "-OutputType Library")
+        env = dict(self.env, FIXTURE_SOURCE=source, FIXTURE_OUT=str(path))
+        result = subprocess.run([str(PS), "-NoProfile", "-NonInteractive", "-Command", script],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout.decode("mbcs", errors="replace"))
+        with open(path, "ab") as f:
+            f.write(bytes(1024 * 1024))
+        return path
+
+    def neuralhub_exe(self, runtime, path=None):
+        """neuralhub.exe holds four images; only the runtime's hash is trusted."""
+        path = path or (self.package / "neuralhub.exe")
+        path.write_bytes(
+            b"MZ fixture manager" + bytes(46) + embedded_pe(b"stub: NeuralHubStub_Abi")
+            + embedded_pe(b"fixture FidelityFX upscaler") + runtime
+            + embedded_pe(b"fixture FidelityFX frame generation") + b"tail")
+        return path
+
+    def trust_080(self, runtime, **others):
+        self.trust(A080=runtime, **others)
+        (self.package / "dlssnr_on_amd_weights.bin").unlink()
+
+    def test_080_from_neuralhub_exe_installs_one_module(self):
+        # The manager carries the runtime raw next to three other images. 0.8.0 is a single module:
+        # pass1 only, and a pass2/pass3 an earlier install left are removed.
+        old = FAKE_RUNTIME
+        new = embedded_pe(b"Harmless 0.8.0 runtime fixture; not an executable.")
+        self.trust(A041=old, A080=new)
+        (self.package / "version.dll").write_bytes(old)
+        for p in (1, 2, 3):
+            (self.game / f"dlssnr_amd_pass{p}.dll").write_bytes(old)
+        self.neuralhub_exe(new)
+        code, output = self.run_direct()
+        self.assertEqual(code, 0, output)
+        self.assertIn("neuralhub.exe holds runtime 0.8.0, newer than the 0.4.1", output)
+        self.assertIn("Took danielblnc runtime 0.8.0 out of neuralhub.exe (not run)", output)
+        self.assertIn("danielblnc runtime 0.8.0 (SHA256", output)
+        self.assertNotIn("is recommended", output)
+        self.assertIn("removed stale dlssnr_amd_pass2.dll", output)
+        self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), new)
+        self.assertFalse((self.game / "dlssnr_amd_pass2.dll").exists(), output)
+        self.assertFalse((self.game / "dlssnr_amd_pass3.dll").exists(), output)
+        self.assertTrue((self.game / "dlssnr_on_amd_weights.bin").is_file(), output)
+        self.assertEqual((self.package / "version.dll").read_bytes(), new)
+        self.assertEqual((self.package / "version-0.4.1.dll").read_bytes(), old)
+
+    def test_080_without_weights_takes_nvngx_for_optiscaler(self):
+        runtime = b"Harmless 0.8.0 runtime fixture; not an executable."
+        self.trust_080(runtime)
+        (self.package / "neuralhub_host.dll").write_bytes(runtime)
+        nv = self.nvngx("310.8.0.0")
+        code, output = self.run_direct()
+        self.assertEqual(code, 0, output)
+        self.assertIn("Found danielblnc runtime 0.8.0", output)
+        self.assertIn("builds it from nvngx_dlssnr.dll on the first launch", output)
+        self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), runtime)
+        self.assertFalse((self.game / "dlssnr_amd_pass2.dll").exists(), output)
+        self.assertEqual((self.game / "nvngx_dlssnr.dll").read_bytes(), nv.read_bytes())
+        self.assertFalse((self.game / "dlssnr_on_amd_weights.bin").exists(), output)
+
+    def test_080_older_nvngx_in_game_stays_and_host_folder_gets_the_new_one(self):
+        runtime = b"Harmless 0.8.0 runtime fixture; not an executable."
+        self.trust_080(runtime)
+        (self.package / "version.dll").write_bytes(runtime)
+        old_nv = self.nvngx("310.7.0.0", where=self.game)
+        old_bytes = old_nv.read_bytes()
+        new_nv = self.nvngx("310.8.0.0")
+        code, output = self.run_direct()
+        self.assertEqual(code, 0, output)
+        self.assertIn("Copied nvngx_dlssnr.dll into dlssnr_amd_host", output)
+        self.assertEqual((self.game / "nvngx_dlssnr.dll").read_bytes(), old_bytes)
+        self.assertEqual((self.game / "dlssnr_amd_host" / "nvngx_dlssnr.dll").read_bytes(), new_nv.read_bytes())
+
+    def test_080_without_weights_or_new_enough_nvngx_fails(self):
+        runtime = b"Harmless 0.8.0 runtime fixture; not an executable."
+        self.trust_080(runtime)
+        (self.package / "version.dll").write_bytes(runtime)
+        self.nvngx("310.6.0.0")
+        code, output = self.run_direct()
+        self.assertEqual(code, 1, output)
+        self.assertIn("no nvngx_dlssnr.dll 310.8.0.0 or later to build it from", output)
+        self.assertIn("Install FAILED.", output)
+        self.assertFalse((self.game / "dlssnr_amd_pass1.dll").exists(), output)
+
+    def test_080_from_installed_neuralhub_with_its_imported_nvngx(self):
+        # registry.ini stands in for HKCU (NEURALHUB_STORE); the runtime folder and data\index.ini as
+        # the manager writes them.
+        runtime = b"Harmless 0.8.0 runtime fixture; not an executable."
+        self.trust_080(runtime)
+        rt = self.hub_store / "runtime" / "v0.8.0"
+        rt.mkdir(parents=True)
+        (rt / "neuralhub_host.dll").write_bytes(runtime)
+        (self.hub_store / "registry.ini").write_text(
+            "[NeuralHub]\nStorePath=" + str(self.hub_store) + "\\\nRuntimePath=" + str(rt) + "\\\n"
+            "RuntimeVersion=v0.8.0\nRuntimeAbi=1\n", encoding="utf-8")
+        data = self.hub_store / "data"
+        nv = self.nvngx("310.8.0.0", name="nr-fixture.dll", where=data)
+        (data / "index.ini").write_text("[nr]\nFile=nr-fixture.dll\nFileVersion=310.8.0.0\n", encoding="utf-8")
+        code, output = self.run_direct()
+        self.assertEqual(code, 0, output)
+        self.assertIn("Found danielblnc runtime 0.8.0: " + str(rt / "neuralhub_host.dll"), output)
+        self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), runtime)
+        self.assertEqual((self.game / "nvngx_dlssnr.dll").read_bytes(), nv.read_bytes())
+        self.assertTrue((rt / "neuralhub_host.dll").is_file(), "the installed runtime must stay")
+
+    def test_unsupported_neuralhub_runtime_is_skipped_with_a_note(self):
+        self.ready_install()
+        rt = self.hub_store / "runtime" / "v0.7.0"
+        rt.mkdir(parents=True)
+        (rt / "neuralhub_host.dll").write_bytes(b"some other NeuralHub runtime")
+        (self.hub_store / "registry.ini").write_text(
+            "[NeuralHub]\nRuntimePath=" + str(rt) + "\nRuntimeVersion=v0.7.0\nRuntimeAbi=1\n", encoding="utf-8")
+        code, output = self.run_direct()
+        self.assertEqual(code, 0, output)
+        self.assertIn("NeuralHub's runtime (v0.7.0)", output)
+        self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), FAKE_RUNTIME)
+
+    def test_author_dll_may_name_neuralhub_exe(self):
+        new = embedded_pe(b"Harmless 0.8.0 runtime fixture; not an executable.")
+        self.trust(A080=new)
+        hub = self.neuralhub_exe(new, self.root / "elsewhere neuralhub.exe")
+        code, output = self.run_direct(flags=("-NonInteractive", "-AuthorDll", str(hub)))
+        self.assertEqual(code, 0, output)
+        self.assertIn("Took danielblnc runtime 0.8.0 out of", output)
+        self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), new)
+
+    def no_seven_zip(self):
+        empty = self.root / "no programs"
+        empty.mkdir()
+        for var in ("PROGRAMFILES", "PROGRAMW6432", "PROGRAMFILES(X86)"):
+            self.env[var] = str(empty)
+        self.env["PATH"] = os.pathsep.join([str(PS.parent), str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32")])
+
+    def test_neuralhub_setup_without_7zip_explains_and_keeps_the_runtime_found(self):
+        self.ready_install()
+        (self.package / "NeuralHub_v0.8.0_setup.exe").write_bytes(b"MZ fixture NSIS setup, solid LZMA" + bytes(64))
+        self.no_seven_zip()
+        code, output = self.run_direct()
+        self.assertEqual(code, 0, output)
+        self.assertIn("needs 7-Zip (7z.exe), which is not installed", output)
+        self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), FAKE_RUNTIME)
+
+    def test_neuralhub_setup_is_unpacked_with_7zip(self):
+        seven = next((p for p in (Path(os.environ.get(v, "")) / "7-Zip" / "7z.exe"
+                                  for v in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)")) if p.is_file()), None)
+        if not seven:
+            self.skipTest("7-Zip not installed")
+        new = embedded_pe(b"Harmless 0.8.0 runtime fixture; not an executable.")
+        self.trust(A080=new)
+        work = self.root / "archive work"
+        work.mkdir()
+        self.neuralhub_exe(new, work / "neuralhub.exe")
+        # 7-Zip opens an archive by its signature, so a .7z named like the NSIS setup stands in for it.
+        archive = self.root / "fixture.7z"
+        subprocess.run([str(seven), "a", "-bd", str(archive), str(work / "neuralhub.exe")],
+                       check=True, stdout=subprocess.DEVNULL, timeout=60)
+        archive.replace(self.package / "NeuralHub_v0.8.0_setup.exe")
+        code, output = self.run_direct()
+        self.assertEqual(code, 0, output)
+        self.assertIn("with 7-Zip (the setup is not run)", output)
+        self.assertIn("Took danielblnc runtime 0.8.0 out of NeuralHub_v0.8.0_setup.exe (not run)", output)
+        self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), new)
+
+    def test_neuralhub_stub_in_game_is_moved_aside(self):
+        self.ready_install()
+        (self.game / "winmm.dll").write_bytes(b"MZ fixture stub NeuralHubStub_Abi NeuralHub_HostStart")
+        code, output = self.run_direct()
+        self.assertEqual(code, 0, output)
+        self.assertIn("winmm.dll is NeuralHub's stub", output)
+        self.assertFalse((self.game / "winmm.dll").exists(), output)
+        self.assertTrue(list(self.game.glob("backup-amd-presr-*/winmm.dll.moved")), output)
 
     def test_noninteractive_install_failures_do_not_wait(self):
         code, output = self.run_direct(game=self.root / "missing")

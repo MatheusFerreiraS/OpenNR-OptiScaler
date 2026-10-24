@@ -2,25 +2,42 @@
 .SYNOPSIS
   Install this project's OptiScaler into a game folder.
   Double-click Setup.bat (no args) to pick the game folder, or pass -GameDir.
-  Copies danielblnc's 0.5.x, 0.4.x, 0.3.1 or 0.3.0 runtime (version.dll) to dlssnr_amd_pass1-3.dll,
+  Copies danielblnc's runtime to dlssnr_amd_pass1.dll: 0.8.0 (NeuralHub, recommended) as that one
+  file, or 0.6.0, 0.5.x, 0.4.x, 0.3.1 or 0.3.0 (version.dll) to dlssnr_amd_pass1-3.dll,
   generates weights locally if needed, then installs OptiScaler as the chosen proxy.
 
 .DESCRIPTION
-  Only installs this project. Does not leave danielblnc's version.dll in the game.
+  Only installs this project. Does not leave danielblnc's version.dll (or NeuralHub's stub) in the game.
 
   Put these in the SAME folder as Setup.ps1 (the package root):
     OptiScaler.dll              this fork
     OptiScaler.ini              optional
     OptiScaler\                 FFX / XeSS / Agility deps
-    version.dll                 danielblnc AMD NR 0.5.x, 0.4.x, 0.3.1 or 0.3.0 (copied to pass1-3)
-    nvngx_dlssnr.dll            optional, to generate weights with danielblnc setup
-    dlssnr_on_amd_setup.exe     optional, danielblnc 0.5.x / 0.4.x / 0.3.1 / 0.3.0 setup; its
+    version.dll                 danielblnc AMD NR 0.8.0, 0.6.0, 0.5.x, 0.4.x, 0.3.1 or 0.3.0
+                                (copied to pass1; to pass1-3 before 0.8.0)
+    neuralhub_host.dll          optional, NeuralHub 0.8.0's runtime (used like version.dll)
+    neuralhub.exe               optional, NeuralHub 0.8.0's manager; its runtime is taken out of
+                                it without running it
+    NeuralHub_v0.8.0_setup.exe  optional; needs 7-Zip to take neuralhub.exe out of it (not run)
+    nvngx_dlssnr.dll            optional, to generate weights with danielblnc setup; with 0.8.0
+                                (310.8.0.0 or later) OptiScaler builds the weights from it at launch
+    nvngx_dlss.dll              optional, DLSS-SR through the 0.8.0 host (NeuralHub); copied into
+                                the game folder and dlssnr_amd_host
+    nvngx_dlssd.dll             optional, DLSS-RR through the 0.8.0 host (NeuralHub); copied into
+                                the game folder and dlssnr_amd_host
+    (nvngx_dlss.dll / nvngx_dlssd.dll may also sit in a nvngx\ subfolder of the package root)
+    dlssnr_on_amd_setup.exe     optional, danielblnc 0.6.0 / 0.5.x / 0.4.x / 0.3.1 / 0.3.0 setup; its
                                 version.dll is taken out of it without running it
     dlssnr_on_amd_weights.bin   optional if you already have it
 
-  When several known runtimes are found (version.dll here, pass1 in the game, the one inside
-  dlssnr_on_amd_setup.exe), the newest is installed and its version is printed. Pass
-  -AuthorDll <version.dll> to install a specific one instead.
+  An installed NeuralHub 0.8.0 is found without help (HKCU\Software\Danielblnc\NeuralHub RuntimePath,
+  or %LOCALAPPDATA%\Danielblnc\NeuralHub\runtime\v0.8.0), and so are the weights or the
+  nvngx_dlssnr.dll imported into its data folder. NEURALHUB_STORE moves that store, as for NeuralHub.
+
+  When several known runtimes are found (version.dll here, pass1 in the game, NeuralHub, the one
+  inside dlssnr_on_amd_setup.exe or neuralhub.exe), the newest is installed and its version is
+  printed. Pass -AuthorDll <version.dll | neuralhub_host.dll | neuralhub.exe | setup .exe> to install
+  a specific one instead.
 
 .EXAMPLE
   .\Setup.bat
@@ -51,6 +68,23 @@ function Pause-Exit([int]$code) {
     exit $code
 }
 
+# Runtimes taken out of a setup, neuralhub.exe or -AuthorDll's exe, and 7-Zip's work folders.
+# All live in %TEMP% and go at the end of the install, failed or not.
+$script:tempRuntimes = New-Object System.Collections.Generic.List[string]
+function New-TempRuntimePath([string]$ext = '.dll') {
+    $p = Join-Path $env:TEMP ('amd-presr-version-' + [guid]::NewGuid().ToString('N') + $ext)
+    $script:tempRuntimes.Add($p)
+    return $p
+}
+function Remove-TempRuntimes {
+    foreach ($t in $script:tempRuntimes) {
+        if ($t -match 'amd-presr-version-' -and (Test-Path -LiteralPath $t)) {
+            try { Remove-Item -LiteralPath $t -Recurse -Force } catch { }
+        }
+    }
+    $script:tempRuntimes.Clear()
+}
+
 function Fail([string]$msg) {
     # A runtime taken out of the setup or staged out of the game sits in %TEMP% until the end of
     # a successful install; do not leave it behind on a failed one.
@@ -58,6 +92,7 @@ function Fail([string]$msg) {
         (Test-Path -LiteralPath $script:stagedA -PathType Leaf)) {
         try { Remove-Item -LiteralPath $script:stagedA -Force } catch { }
     }
+    Remove-TempRuntimes
     Write-Host "ERROR: $msg" -ForegroundColor Red
     Write-Host ''
     Write-Host 'Install FAILED.' -ForegroundColor Red
@@ -308,7 +343,8 @@ function Test-FileLocked([string]$path) {
 }
 
 $locked = @()
-foreach ($name in @($Proxy, 'dlssnr_amd_pass1.dll', 'dlssnr_amd_pass2.dll', 'dlssnr_amd_pass3.dll', 'dlssnr_on_amd_weights.bin')) {
+foreach ($name in @($Proxy, 'dlssnr_amd_pass1.dll', 'dlssnr_amd_pass2.dll', 'dlssnr_amd_pass3.dll', 'dlssnr_on_amd_weights.bin',
+        'dlssnr_amd_host\neuralhub_host.dll', 'dlssnr_amd_host\dlssnr_on_amd_weights.bin')) {
     $p = Join-Path $game $name
     if (Test-FileLocked $p) { $locked += $name }
 }
@@ -368,8 +404,10 @@ function Find-FirstFile([string[]]$paths) {
 # 0.3.0 = AmdLayout.h kAmd03; 0.3.1 = kAmd031 (mapped 2026-09-16); 0.4.0 = kAmd040 and
 # 0.4.1 = kAmd041 (2026-09-26). 0.4.2 = kAmd042, public since 2026-09-27. 0.4.3 = kAmd043, public since
 # 2026-09-28. 0.5.0 = kAmd050, public since 2026-09-29. 0.5.1 = kAmd051, public since 2026-10-01 and the
-# recommended one. 0.6.0 = kAmd060, danielblnc's early build for his supporters: accepted when the user has
-# it, never shipped.
+# recommended one until 0.8.0. 0.6.0 = kAmd060, danielblnc's early build for his supporters: accepted when the
+# user has it, never shipped. 0.8.0 = kAmd080, NeuralHub 0.8.0's neuralhub_host.dll and the recommended one:
+# a single module (no pass2/pass3), hosted by OptiScaler as dlssnr_amd_host\neuralhub_host.dll.
+$expectedA080 = 'BE9172B68D0E77F98F04F941F4E2ABE2C73EB01B8AAFE94B26EE31EEFEFB5EB8'
 $expectedA030 = '8321CAE728D28CB7632D0D58D3D913E91132BF7645C126505698FBE4CD5A0138'
 $expectedA031 = 'B108D6407EB7F094A4F9111EDD778EEE7B978B648D413A9FC7AEEDFDD914C154'
 $expectedA040 = 'D62BE3D8B9FBB3C6C81982C4DDB3DFA00EB9662E3206925CBE5B7E1BC6798B80'
@@ -380,10 +418,17 @@ $expectedA050 = 'CDDFB09E019347957BF7B96C95C0E900E8D3062DFAED697A8A96B0A039AEC31
 $expectedA051 = '493B4A3B80A21F7255109172AB7BB01BA08D35F2941718F441768F1ABFC48ACD'
 $expectedA060 = '195C4A891B6EAC4C1CB7671E10FF62BBBE2B17F1DFAE1344DC5A6714E4775721'
 $knownA0217  = 'BC97F3B06718E19042ACAF227BFE15D1E43D4977F9DC2E39994FCC511445FF4E'
-$expectedAuthor = @($expectedA030, $expectedA031, $expectedA040, $expectedA041, $expectedA042, $expectedA043, $expectedA050, $expectedA051, $expectedA060)
+$expectedAuthor = @($expectedA030, $expectedA031, $expectedA040, $expectedA041, $expectedA042, $expectedA043, $expectedA050, $expectedA051, $expectedA060, $expectedA080)
+# Runtimes that run as one module: only pass1 is installed, and stale pass2/pass3 are removed.
+# OptiScaler copies pass1 to dlssnr_amd_host\neuralhub_host.dll and, without weights, builds
+# them there from nvngx_dlssnr.dll.
+$singleModule = @($expectedA080)
+# The oldest nvngx_dlssnr.dll a single-module runtime builds weights from.
+$minNvForBuild = [version]'310.8.0.0'
 # Newest first. When more than one known runtime is at hand (an old version.dll next to
 # Setup.bat or in the game, a newer dlssnr_on_amd_setup.exe), the newest one is installed.
 $runtimeOrder = @(
+    @{ Hash = $expectedA080; Name = '0.8.0' },
     @{ Hash = $expectedA060; Name = '0.6.0' },
     @{ Hash = $expectedA051; Name = '0.5.1' },
     @{ Hash = $expectedA050; Name = '0.5.0' },
@@ -412,7 +457,9 @@ function Get-RuntimeRank([string]$hash) {
 # dlssnr_on_amd_setup.exe 0.3.0 and 0.3.1 append version.dll; since 0.3.3 it sits inside the
 # setup's own .rdata. Either way, take the embedded image out by its PE headers (end of the last
 # section's raw data) and keep it only if its SHA256 is one of $known. The setup is never run
-# for this.
+# for this. neuralhub.exe (NeuralHub 0.8.0's manager) holds the runtime raw too (at 0x320562), next
+# to three other images (neuralhub_stub.dll and the two FidelityFX DLLs): every embedded image is
+# looked at and the first whose SHA256 is a known runtime is taken.
 function Get-EmbeddedRuntime([string]$exe, [string[]]$known) {
     if (-not $exe -or !(Test-Path -LiteralPath $exe -PathType Leaf)) { return $null }
     $bytes = [IO.File]::ReadAllBytes($exe)
@@ -435,7 +482,7 @@ function Get-EmbeddedRuntime([string]$exe, [string[]]$known) {
                     if ($end -gt 0 -and $i + $end -le $bytes.Length) {
                         $hash = ([BitConverter]::ToString($sha.ComputeHash($bytes, $i, [int]$end))).Replace('-', '')
                         if ($known -contains $hash) {
-                            $out = Join-Path $env:TEMP ('amd-presr-version-' + [guid]::NewGuid().ToString('N') + '.dll')
+                            $out = New-TempRuntimePath
                             $fs = [IO.File]::Create($out)
                             try { $fs.Write($bytes, $i, [int]$end) } finally { $fs.Dispose() }
                             return $out
@@ -447,6 +494,148 @@ function Get-EmbeddedRuntime([string]$exe, [string[]]$known) {
         }
     } finally { $sha.Dispose() }
     return $null
+}
+
+function Find-SevenZip {
+    $cmd = Get-Command '7z.exe' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) { return $cmd.Source }
+    foreach ($base in @($env:ProgramFiles, $env:ProgramW6432, ${env:ProgramFiles(x86)})) {
+        if (-not $base) { continue }
+        $p = Join-Path $base '7-Zip\7z.exe'
+        if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
+    }
+    return $null
+}
+
+function Test-NeuralHubExe([string]$exe) {
+    if ((Split-Path -Leaf $exe) -match '^(?i)neuralhub') { return $true }
+    try { return ((Get-Item -LiteralPath $exe).VersionInfo.ProductName -eq 'NeuralHub') } catch { return $false }
+}
+
+# The known runtime inside an exe, in %TEMP%, or $null. The exe is never run. A raw image (the
+# danielblnc setups, neuralhub.exe) is taken out by its PE headers. NeuralHub's NSIS setup
+# (NeuralHub_v0.8.0_setup.exe) packs neuralhub.exe with solid LZMA, which only 7-Zip unpacks here:
+# 7-Zip takes neuralhub.exe out into %TEMP%, and the runtime is taken out of that.
+function Get-RuntimeFromExe([string]$exe) {
+    $found = Get-EmbeddedRuntime $exe $expectedAuthor
+    # neuralhub.exe itself is the manager, not an archive: what is not raw in it is not there.
+    if ($found -or -not (Test-NeuralHubExe $exe) -or (Split-Path -Leaf $exe) -ieq 'neuralhub.exe') { return $found }
+    $name = Split-Path -Leaf $exe
+    $sevenZip = Find-SevenZip
+    if (-not $sevenZip) {
+        Write-Host ("NOTE: {0} is a NeuralHub setup; taking neuralhub.exe out of it needs 7-Zip (7z.exe), which is not installed." -f $name) -ForegroundColor Yellow
+        Write-Host '  Install NeuralHub 0.8.0 (Setup then finds its runtime), or put neuralhub.exe or neuralhub_host.dll' -ForegroundColor Yellow
+        Write-Host '  next to Setup.bat, or pass -AuthorDll <neuralhub.exe | neuralhub_host.dll>.' -ForegroundColor Yellow
+        return $null
+    }
+    $work = New-TempRuntimePath ''
+    [void][IO.Directory]::CreateDirectory($work)
+    try {
+        Write-Host ("Taking neuralhub.exe out of {0} with 7-Zip (the setup is not run)..." -f $name)
+        # 7-Zip's stderr must not become a terminating error under ErrorActionPreference Stop.
+        $eap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $null = & $sevenZip e '-y' '-bd' ('-o' + $work) '--' $exe 'neuralhub.exe' 2>&1
+            $code = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $eap }
+        $hubExe = Join-Path $work 'neuralhub.exe'
+        if ($code -ne 0 -or !(Test-Path -LiteralPath $hubExe -PathType Leaf)) {
+            Write-Host ("NOTE: 7-Zip found no neuralhub.exe in {0} (exit code {1})." -f $name, $code) -ForegroundColor Yellow
+            return $null
+        }
+        return (Get-EmbeddedRuntime $hubExe $expectedAuthor)
+    } finally {
+        try { Remove-Item -LiteralPath $work -Recurse -Force } catch { }
+    }
+}
+
+# NeuralHub's store: NEURALHUB_STORE (its test mode, registry.ini in place of HKCU), else
+# HKCU\Software\Danielblnc\NeuralHub, else %LOCALAPPDATA%\Danielblnc\NeuralHub.
+function Get-NeuralHubInfo {
+    $info = @{ Store = $null; RuntimePath = $null; RuntimeVersion = $null; RuntimeAbi = $null }
+    if ($env:NEURALHUB_STORE) {
+        $info.Store = $env:NEURALHUB_STORE
+        $regIni = Join-Path $env:NEURALHUB_STORE 'registry.ini'
+        if (Test-Path -LiteralPath $regIni -PathType Leaf) {
+            $inSection = $false
+            foreach ($line in [IO.File]::ReadAllLines($regIni)) {
+                if ($line -match '^\s*\[(.+?)\]\s*$') { $inSection = ($Matches[1] -ieq 'NeuralHub'); continue }
+                if ($inSection -and $line -match '^\s*(\w+)\s*=\s*(.*?)\s*$' -and $info.ContainsKey($Matches[1])) {
+                    $key = $Matches[1]
+                    if ($key -ne 'Store') { $info[$key] = $Matches[2] }
+                }
+            }
+        }
+        return $info
+    }
+    try {
+        $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Danielblnc\NeuralHub')
+        if ($k) {
+            try {
+                $info.Store = [string]$k.GetValue('StorePath')
+                $info.RuntimePath = [string]$k.GetValue('RuntimePath')
+                $info.RuntimeVersion = [string]$k.GetValue('RuntimeVersion')
+                $info.RuntimeAbi = $k.GetValue('RuntimeAbi')
+            } finally { $k.Close() }
+        }
+    } catch { }
+    if (-not $info.Store -and $env:LOCALAPPDATA) { $info.Store = Join-Path $env:LOCALAPPDATA 'Danielblnc\NeuralHub' }
+    return $info
+}
+$hub = Get-NeuralHubInfo
+
+# neuralhub_host.dll of an installed NeuralHub: the one RuntimePath names, then runtime\v0.8.0.
+# The SHA256 decides, as for every other candidate.
+function Get-NeuralHubRuntimes {
+    $list = @()
+    if ($hub.RuntimePath) { $list += (Join-Path $hub.RuntimePath 'neuralhub_host.dll') }
+    if ($hub.Store) { $list += (Join-Path $hub.Store 'runtime\v0.8.0\neuralhub_host.dll') }
+    return $list
+}
+
+# NeuralHub's data folder caches the weights and keeps the nvngx_dlssnr.dll imported into it
+# (data\index.ini [nr] File=).
+function Get-NeuralHubWeights {
+    if (-not $hub.Store) { return $null }
+    return (Join-Path $hub.Store 'data\dlssnr_on_amd_weights.bin')
+}
+function Get-NeuralHubNv {
+    if (-not $hub.Store) { return $null }
+    $index = Join-Path $hub.Store 'data\index.ini'
+    if (!(Test-Path -LiteralPath $index -PathType Leaf)) { return $null }
+    $inNr = $false
+    foreach ($line in [IO.File]::ReadAllLines($index)) {
+        if ($line -match '^\s*\[(.+?)\]\s*$') { $inNr = ($Matches[1] -ieq 'nr'); continue }
+        if ($inNr -and $line -match '^\s*File\s*=\s*(.+?)\s*$') {
+            $leaf = $Matches[1]
+            if ($leaf -match '[\\/]|\.\.') { return $null }
+            $p = Join-Path $hub.Store ('data\' + $leaf)
+            if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
+            return $null
+        }
+    }
+    return $null
+}
+
+# File version of an nvngx_dlssnr.dll, or $null.
+function Get-NvVersion([string]$path) {
+    try {
+        $vi = (Get-Item -LiteralPath $path).VersionInfo
+        if ($vi.FileMajorPart -le 0) { return $null }
+        return [version]('{0}.{1}.{2}.{3}' -f $vi.FileMajorPart, $vi.FileMinorPart, $vi.FileBuildPart, $vi.FilePrivatePart)
+    } catch { return $null }
+}
+
+# NeuralHub's stub (neuralhub_stub.dll, installed in a game as version.dll, dxgi.dll, ...) loads
+# the runtime by itself; it cannot stay next to OptiScaler. It exports NeuralHubStub_Abi.
+function Test-NeuralHubStub([string]$path) {
+    try {
+        $item = Get-Item -LiteralPath $path
+        if ($item.Length -gt 4MB) { return $false }
+        $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($path))
+        return $text.Contains('NeuralHubStub_Abi')
+    } catch { return $false }
 }
 
 # Walk every candidate and accept only a file whose SHA256 is a known runtime.
@@ -461,18 +650,27 @@ function Find-AuthorRuntime {
     }
     $best = $null
     $bestRank = -1
+    $hubRuntimes = @(Get-NeuralHubRuntimes)
     foreach ($c in @(
             (Join-Path $Root 'version.dll'),
+            (Join-Path $Root 'neuralhub_host.dll'),
             (Join-Path $Root 'dlssnr_amd_pass1.dll'),
             (Join-Path $game 'version.dll'),
             (Join-Path $game 'dlssnr_amd_pass1.dll')
-        )) {
+        ) + $hubRuntimes) {
         if (-not $c -or !(Test-Path -LiteralPath $c -PathType Leaf)) { continue }
         try {
             $h = Get-Sha256 $c
         } catch { continue }
         $rank = Get-RuntimeRank $h
-        if ($rank -lt 0) { continue }
+        if ($rank -lt 0) {
+            if ($hubRuntimes -contains $c -and -not $script:hubNoted) {
+                $script:hubNoted = $true
+                $ver = if ($hub.RuntimeVersion) { $hub.RuntimeVersion } else { 'unknown version' }
+                Write-Host ("NOTE: NeuralHub's runtime ({0}) at {1} is not one this package supports (0.8.0); skipped." -f $ver, $c) -ForegroundColor Yellow
+            }
+            continue
+        }
         Write-Host ("Found danielblnc runtime {0}: {1}" -f (Get-RuntimeName $h), $c)
         if ($rank -gt $bestRank) { $best = $c; $bestRank = $rank }
     }
@@ -530,18 +728,58 @@ foreach ($candidate in @(
 
 # --- detect danielblnc components ---
 $setup   = Join-Path $Root 'dlssnr_on_amd_setup.exe'
+# Exes the runtime is taken out of (never run): danielblnc's setup, NeuralHub's manager and
+# NeuralHub's setup, all next to Setup.bat.
+$exeSources = @()
+if (Test-Path -LiteralPath $setup -PathType Leaf) { $exeSources += $setup }
+$hubManager = Join-Path $Root 'neuralhub.exe'
+if (Test-Path -LiteralPath $hubManager -PathType Leaf) { $exeSources += $hubManager }
+$exeSources += @(Get-ChildItem -LiteralPath $Root -Filter 'NeuralHub*.exe' -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -ine 'neuralhub.exe' } | Sort-Object Name -Descending |
+    Select-Object -ExpandProperty FullName)
 $nv      = Find-FirstFile @(
     (Join-Path $Root 'nvngx_dlssnr.dll'),
     (Join-Path $game 'nvngx_dlssnr.dll')
 )
-$weights = Find-FirstFile @(
-    (Join-Path $Root 'dlssnr_on_amd_weights.bin'),
-    (Join-Path $game 'dlssnr_on_amd_weights.bin')
-)
+# NGXC DLSS model/provider DLLs used by the 0.8.0 host NGX path (AmdPreSr::ArmDlssNgx):
+# DLSS-SR from nvngx_dlss.dll and DLSS-RR from nvngx_dlssd.dll. Copied next to the game's exe
+# and into dlssnr_amd_host (beside neuralhub_host.dll); ArmDlssNgx points the DLSS search at
+# the host folder's copies when the host module is armed. Not needed for runtimes before 0.8.0.
+$dlssModelNames = @('nvngx_dlss.dll', 'nvngx_dlssd.dll')
+$dlssModelSources = @{}
+foreach ($dlssModelName in $dlssModelNames) {
+    $dlssModelSources[$dlssModelName] = Find-FirstFile @(
+        (Join-Path $Root $dlssModelName),
+        (Join-Path $Root ("nvngx\" + $dlssModelName)),
+        (Join-Path $game $dlssModelName),
+        (Join-Path $game ("dlssnr_amd_host\" + $dlssModelName))
+    )
+}
+function Find-Weights {
+    return (Find-FirstFile @(
+        (Join-Path $Root 'dlssnr_on_amd_weights.bin'),
+        (Join-Path $game 'dlssnr_on_amd_weights.bin'),
+        (Join-Path $game 'dlssnr_amd_host\dlssnr_on_amd_weights.bin'),
+        (Get-NeuralHubWeights)
+    ))
+}
+$weights = Find-Weights
+
+# -AuthorDll may name an exe (neuralhub.exe, NeuralHub's or danielblnc's setup): use the runtime inside it.
+if ($AuthorDll -and (Test-Path -LiteralPath $AuthorDll -PathType Leaf) -and $AuthorDll -match '(?i)\.exe$') {
+    $fromAuthorExe = Get-RuntimeFromExe $AuthorDll
+    if (-not $fromAuthorExe) {
+        Fail "-AuthorDll $AuthorDll holds no DLSS-NR-on-AMD runtime this package supports."
+    }
+    Write-Host ("Took danielblnc runtime {0} out of {1} (not run)." -f (Get-RuntimeName (Get-Sha256 $fromAuthorExe)), $AuthorDll) -ForegroundColor Green
+    $AuthorDll = $fromAuthorExe
+}
 $srcA = Find-AuthorRuntime
 
 $canLmxxf  = [bool]($lmxxfRuntime -and $lmxxfMods)
-$canDaniel = [bool]($srcA -or (Test-Path -LiteralPath $setup -PathType Leaf) -or $weights)
+# Weights in NeuralHub's data folder alone do not ask for this backend.
+$weightsHere = Find-FirstFile @((Join-Path $Root 'dlssnr_on_amd_weights.bin'), (Join-Path $game 'dlssnr_on_amd_weights.bin'))
+$canDaniel = [bool]($srcA -or $exeSources.Count -gt 0 -or $weightsHere)
 
 $installLmxxf  = $false
 $installDaniel = $false
@@ -578,7 +816,7 @@ if ($canLmxxf -and $canDaniel) {
     $activeBackend = 'lmxxf'
     Write-Host ''
     Write-Host "Detected lmxxf backend components. Preparing to install lmxxf backend." -ForegroundColor Cyan
-    Write-Host "NOTE: danielblnc backend files not detected (missing dlssnr_on_amd_setup.exe or version.dll)." -ForegroundColor DarkYellow
+    Write-Host "NOTE: danielblnc backend files not detected (missing NeuralHub, neuralhub.exe, dlssnr_on_amd_setup.exe or version.dll)." -ForegroundColor DarkYellow
 } elseif ($canDaniel) {
     $installLmxxf  = $false
     $installDaniel = $true
@@ -590,12 +828,16 @@ if ($canLmxxf -and $canDaniel) {
     Fail @"
 No valid neural rendering backend files detected.
 - If using lmxxf backend: ensure LmxxfNrRuntime.dll and lmxxf-modules (and native-game-tiled-assets weights folder) are present.
-- If using danielblnc backend: place dlssnr_on_amd_setup.exe + nvngx_dlssnr.dll (or existing version.dll + weights.bin) next to Setup.bat.
+- If using danielblnc backend: install NeuralHub 0.8.0, or place neuralhub.exe / neuralhub_host.dll + nvngx_dlssnr.dll,
+  or dlssnr_on_amd_setup.exe + nvngx_dlssnr.dll (or existing version.dll + weights.bin) next to Setup.bat.
 "@
 }
 
 # --- process danielblnc runtime if selected ---
 $stagedA = $null
+# A single-module runtime (0.8.0): pass1 only, and without weights OptiScaler builds them at launch.
+$single = $false
+$buildWeights = $false
 if ($installDaniel) {
     $gameHasNv = Test-Path -LiteralPath (Join-Path $game 'nvngx_dlssnr.dll') -PathType Leaf
     $gameHasW  = Test-Path -LiteralPath (Join-Path $game 'dlssnr_on_amd_weights.bin') -PathType Leaf
@@ -608,11 +850,14 @@ if ($installDaniel) {
         }
     }
 
-    # Always look inside a setup that is present: a user updating from 0.3.1 drops the new setup
+    # Always look inside every exe that is present: a user updating from 0.3.1 drops the new setup
     # next to Setup.bat while the old runtime is still there (the version.dll an earlier install
-    # saved beside Setup.bat, or pass1 in the game), and must get the setup's newer runtime.
-    if (Test-Path -LiteralPath $setup -PathType Leaf) {
-        $fromSetup = Get-EmbeddedRuntime $setup $expectedAuthor
+    # saved beside Setup.bat, or pass1 in the game), and must get the setup's newer runtime. The
+    # same goes for neuralhub.exe and NeuralHub's setup. None of them is run.
+    $considerExe = {
+        param([string]$exe)
+        $exeName = Split-Path -Leaf $exe
+        $fromSetup = Get-RuntimeFromExe $exe
         if ($fromSetup) {
             $setupHash = Get-Sha256 $fromSetup
             $setupName = Get-RuntimeName $setupHash
@@ -624,26 +869,60 @@ if ($installDaniel) {
             $explicitA = [bool]($AuthorDll -and $srcA -and ($srcA -ieq $AuthorDll))
             if (-not $srcA -or ($newer -and -not $explicitA)) {
                 if ($srcA) {
-                    Write-Host ("dlssnr_on_amd_setup.exe holds runtime {0}, newer than the {1} at {2}; installing {0}." -f $setupName, $foundName, $srcA) -ForegroundColor Yellow
+                    Write-Host ("{3} holds runtime {0}, newer than the {1} at {2}; installing {0}." -f $setupName, $foundName, $srcA, $exeName) -ForegroundColor Yellow
                 }
                 $srcA = $fromSetup
-                # Removed with the other staged copy once the install is done.
+                # Removed with the other staged copies once the install is done.
                 $stagedA = $fromSetup
-                Write-Host "Took danielblnc runtime $setupName out of dlssnr_on_amd_setup.exe (not run): $srcA" -ForegroundColor Green
+                Write-Host "Took danielblnc runtime $setupName out of $exeName (not run): $srcA" -ForegroundColor Green
             } else {
                 if ($newer) {
-                    Write-Host ("WARNING: dlssnr_on_amd_setup.exe holds runtime {0}, newer than the {1} given by -AuthorDll; installing {1} as asked." -f $setupName, $foundName) -ForegroundColor Yellow
+                    Write-Host ("WARNING: {2} holds runtime {0}, newer than the {1} given by -AuthorDll; installing {1} as asked." -f $setupName, $foundName, $exeName) -ForegroundColor Yellow
                 } elseif ($setupHash -ine $foundHash) {
-                    Write-Host ("NOTE: dlssnr_on_amd_setup.exe holds runtime {0}, older than the {1} at {2}; installing {1}." -f $setupName, $foundName, $srcA) -ForegroundColor Yellow
+                    Write-Host ("NOTE: {3} holds runtime {0}, older than the {1} at {2}; installing {1}." -f $setupName, $foundName, $srcA, $exeName) -ForegroundColor Yellow
                 }
                 try { Remove-Item -LiteralPath $fromSetup -Force } catch { }
             }
         } elseif ($srcA) {
-            Write-Host ("NOTE: dlssnr_on_amd_setup.exe holds no runtime this package supports (0.5.x, 0.4.x, 0.3.1, 0.3.0); installing the {0} at {1}." -f (Get-RuntimeName (Get-Sha256 $srcA)), $srcA) -ForegroundColor Yellow
+            Write-Host ("NOTE: {2} holds no runtime this package supports (0.8.0, 0.6.0, 0.5.x, 0.4.x, 0.3.1, 0.3.0); installing the {0} at {1}." -f (Get-RuntimeName (Get-Sha256 $srcA)), $srcA, $exeName) -ForegroundColor Yellow
         }
     }
+    foreach ($exe in $exeSources) { . $considerExe $exe }
 
-    if ((-not $srcA -or -not $weights) -and (Test-Path -LiteralPath $setup -PathType Leaf)) {
+    # An installed NeuralHub whose runtime folder is missing or older still has its manager in the
+    # store, with the runtime inside. Looked at only while no 0.8.0 is at hand.
+    $storeManager = $null
+    if ($hub.Store) { $storeManager = Join-Path $hub.Store 'neuralhub.exe' }
+    $haveRank = -1
+    if ($srcA) { $haveRank = Get-RuntimeRank (Get-Sha256 $srcA) }
+    if ($storeManager -and (Test-Path -LiteralPath $storeManager -PathType Leaf) -and
+        $haveRank -lt (Get-RuntimeRank $expectedA080) -and
+        -not ($AuthorDll -and $srcA -and ($srcA -ieq $AuthorDll)) -and
+        -not ($exeSources | Where-Object { [IO.Path]::GetFullPath($_) -ieq [IO.Path]::GetFullPath($storeManager) })) {
+        Write-Host "Looking for the runtime in the installed NeuralHub manager: $storeManager"
+        . $considerExe $storeManager
+    }
+
+    # Before 0.8.0 this checks whether nvngx_dlssnr.dll can build the weights in place of the setup.
+    function Find-BuildNv {
+        $seen = @()
+        foreach ($c in @($nv, (Join-Path $game 'nvngx_dlssnr.dll'), (Join-Path $Root 'nvngx_dlssnr.dll'), (Get-NeuralHubNv))) {
+            if (-not $c -or !(Test-Path -LiteralPath $c -PathType Leaf)) { continue }
+            $full = [IO.Path]::GetFullPath($c)
+            if ($seen -contains $full) { continue }
+            $seen += $full
+            $v = Get-NvVersion $c
+            if ($v -and $v -ge $minNvForBuild) { return $c }
+            $what = if ($v) { "version $v" } else { 'of unknown version' }
+            Write-Host ("NOTE: {0} is nvngx_dlssnr.dll {1}; 0.8.0 builds its weights only from {2} or later." -f $c, $what, $minNvForBuild) -ForegroundColor Yellow
+        }
+        return $null
+    }
+    $srcIsSingle = [bool]($srcA -and ($singleModule -contains (Get-Sha256 $srcA)))
+    $buildNv = $null
+    if ($srcIsSingle -and -not $weights) { $buildNv = Find-BuildNv }
+
+    if ((-not $srcA -or (-not $weights -and -not $buildNv)) -and (Test-Path -LiteralPath $setup -PathType Leaf)) {
         Write-Host ''
         Write-Host 'version.dll and/or weights.bin not found yet.' -ForegroundColor Yellow
         Write-Host 'Launching danielblnc setup (dlssnr_on_amd_setup.exe) to create them…' -ForegroundColor Yellow
@@ -658,10 +937,7 @@ if ($installDaniel) {
             Write-Host "  danielblnc setup exit code: {0}" -f $p.ExitCode
         } finally { Pop-Location }
 
-        $weights = Find-FirstFile @(
-            (Join-Path $Root 'dlssnr_on_amd_weights.bin'),
-            (Join-Path $game 'dlssnr_on_amd_weights.bin')
-        )
+        $weights = Find-Weights
         if (-not $srcA) {
             $srcA = Find-AuthorRuntime
         }
@@ -669,10 +945,14 @@ if ($installDaniel) {
 
     if (-not $srcA -or !(Test-Path -LiteralPath $srcA -PathType Leaf)) {
         Fail @"
-Still missing a known DLSS-NR-on-AMD runtime (version.dll) after danielblnc setup.
-Supported: 0.5.1 (recommended), 0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1 or 0.3.0, and the 0.6.0 supporter build.
-1. Run dlssnr_on_amd_setup.exe yourself and finish its install
-2. Put the version.dll it produces next to Setup.bat (or leave it in the game folder)
+Still missing a known DLSS-NR-on-AMD runtime (version.dll or neuralhub_host.dll).
+Supported: 0.8.0 (recommended), 0.6.0, 0.5.1, 0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1 or 0.3.0.
+0.8.0 comes with NeuralHub (NeuralHub_v0.8.0_setup.exe):
+1. Install NeuralHub 0.8.0 and run Setup.bat again (its runtime is found without help), or
+2. Put neuralhub.exe (the installed manager) or neuralhub_host.dll next to Setup.bat, or
+3. Put NeuralHub_v0.8.0_setup.exe next to Setup.bat with 7-Zip installed (it is unpacked, not run)
+For the older ones, run dlssnr_on_amd_setup.exe yourself and put the version.dll it produces next
+to Setup.bat (or leave it in the game folder).
 Download from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
 "@
     }
@@ -681,23 +961,24 @@ Download from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
     $nameA = Get-RuntimeName $hashA
     if ($nameA) {
         Write-Host ("danielblnc runtime {0} (SHA256 {1})" -f $nameA, $hashA) -ForegroundColor Green
-        if ((Get-RuntimeRank $hashA) -lt (Get-RuntimeRank $expectedA051)) {
-            Write-Host ("NOTE: runtime {0} is supported, but 0.5.1 is recommended (faster on RDNA4 GPUs)." -f $nameA) -ForegroundColor Yellow
+        if ((Get-RuntimeRank $hashA) -lt (Get-RuntimeRank $expectedA080)) {
+            Write-Host ("NOTE: runtime {0} is supported, but 0.8.0 (NeuralHub) is recommended." -f $nameA) -ForegroundColor Yellow
         }
     } else {
         Write-Host ("danielblnc runtime SHA256: {0}" -f $hashA)
     }
     if ($expectedAuthor -notcontains $hashA) {
         $what = 'unknown build'
-        if ($hashA -eq $knownA0217) { $what = 'this is 0.2.17, not 0.3.0/0.3.1/0.4.x/0.5.x/0.6.0' }
+        if ($hashA -eq $knownA0217) { $what = 'this is 0.2.17, not 0.3.0/0.3.1/0.4.x/0.5.x/0.6.0/0.8.0' }
         Fail @"
 $srcA is not a supported DLSS-NR-on-AMD runtime ($what).
   file:     $srcA
   got:      $hashA
-  expected: $expectedA060 (0.6.0), $expectedA051 (0.5.1), $expectedA050 (0.5.0), $expectedA043 (0.4.3), $expectedA042 (0.4.2), $expectedA041 (0.4.1), $expectedA040 (0.4.0), $expectedA031 (0.3.1) or $expectedA030 (0.3.0)
-Download 0.5.1 from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
+  expected: $expectedA080 (0.8.0), $expectedA060 (0.6.0), $expectedA051 (0.5.1), $expectedA050 (0.5.0), $expectedA043 (0.4.3), $expectedA042 (0.4.2), $expectedA041 (0.4.1), $expectedA040 (0.4.0), $expectedA031 (0.3.1) or $expectedA030 (0.3.0)
+Get 0.8.0 with NeuralHub from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
 "@
     }
+    $single = $singleModule -contains $hashA
 
     try {
         $srcAFull = [IO.Path]::GetFullPath($srcA)
@@ -711,7 +992,7 @@ Download 0.5.1 from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
             if ($pkgIsGame -or (Test-Path -LiteralPath $pkgVersion -PathType Leaf)) {
                 # Never overwrite a version.dll next to Setup.bat here: it may be another runtime.
                 # The package copy is refreshed, keeping the old one, after the install.
-                $stagedA = Join-Path $env:TEMP ('amd-presr-version-' + [guid]::NewGuid().ToString('N') + '.dll')
+                $stagedA = New-TempRuntimePath
             } else {
                 $stagedA = $pkgVersion
             }
@@ -727,25 +1008,52 @@ Download 0.5.1 from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
         Fail "Could not stage danielblnc runtime from $srcA : $($_.Exception.Message)"
     }
 
-    if (-not $weights) {
-        $weights = Join-Path $Root 'dlssnr_on_amd_weights.bin'
-    }
-    if (-not (Test-Path -LiteralPath $weights -PathType Leaf)) {
-        if ((Test-Path -LiteralPath $setup) -and $nv) {
-            Write-Host 'weights.bin still missing — running danielblnc setup again with nvngx…'
-            Push-Location $Root
-            try { Start-Process -FilePath $setup -WorkingDirectory $Root -Wait | Out-Null } finally { Pop-Location }
-            $weights = Find-FirstFile @(
-                (Join-Path $Root 'dlssnr_on_amd_weights.bin'),
-                (Join-Path $game 'dlssnr_on_amd_weights.bin')
-            )
+    if ($single -and -not $weights) {
+        # 0.8.0 builds dlssnr_on_amd_weights.bin itself: OptiScaler hands it nvngx_dlssnr.dll from
+        # beside dlssnr_amd_pass1.dll (or the game's exe) in dlssnr_amd_host, on the first launch.
+        if (-not $buildNv -and -not $srcIsSingle) { $buildNv = Find-BuildNv }
+        if (-not $buildNv) {
+            Fail @"
+Missing dlssnr_on_amd_weights.bin, and no nvngx_dlssnr.dll $minNvForBuild or later to build it from.
+Put nvngx_dlssnr.dll (310.8.0.0 or later; NVIDIA's DLSS Ray Reconstruction/NR DLL) next to Setup.bat
+or in the game folder, or import it in NeuralHub, or put an existing dlssnr_on_amd_weights.bin there.
+OptiScaler builds the weights from it on the first launch.
+"@
         }
-    }
-    if (-not $weights -or !(Test-Path -LiteralPath $weights -PathType Leaf)) {
-        Fail @"
+        $gameNv = Join-Path $game 'nvngx_dlssnr.dll'
+        $hostDir = Join-Path $game 'dlssnr_amd_host'
+        if ([IO.Path]::GetFullPath($buildNv) -ieq [IO.Path]::GetFullPath($gameNv)) {
+            # Already beside dlssnr_amd_pass1.dll.
+        } elseif (!(Test-Path -LiteralPath $gameNv -PathType Leaf)) {
+            Copy-Item -LiteralPath $buildNv -Destination $gameNv -Force
+            Write-Host "Copied nvngx_dlssnr.dll into the game folder (OptiScaler builds the weights from it): $buildNv" -ForegroundColor Green
+        } else {
+            # The game's own nvngx_dlssnr.dll is too old and stays; the host folder's copy comes first.
+            [void][IO.Directory]::CreateDirectory($hostDir)
+            Copy-Item -LiteralPath $buildNv -Destination (Join-Path $hostDir 'nvngx_dlssnr.dll') -Force
+            Write-Host "Copied nvngx_dlssnr.dll into dlssnr_amd_host (OptiScaler builds the weights from it): $buildNv" -ForegroundColor Green
+        }
+        $nv = $buildNv
+        $buildWeights = $true
+    } else {
+        if (-not $weights) {
+            $weights = Join-Path $Root 'dlssnr_on_amd_weights.bin'
+        }
+        if (-not (Test-Path -LiteralPath $weights -PathType Leaf)) {
+            if ((Test-Path -LiteralPath $setup) -and $nv) {
+                Write-Host 'weights.bin still missing, running danielblnc setup again with nvngx...'
+                Push-Location $Root
+                try { Start-Process -FilePath $setup -WorkingDirectory $Root -Wait | Out-Null } finally { Pop-Location }
+                $weights = Find-Weights
+            }
+        }
+        if (-not $weights -or !(Test-Path -LiteralPath $weights -PathType Leaf)) {
+            Fail @"
 Missing dlssnr_on_amd_weights.bin.
 Run dlssnr_on_amd_setup.exe (with nvngx_dlssnr.dll available), then retry.
+With runtime 0.8.0 (NeuralHub) nvngx_dlssnr.dll 310.8.0.0 or later is enough: OptiScaler builds the weights.
 "@
+        }
     }
 
     if ($nv) {
@@ -756,12 +1064,16 @@ Run dlssnr_on_amd_setup.exe (with nvngx_dlssnr.dll available), then retry.
         }
     }
 
-    $wsize = (Get-Item -LiteralPath $weights).Length
-    $whash = Get-Sha256 $weights
-    Write-Host ("weights.bin size={0}  SHA256={1}" -f $wsize, $whash)
-    Write-Host '  (weights SHA256 is per-machine; not compared to a fixed value)'
-    if ($wsize -lt 1MB) {
-        Confirm-Continue ("weights.bin is only {0} bytes — looks truncated or wrong. Continue?" -f $wsize)
+    if ($buildWeights) {
+        Write-Host 'dlssnr_on_amd_weights.bin: none yet; OptiScaler builds it from nvngx_dlssnr.dll on the first launch (dlssnr_amd_host).' -ForegroundColor Yellow
+    } else {
+        $wsize = (Get-Item -LiteralPath $weights).Length
+        $whash = Get-Sha256 $weights
+        Write-Host ("weights.bin size={0}  SHA256={1}" -f $wsize, $whash)
+        Write-Host '  (weights SHA256 is per-machine; not compared to a fixed value)'
+        if ($wsize -lt 1MB) {
+            Confirm-Continue ("weights.bin is only {0} bytes, which looks truncated or wrong. Continue?" -f $wsize)
+        }
     }
 }
 
@@ -788,7 +1100,11 @@ Write-Host ''
 Write-Host "Game folder: $game"
 Write-Host "Proxy:       $Proxy   (OptiScaler.dll installed under this name)"
 if ($installDaniel) {
-    Write-Host "danielblnc runtime:      $srcA  -> will be copied as dlssnr_amd_pass1/2/3.dll"
+    if ($single) {
+        Write-Host "danielblnc runtime:      $srcA  -> will be copied as dlssnr_amd_pass1.dll (0.8.0 runs as one module; OptiScaler hosts it as dlssnr_amd_host\neuralhub_host.dll)"
+    } else {
+        Write-Host "danielblnc runtime:      $srcA  -> will be copied as dlssnr_amd_pass1/2/3.dll"
+    }
     Write-Host 'NOTE: danielblnc version.dll is NOT left in the game folder (this package only installs OptiScaler as the proxy).'
 }
 if ($installLmxxf) {
@@ -825,6 +1141,12 @@ foreach ($f in $found) {
     }
     if ($isAuthorNative) {
         Write-Host ("{0} is the danielblnc NR runtime — moving aside (cannot coexist with OptiScaler)." -f $f.Name) -ForegroundColor Yellow
+        $toMove += $f
+        continue
+    }
+    # NeuralHub installs its stub under a proxy name; the stub loads the runtime into the game itself.
+    if (-not $f.IsOptiScaler -and (Test-NeuralHubStub $f.Path)) {
+        Write-Host ("{0} is NeuralHub's stub (it loads the danielblnc runtime by itself). Moving it aside, since it cannot coexist with OptiScaler." -f $f.Name) -ForegroundColor Yellow
         $toMove += $f
         continue
     }
@@ -1031,15 +1353,69 @@ if (Test-Path -LiteralPath $deps) {
 
 # --- Install selected backends ---
 if ($installDaniel) {
-    Write-Host 'Installing danielblnc runtime (dlssnr_amd_pass1-3.dll) + weights.bin...' -ForegroundColor Cyan
-    foreach ($p in 1..3) {
-        Install-One $srcA ("dlssnr_amd_pass$p.dll")
+    if ($single) {
+        Write-Host 'Installing danielblnc runtime 0.8.0 (dlssnr_amd_pass1.dll, one module)...' -ForegroundColor Cyan
+        Install-One $srcA 'dlssnr_amd_pass1.dll'
+        # Passes 2 and 3 are copies for the runtimes before 0.8.0; one left by an earlier install goes.
+        foreach ($p in 2..3) {
+            $stale = Join-Path $game "dlssnr_amd_pass$p.dll"
+            if (Test-Path -LiteralPath $stale -PathType Leaf) {
+                try {
+                    Remove-Item -LiteralPath $stale -Force
+                    Write-Host ("  removed stale dlssnr_amd_pass{0}.dll (0.8.0 runs as one module)" -f $p) -ForegroundColor DarkYellow
+                } catch {
+                    Fail "Could not remove stale $stale : $($_.Exception.Message). Close the game, then run Setup.bat again."
+                }
+            }
+        }
+    } else {
+        Write-Host 'Installing danielblnc runtime (dlssnr_amd_pass1-3.dll) + weights.bin...' -ForegroundColor Cyan
+        foreach ($p in 1..3) {
+            Install-One $srcA ("dlssnr_amd_pass$p.dll")
+        }
     }
     $gameWeightsBin = Join-Path $game 'dlssnr_on_amd_weights.bin'
+    $hostWeightsBin = Join-Path $game 'dlssnr_amd_host\dlssnr_on_amd_weights.bin'
     if (Test-Path -LiteralPath $gameWeightsBin -PathType Leaf) {
         Write-Host 'dlssnr_on_amd_weights.bin already present in game folder.' -ForegroundColor Green
+    } elseif ($buildWeights) {
+        Write-Host 'dlssnr_on_amd_weights.bin: OptiScaler builds it from nvngx_dlssnr.dll on the first launch (in dlssnr_amd_host).' -ForegroundColor Yellow
+    } elseif ($single -and (Test-Path -LiteralPath $hostWeightsBin -PathType Leaf)) {
+        Write-Host 'dlssnr_on_amd_weights.bin already built in dlssnr_amd_host.' -ForegroundColor Green
     } else {
         Install-One $weights 'dlssnr_on_amd_weights.bin'
+    }
+
+    if ($single) {
+        # DLSS model DLLs for the 0.8.0 host NGX path. When present they are copied next to the
+        # game's exe and into dlssnr_amd_host (the host folder ArmDlssNgx reads them from); a
+        # copy already in place is left as-is. Missing ones do not stop the install: only the
+        # matching feature (SR from nvngx_dlss.dll, RR from nvngx_dlssd.dll) keeps working with
+        # NVIDIA's stock DLL placed there manually.
+        $hostModelDir = Join-Path $game 'dlssnr_amd_host'
+        foreach ($dlssModelName in $dlssModelNames) {
+            $srcModel = $dlssModelSources[$dlssModelName]
+            if (-not $srcModel) {
+                Write-Host "NOTE: $dlssModelName not found; DLSS '$(if ($dlssModelName -ieq 'nvngx_dlss.dll') { 'DLSS-SR' } else { 'DLSS-RR' })' with the 0.8.0 host needs it next to Setup.bat (or in a nvngx\ subfolder). Place NVIDIA's $dlssModelName there and run Setup.bat again." -ForegroundColor DarkYellow
+                continue
+            }
+            $alreadyGame = (Test-Path -LiteralPath (Join-Path $game $dlssModelName) -PathType Leaf) -and
+                ((Get-Item -LiteralPath (Join-Path $game $dlssModelName)).Length -eq (Get-Item -LiteralPath $srcModel).Length)
+            if (-not $alreadyGame) {
+                Install-One $srcModel $dlssModelName
+            }
+            $alreadyHost = (Test-Path -LiteralPath (Join-Path $hostModelDir $dlssModelName) -PathType Leaf) -and
+                ((Get-Item -LiteralPath (Join-Path $hostModelDir $dlssModelName)).Length -eq (Get-Item -LiteralPath $srcModel).Length)
+            if (-not $alreadyHost) {
+                if (-not (Test-Path -LiteralPath $hostModelDir -PathType Container)) {
+                    [void][IO.Directory]::CreateDirectory($hostModelDir)
+                }
+                Copy-Item -LiteralPath $srcModel -Destination (Join-Path $hostModelDir $dlssModelName) -Force
+                Write-Host "Copied $dlssModelName into dlssnr_amd_host (ArmDlssNgx reads the host module's DLSS provider from there)." -ForegroundColor Green
+            } else {
+                Write-Host "$dlssModelName already in dlssnr_amd_host." -ForegroundColor Green
+            }
+        }
     }
 }
 
@@ -1272,6 +1648,7 @@ try {
 } catch {
     Write-Host "NOTE: could not copy danielblnc files into the package folder: $($_.Exception.Message)" -ForegroundColor Yellow
 }
+Remove-TempRuntimes
 
 Write-Host ''
 Write-Host 'Done.' -ForegroundColor Green
@@ -1293,7 +1670,13 @@ if ($installDaniel -and $installLmxxf) {
 } elseif ($installLmxxf) {
     Write-Host "  Installed:      OptiScaler + lmxxf runtime (LmxxfNrRuntime.dll, modules, shaders)" -ForegroundColor Green
 } else {
-    Write-Host "  Installed:      OptiScaler + danielblnc runtime (dlssnr_amd_pass1-3.dll + weights)" -ForegroundColor Green
+    if ($single -and $buildWeights) {
+        Write-Host "  Installed:      OptiScaler + danielblnc runtime 0.8.0 (dlssnr_amd_pass1.dll; weights built at first launch)" -ForegroundColor Green
+    } elseif ($single) {
+        Write-Host "  Installed:      OptiScaler + danielblnc runtime 0.8.0 (dlssnr_amd_pass1.dll + weights)" -ForegroundColor Green
+    } else {
+        Write-Host "  Installed:      OptiScaler + danielblnc runtime (dlssnr_amd_pass1-3.dll + weights)" -ForegroundColor Green
+    }
 }
 if ($keptA -or $keptW) {
     Write-Host "  Package keeps:  $keptA"

@@ -3732,10 +3732,7 @@ void EvaluateAtSeam(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* par
         // every frame to the seam they refuse, and NR would stay off.
         const auto kind = DlssNr::Backend::ActiveKindFromConfig();
         const bool beforeSrOnly = kind == DlssNr::Backend::Kind::Lmxxf || kind == DlssNr::Backend::Kind::Mochizuki;
-        // danielblnc async runs after the finished frame: a correction one frame late would build up in the
-        // upscaler's history before it.
-        const bool placedAfter =
-            (cfg.DlssNrApplyAfterRR.value_or_default() || DlssNr::AmdBridge::AsyncSession()) && !beforeSrOnly;
+        const bool placedAfter = cfg.DlssNrApplyAfterRR.value_or_default() && !beforeSrOnly;
 
         if (postPlacement != placedAfter)
         {
@@ -3745,7 +3742,7 @@ void EvaluateAtSeam(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* par
                 ReportSkipOnce(forcePost ? "Ray Reconstruction is active; this AMD NR runtime runs before Super "
                                            "Resolution only"
                                          : "AMD neural: this NR runtime runs before Super Resolution only");
-            else if (postPlacement)
+            else if (postPlacement && !forcePost)
                 ReportSkipOnce(forcePost ? "Ray Reconstruction is active; choose \"After the finished frame\" to "
                                            "process its output"
                                          : "AMD neural: choose \"After the finished frame\" to run over it");
@@ -3790,7 +3787,10 @@ void EvaluateAtSeam(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* par
     // RR already reconstructs and upscales; never edit its noisy input or inherit SR's multipass cost.
     if (forcePost && !cfg.DlssNrApplyAfterRR.value_or_default())
     {
-        ReportSkipOnce("Ray Reconstruction is active; enable ApplyAfterRR to process its output");
+        // With a pre-upscale placement the model already ran at the seam before RR (forcePost is
+        // false there), so declining the post seam is routine and stays quiet.
+        if (!cfg.DlssNrRunBeforeSr.value_or_default() && !cfg.DlssNrPreUpscale.value_or_default())
+            ReportSkipOnce("Ray Reconstruction is active; enable ApplyAfterRR to process its output");
         return;
     }
 
@@ -4110,6 +4110,30 @@ void EvaluateBeforeUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramet
 }
 
 ID3D12Resource* PreUpscaleResult() { return g_nr.wroteTarget ? g_nr.preOut : nullptr; }
+
+ID3D12Resource* EvaluateAfterDenoise(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
+                                     ID3D12Resource* composed)
+{
+    // FSR-RR runs on AMD only, where the AMD runtimes are the model.
+    if (cmdList == nullptr || params == nullptr || composed == nullptr || !DlssNr::AmdBridge::HasFiles())
+        return nullptr;
+
+    // The bridge reads the colour from the block and substitutes its answer there: show it the composed frame,
+    // take the answer, and leave the title's colour behind.
+    ID3D12Resource* title = nullptr;
+    params->Get(NVSDK_NGX_Parameter_Color, (void**) &title);
+    params->Set(NVSDK_NGX_Parameter_Color, composed);
+
+    EvaluateBeforeUpscale(cmdList, params);
+
+    ID3D12Resource* answer = nullptr;
+    if (DlssNr::AmdBridge::HasReplacement(params))
+        params->Get(NVSDK_NGX_Parameter_Color, (void**) &answer);
+
+    DlssNr::AmdBridge::Restore(params);
+    params->Set(NVSDK_NGX_Parameter_Color, title);
+    return answer;
+}
 
 bool EvaluateStage(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params, ID3D12Resource* source,
                    ID3D12Resource* dest, ID3D12CommandQueue* timingQueue)

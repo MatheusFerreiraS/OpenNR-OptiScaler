@@ -14,12 +14,12 @@ public:
  NativeHipNetwork()=default;NativeHipNetwork(const NativeHipNetwork&)=delete;
  ~NativeHipNetwork(){if(!bridge.WaitForSubmittedWork())return;if(color)color->Release();if(history)history->Release();}
  void Create(ID3D12CommandQueue*q,ID3D12Resource*rgb,const std::vector<float>&noise,const std::wstring&directory,ID3D12Resource*temporal,UINT post_shift,bool direct_input=false,bool experimental_temporal=false,const std::vector<float>&fast_history_row={},bool low_frequency_temporal=false,bool caller_never_history=false){
-  if(color||!rgb)throw std::runtime_error("HIP network initialization");fast_history_consumer=!fast_history_row.empty()||low_frequency_temporal;NativeFastHistoryPolicy::RequireSinglePass(fast_history_consumer,hip_reference::MultiPassFromEnvironment());auto g=NativeCurrentNetworkGeometry();hip_reference::Options o;o.width=g.processing_width;o.height=g.processing_height;o.post_shift=post_shift;o.fast_vit=true;o.wmma=o.wave=o.tiled=o.pooled=true;o.assets=Utf8(directory);if(const char*skip=std::getenv("DLSS5_SKIP_BLOCKS"))o.skip_blocks=hip_reference::ParseSkipBlocks(skip);
+  if(color||!rgb)throw std::runtime_error("HIP network initialization");fast_history_consumer=!fast_history_row.empty()||low_frequency_temporal;NativeFastHistoryPolicy::RequireSinglePass(fast_history_consumer,hip_reference::MultiPassFromEnvironment());auto g=NativeCurrentNetworkGeometry();hip_reference::Options o;o.width=g.processing_width;o.height=g.processing_height;o.small_geometry=g.small_model;o.post_shift=post_shift;o.fast_vit=true;o.wmma=o.wave=o.tiled=o.pooled=true;o.assets=Utf8(directory);if(const char*skip=std::getenv("DLSS5_SKIP_BLOCKS"))o.skip_blocks=hip_reference::ParseSkipBlocks(skip);
   const bool fast=hip_reference::FastPrefixFromEnvironment();
   if(fast)o.fast_c32=o.fused_c32=o.fused_ffn=o.fast_mh=o.fused_mh=o.mh_wave=o.fast_deep=o.fast_prefix=o.packed_weights=o.packed_c32=o.fp8_normalized=o.fp8_ffn=o.fp8_av=o.fp8_deep=o.fp8_middle=o.half_c32=o.crop_c32=o.fused_qkv_norm=o.fused_mh_ffn=o.tiled_mh_ffn=o.mapped_c32=o.vit_blocked=o.vit_contract_blocked=true;
   o.tiled_ffn_min_c=256;
   if(fast){o.vit_weight_mask=1;o.vit_pack_input=true;o.elide_identity_shift=true;o.raw_chain=true;o.pre_main8=true;o.post_merge_fold=true;o.fused_ffn_project=true;o.split_ffn_fused=true;o.split_mix_blocked=true;o.split_project_blocked=true;o.vit_qkv_blocked=true;o.vit_qkv_fused=true;o.mh_project_crop=true;o.mh_input_mapped=true;o.prefix_fused=true;o.direct_prefix_input=true;o.grouped_mh_contract=true;o.ffn_qkv=true;o.ffn_qkv_max_c=256;o.vit_attn_fused=true;o.vit_qkv_fp8=true;o.vit_expand_frag=true;/* 2026-09-16: fused ViT attention, byte ViT QKV, fragment-native expand weights (-0.23ms, bit-exact) */o.split_mix_h16w=true;/* 2026-09-16 21:50: C512 mix weights prepacked half (-0.12ms, bit-exact) */o.pool_project_h16w=true;/* 2026-09-16 22:20: downsample projection weights prepacked half/E4M3 (-0.21ms, bit-exact) */o.decoder_h16w=true;/* 2026-09-16 22:40: decoder up-projection weights prepacked half (-0.07ms, bit-exact) */o.c512_qkv_frag=true;/* 2026-09-16 20:45: C512 QKV from projection E4M3 tiles + fragment weights, no LDS (-0.37ms, bit-exact) */o.c512_proj_frag=true;o.c512_proj_tiles=true;o.mh_proj_diag=true;o.post_head_fused=true;o.c32_finish_fused=true;o.down_crop_fused=true;o.pool32_h16w=true;o.pool_project_group=true;o.vit_proj_frag=true;o.vit_qkv_frag=true;o.vit_contract_frag=true;/* 2026-09-16 21:55: C512 attention projection + split projection in the same shape (-0.31ms together, bit-exact) */o.prefix_inline=true;/* 2026-09-17 02:25: null on 09-17 00:21 while the block-0 kernel was issue-bound; -0.27ms once its F()/load serialization was fixed, bit-exact */}
-  NativeApplyHipEnvironment(o,fast);
+  NativeApplyHipEnvironment(o,fast);o.integration.allow_small_model=!low_frequency_temporal;
   const wchar_t*modules=_wgetenv(L"DLSS5_HIP_MODULES");o.modules=modules&&*modules?Utf8(modules):Utf8(directory+L"\\HIP");o.experimental_temporal=experimental_temporal&&temporal&&NativeExperimentalTemporalCompatible()&&g.valid_width==g.processing_width;o.temporal_valid_height=g.valid_height;if(direct_input)bridge.RequestDirectInput();if(!fast_history_row.empty()){bridge.RequestDirectHistory();bridge.RequestPostAuxiliary(fast_history_row);}
   if(caller_never_history){if(temporal||!fast_history_row.empty()||experimental_temporal)throw std::runtime_error("never-history caller capability conflict");bridge.RequestNeverHistory();}
   try{bridge.Create(q,o,noise);NativeFastHistoryPolicy::RequireSinglePass(fast_history_consumer,bridge.MultiPass());if(fast_history_consumer)bridge.SetAdaptiveReuseAllowed(false);}catch(...){LogDevice();throw;}LogDevice();
@@ -46,7 +46,7 @@ private:
  int hot_generation=-1;
  void ApplyHotMultiPass(){
   auto&hot=NativeHotFlags::Instance();if(!NativeHotFlags::Enabled()&&!NativeHotFlags::HotkeyCode())return;
-  hot.PollMultiPassHotkey(bridge.MultiPass(),!fast_history_consumer);
+  NativePollRequestedModelMode(true);
   const auto v=hot.Get();if(int(v.generation)==hot_generation)return;
   // Reject the entire snapshot before applying prediction/skin setters as well.
   NativeFastHistoryPolicy::RequireSinglePass(fast_history_consumer,v.multi_pass>0?unsigned(v.multi_pass):bridge.MultiPass());
@@ -56,7 +56,7 @@ private:
   // Prepare the skin kernel/resources before bridge enters the producer wait.
   if(v.multi_pass_skin_protect>=0&&bool(v.multi_pass_skin_protect)!=bridge.MultiPassSkinProtect()){bridge.MultiPassSkinProtect(v.multi_pass_skin_protect!=0);
    if(FILE*f=_wfopen(NativeLabPath(L"logs\\native-game-oneshot.txt").c_str(),L"ab")){const unsigned n=v.multi_pass>0?unsigned(v.multi_pass):bridge.MultiPass();fprintf(f,"pid=%lu tick=%llu event=multi_pass_skin_protect multi_pass=%u option=%u skin_active=%u (hot reload)\n",GetCurrentProcessId(),GetTickCount64(),n,unsigned(bridge.MultiPassSkinProtect()),unsigned(bridge.MultiPassSkinProtect()&&n>1));fclose(f);}}
-  if(v.multi_pass>0&&unsigned(v.multi_pass)!=bridge.MultiPass()){const unsigned was=bridge.MultiPass();bridge.MultiPass(unsigned(v.multi_pass));
+  if(v.multi_pass>=0&&unsigned(v.multi_pass)!=bridge.ModelMode()){const unsigned was=bridge.ModelMode();bridge.SetModelMode(unsigned(v.multi_pass));std::fprintf(stderr,"model_hot_reload requested=%sx effective=%sx\n",dlss5_mode::Name(bridge.ModelMode()),dlss5_mode::Name(bridge.EffectiveModelMode()));
    if(FILE*f=_wfopen(NativeLabPath(L"logs\\native-game-oneshot.txt").c_str(),L"ab")){fprintf(f,"pid=%lu tick=%llu event=multi_pass detail=%u->%u multi_pass_predict=%u predict_active=%u multi_pass_skin_protect=%u skin_active=%u (hot reload)\n",GetCurrentProcessId(),GetTickCount64(),was,bridge.MultiPass(),unsigned(bridge.MultiPassPredict()),unsigned(bridge.MultiPassPredict()&&bridge.MultiPass()==3),unsigned(bridge.MultiPassSkinProtect()),unsigned(bridge.MultiPassSkinProtect()&&bridge.MultiPass()>1));fclose(f);}}
  }
  void FrameSubmitted(){
@@ -65,6 +65,7 @@ private:
 public:
  void LogDevice(){if(FILE*f=_wfopen(NativeLabPath(L"logs\\native-hip-device.txt").c_str(),L"ab")){fprintf(f,"pid=%lu device=%s arch=%s modules=%s match=%s runtime=%d\n",GetCurrentProcessId(),bridge.adapter_name.c_str(),bridge.architecture.c_str(),bridge.module_directory.c_str(),bridge.device_match.c_str(),bridge.runtime_version);fclose(f);}}
  unsigned frames{};
+ void SyncModelMode(){unsigned n=dlss5_mode::Requested();if(n!=bridge.ModelMode())bridge.SetModelMode(n);}
  ID3D12Resource*Output()const{return bridge.Output();}
  /* Shared network input when created with direct_input (the RGB input pass writes it); nullptr otherwise. */
  ID3D12Resource*DirectInput()const{return bridge.DirectInput();}

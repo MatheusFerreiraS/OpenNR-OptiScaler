@@ -9,6 +9,8 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <initializer_list>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -438,6 +440,64 @@ inline HMODULE Load(const wchar_t* path, const AmdLayout* layout)
     lastPathFailures = context.pathFailures;
     if (context.invalid || context.suppressedCount != 1 || context.suppressedBase != module)
         throw std::runtime_error(Detail::FailureDetails(context, module, callsBefore));
+    return module;
+}
+
+namespace Detail
+{
+// Overwrite the first bytes of a function of the module, after checking that they are still the expected prologue.
+inline void PatchEntry(HMODULE module, std::uint32_t rva, std::initializer_list<unsigned char> expected,
+                       std::initializer_list<unsigned char> replacement, const char* what)
+{
+    auto* entry = reinterpret_cast<unsigned char*>(reinterpret_cast<std::uintptr_t>(module) + rva);
+    if (!Readable(entry, expected.size()) || !std::equal(expected.begin(), expected.end(), entry))
+        throw std::runtime_error(std::string("AMD runtime: unexpected code at ") + what + "; initialization stopped");
+    DWORD previous = 0;
+    if (!VirtualProtect(entry, replacement.size(), PAGE_EXECUTE_READWRITE, &previous))
+        throw std::runtime_error(std::string("AMD runtime: could not patch ") + what);
+    std::copy(replacement.begin(), replacement.end(), entry);
+    DWORD unused = 0;
+    VirtualProtect(entry, replacement.size(), previous, &unused);
+    FlushInstructionCache(GetCurrentProcess(), entry, replacement.size());
+}
+} // namespace Detail
+
+// abi 2 (NeuralHub's host module, 0.8.0 and later). Call only after IdentifyRuntime has verified the file. The file
+// must be named neuralhub_host.dll: under that name its DllMain only notes the module, without the proxy, the
+// process init or any thread. Before the init runs here, DetourAttachEx becomes "xor eax,eax; ret" (every attach
+// succeeds without touching the target, so each saved original stays the real function) and RequestStage becomes
+// "ret" (no interceptor is installed: no DRED, no dummy swapchain, no FFX, XeSS or Present interception, no import
+// table redirect). The once-flag is the one NeuralHub_HostStart takes. Direct-mode paths: the module's own folder
+// holds its neuralhub.ini, dlssnr_on_amd.ini and dlssnr_on_amd.log.
+inline HMODULE LoadHost(const wchar_t* path, const AmdLayout* layout)
+{
+    if (layout->abi < 2 || !layout->processInit || !layout->onceFlag || !layout->detourAttachEx ||
+        !layout->requestStage)
+        throw std::runtime_error("AMD runtime has no verified host-mode contract");
+    if (CompareStringOrdinal(std::filesystem::path(path).filename().c_str(), -1, L"neuralhub_host.dll", -1, TRUE) !=
+        CSTR_EQUAL)
+        throw std::runtime_error("AMD runtime 0.8.0 must be loaded as neuralhub_host.dll");
+    // NeuralHub's own stub runs its copy with every hook in place; two hosts in one game cannot share it.
+    if (GetModuleHandleW(L"neuralhub_host.dll"))
+        throw std::runtime_error("NeuralHub's runtime is already loaded in this game (its own mod loader is "
+                                 "installed here): remove it with NeuralHub to use it through OptiScaler");
+    HMODULE module = LoadLibraryExW(path, nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (!module)
+        throw std::runtime_error("Private AMD runtime LoadLibrary failed: " + std::to_string(GetLastError()));
+    HMODULE pinned {};
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                            reinterpret_cast<LPCWSTR>(module), &pinned))
+        throw std::runtime_error("Could not pin loaded AMD runtime; initialization stopped");
+    // mov [rsp+0x20],r9 / push rbp; push r15 / sub rsp,0x38; cmp edx,3
+    Detail::PatchEntry(module, layout->detourAttachEx, { 0x4c, 0x89, 0x4c, 0x24, 0x20 }, { 0x31, 0xc0, 0xc3 },
+                       "DetourAttachEx");
+    Detail::PatchEntry(module, layout->requestStage, { 0x55, 0x41, 0x57 }, { 0xc3 }, "RequestStage");
+    if (layout->nrStageCallback)
+        Detail::PatchEntry(module, layout->nrStageCallback, { 0x48, 0x83, 0xec, 0x38, 0x83, 0xfa, 0x03 },
+                           { 0x31, 0xc0, 0xc3 }, "NrStageCallback");
+    *reinterpret_cast<volatile std::uint8_t*>(reinterpret_cast<std::uintptr_t>(module) + layout->onceFlag) = 1;
+    reinterpret_cast<void (*)(HMODULE, void*)>(reinterpret_cast<std::uintptr_t>(module) + layout->processInit)(
+        module, nullptr);
     return module;
 }
 } // namespace AmdPreSr::RuntimeHostLoad

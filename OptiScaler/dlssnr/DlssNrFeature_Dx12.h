@@ -94,6 +94,14 @@ ID3D12Resource* PreUpscaleResult();
 bool EvaluateStage(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params, ID3D12Resource* source,
                    ID3D12Resource* dest, ID3D12CommandQueue* timingQueue = nullptr);
 
+// FSR-RR denoises and enlarges in two dispatches, so under it the before-SR placement of the AMD runtimes runs
+// between them: on the composed, denoised colour at render resolution rather than on the title's noisy one.
+// composed must be in NON_PIXEL_SHADER_RESOURCE (or ColorResourceBarrier's state). Returns the surface the
+// upscale should read instead, in that same state, or null when the pass did not run. The block's Color is the
+// title's again on return.
+ID3D12Resource* EvaluateAfterDenoise(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,
+                                     ID3D12Resource* composed);
+
 // The surface the stage before this one should write, matched to the frame this one will write.
 // Rebuilt when that frame changes size or format. Owned here, so the caller holds a borrowed pointer.
 ID3D12Resource* StageInputSurface(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* like);

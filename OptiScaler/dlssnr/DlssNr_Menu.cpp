@@ -393,13 +393,13 @@ static void UnsetPerson(Config* c)
 }
 
 // Every control a runtime's page shows, except where NR runs (Enable, NR without upscaling, the placement before or
-// after SR and RR, the runtime choice), what the installer sets (AmdAsync), what needs a restart (MochizukiAco) and
-// the exposure anchors captured in this game.
+// after SR and RR, the runtime choice), what needs a restart (MochizukiAco) and the exposure anchors captured in
+// this game.
 static void ResetLmxxf(Config* c)
 {
     Unset(c->DlssNrPasses, c->DlssNrTransferStrength, c->DlssNrColourStrength, c->DlssNrDebugView, c->LmxxfTemporal,
           c->LmxxfSmoothStrength, c->LmxxfSmoothThreshold, c->LmxxfSmoothResidual, c->LmxxfStyle, c->LmxxfVitReuse,
-          c->LmxxfCompact1080, c->LmxxfPassEstimate, c->LmxxfSkinProtect, c->LmxxfAutoExposure);
+          c->LmxxfCompact1080, c->LmxxfPassEstimate, c->LmxxfSkinProtect, c->LmxxfAutoExposure, c->LmxxfOriginalModel);
     UnsetReno(c);
     UnsetPerson(c);
 }
@@ -677,6 +677,15 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::EndDisabled();
             ImGui::SeparatorText("Effect");
             int passes = std::clamp(int(config->DlssNrPasses.value_or_default()), 1, 3);
+            {
+                bool original = config->LmxxfOriginalModel.value_or_default();
+                if (ImGui::Checkbox("Old model", &original))
+                    config->LmxxfOriginalModel = original;
+                HelpMarker("Off: the new model of NVIDIA's 310.9.16 DLL (lmxxf 0.44's Small), about a third"
+                           "\nfaster, when native-game-tiled-assets\\small is installed (without it the old"
+                           "\none runs anyway), with any number of passes."
+                           "\nOn: the 71-block model lmxxf ran before. Switching rebuilds the model.");
+            }
             if (ImGui::SliderInt("Passes", &passes, 1, 3))
                 config->DlssNrPasses = uint32_t(passes);
             HelpMarker("Runs the model again on its own output, for a stronger effect."
@@ -719,9 +728,8 @@ void RenderMenu(Config* config, float menuResScale)
             HelpMarker("How much of the model's colour change reaches the frame. Above 1 it is"
                        "\nexaggerated, up to twice its size at 2.");
             RenoCompositionControls(config);
-            // Async runs one pass whatever the slider says.
             ImGui::SeparatorText("Person protection");
-            PersonProtectionControls(config, DlssNr::AmdBridge::AsyncSession() ? 1u : UINT(passes));
+            PersonProtectionControls(config, UINT(passes));
             ImGui::SeparatorText("Speed");
             bool vitReuse = config->LmxxfVitReuse.value_or_default();
             if (ImGui::Checkbox("Reuse on still scenes", &vitReuse))
@@ -733,7 +741,8 @@ void RenderMenu(Config* config, float menuResScale)
             if (ImGui::Checkbox("Compact 1080 tier", &compact))
                 config->LmxxfCompact1080 = compact;
             HelpMarker("For inputs that use the 1080 tier: runs it on 1088 rows instead of 1152, about 4% faster."
-                       "\nSlightly lossy, most at the bottom of the picture. Changing it rebuilds the model.");
+                       "\nSlightly lossy, most at the bottom of the picture. Changing it rebuilds the model."
+                       "\nThe new model always runs NVIDIA's 1152 rows.");
             ImGui::SeparatorText("Inspect");
             int debugView = std::clamp(int(config->DlssNrDebugView.value_or_default()), 0, 4);
             if (ImGui::Combo("Debug view", &debugView,
@@ -830,16 +839,9 @@ void RenderMenu(Config* config, float menuResScale)
                     config->DlssNrApplyAfterRR = false;
                     DlssNr::AmdBridge::InvalidateHistory();
                 }
-                HelpMarker("Sets ApplyAfterRR to false. mochizuki runs the same either way; danielblnc then"
-                           "\nruns before Super Resolution too, if you switch back to it.");
-            }
-            if (auto feature = State::Instance().currentFeature; feature != nullptr)
-            {
-                const auto upscaler = feature->GetUpscalerType();
-                if (upscaler == Upscaler::DLSSD || upscaler == Upscaler::FSR_RR)
-                    ImGui::TextColored(warning, "This title drives Ray Reconstruction, which has no seam before it:"
-                                                "\nthe model is not running. mochizuki runs before Super Resolution"
-                                                "\nonly.");
+                HelpMarker("Sets ApplyAfterRR to false. mochizuki runs before Super Resolution (and before Ray"
+                           "\nReconstruction); danielblnc then runs before Super Resolution / Ray Reconstruction too,"
+                           "\nif you switch back to it.");
             }
 
             const auto liveSlider = [](const char* label, CustomOptional<float>& option, float lo, float hi)
@@ -1106,7 +1108,7 @@ void RenderMenu(Config* config, float menuResScale)
                     config->AmdFixedSeed = fixedSeed;
                 HelpMarker("On (default): danielblnc's runtime uses the same noise every frame. With a new"
                            "\nnoise each frame, the model's temporal history shows it as flicker and"
-                           "\nshimmer under an upscaler. danielblnc 0.4.1 to 0.6.0.");
+                           "\nshimmer under an upscaler. danielblnc 0.4.1 to 0.8.0.");
             }
             float stabilizer = finalImage && !config->AmdStabilizerStrength.has_value()
                                    ? .8f
@@ -1259,46 +1261,12 @@ void RenderMenu(Config* config, float menuResScale)
                                ? "The model is handed the render-resolution frame the upscaler is about to"
                                  "\nread, so the percentage below is of that render resolution. The upscaler"
                                  "\nthen enlarges the model\'s work along with everything else."
-                                 "\n\nA game driving Ray Reconstruction never reaches this point: RR denoises"
-                                 "\nand enlarges in one dispatch, leaving no seam before it. Pick the other"
-                                 "\nplacement there, or the model will not run at all."
                                : "The model is handed the finished frame, and the percentage below is of"
                                  "\nthat frame: at 50% a 4K picture is reduced to 1080p, the model runs on"
-                                 "\nit, and its answer is enlarged back to fill the frame."
-                                 "\n\nThis is the placement Ray Reconstruction titles need, and the only one"
-                                 "\nthey can reach.");
+                                 "\nit, and its answer is enlarged back to fill the frame.");
 
-                int timing = config->AmdAsync.value_or_default() ? 1 : 0;
-                if (ImGui::Combo("Timing", &timing, "Same frame\0Async\0"))
-                    config->AmdAsync = timing == 1;
-                HelpMarker("Same frame: the game's GPU queue waits for the network every frame, and the result goes"
-                           "\non that frame. Async: the queue does not wait, and the result lands one frame later."
-                           "\ndanielblnc traces the freezes some players met to those waits, so Async may avoid"
-                           "\nthem; it does not promise to."
-                           "\n\nAsync runs after the finished frame, whichever point is chosen above (a correction"
-                           "\none frame late would build up in the upscaler's history), with one pass."
-                           "\nIt takes effect the next time the game starts.");
-                if (timing == 1 != DlssNr::AmdBridge::AsyncSession())
-                    ImGui::TextDisabled("Restart the game to apply.");
-
-                // A Ray Reconstruction title has no seam before the upscaler, and the pass declines the
-                // one after it unless this switch picks it, so in this placement the model does not run.
-                if (placement == 0 && !DlssNr::AmdBridge::AsyncSession())
-                {
-                    if (auto feature = State::Instance().currentFeature; feature != nullptr)
-                    {
-                        const auto kind = feature->GetUpscalerType();
-                        if (kind == Upscaler::DLSSD || kind == Upscaler::FSR_RR)
-                            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f),
-                                               "This title drives Ray Reconstruction, which has no seam before it:"
-                                               "\nthe model is not running. Choose \"After the finished frame\".");
-                    }
-                }
-
-                // One slider, bound to whichever placement is live (async runs after the finished frame). The
-                // two keep separate values, so switching back and forth does not make you retune each time.
-                if (DlssNr::AmdBridge::AsyncSession())
-                    placement = 1;
+                // One slider, bound to whichever placement is live. The two keep separate values, so
+                // switching back and forth does not make you retune each time.
                 auto& modelScale = placement == 0 ? config->AmdNrScale : config->DlssNrRRWorkingScale;
                 static float scale = 100.f;
                 static bool editingScale = false;
@@ -1627,14 +1595,15 @@ void RenderMenu(Config* config, float menuResScale)
         if (ImGui::Checkbox("Apply after Ray Reconstruction (DX12)", &afterRR))
             config->DlssNrApplyAfterRR = afterRR;
         HelpMarker(amdBackend ? "Runs the AMD neural model over the finished frame instead of over the"
-                                "\nupscaler's input. This is the placement for FSR-RR, whose denoise and"
-                                "\nenlargement are one dispatch and cannot be split."
-                                "\n\nWith it off the model stays pre-SR and declines any frame that reaches"
-                                "\nit after Ray Reconstruction."
+                                "\nupscaler's or Ray Reconstruction's render-resolution input."
+                                "\n\nWith it off the model stays pre-SR, on the render-resolution Color input"
+                                "\nbefore Super Resolution or DLSS-RR. Under FSR-RR it runs between the"
+                                "\ndenoise and the upscale, on the denoised colour."
                                 "\n\nThe model history is rebuilt when the placement changes, so expect a few"
                                 "\nframes of warm-up after toggling it."
-                              : "Requires the game's native Ray Reconstruction option. RR denoises and upscales"
-                                "\nfirst; NR then processes its output before frame generation."
+                              : "When enabled, RR denoises and upscales first; NR then processes its output"
+                                "\nbefore frame generation. When disabled with 'Run NR before Super Resolution'"
+                                "\nenabled, NR processes the render-resolution Color input before RR."
                                 "\nThis does not add RR to games without the required rendering buffers."
                                 "\nIndependent controls below prevent inheriting the cost of the SR configuration."
                                 "\nNative Vulkan does not use these DX12 controls.");
@@ -1795,9 +1764,7 @@ void RenderMenu(Config* config, float menuResScale)
                 pendingPasses = -1;
             }
 
-            if (amdPasses && DlssNr::AmdBridge::AsyncSession())
-                ImGui::TextDisabled("Async runs one pass whatever this says.");
-            else if (amdPasses)
+            if (amdPasses)
                 ImGui::TextDisabled("Three is the ceiling: one runtime module per pass.");
 
             // The lift, its tooltip and its running-cost line all describe the NVIDIA feature

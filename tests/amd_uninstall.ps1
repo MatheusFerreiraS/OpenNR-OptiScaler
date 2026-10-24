@@ -70,7 +70,11 @@ public class UninstallProxyFixture { }
     $removed = @('dxgi.dll', 'dlssnr_amd_pass1.dll', 'dlssnr_amd_pass2.dll',
         'dlssnr_amd_pass3.dll', 'OptiScaler.ini', 'amd-presr-install.txt',
         'OptiScaler.log.1', 'amd_presr.log', 'amd_bridge.log.2',
-        'Uninstall_OptiScaler_NR.bat', 'Uninstall_OptiScaler_NR.ps1')
+        'Uninstall_OptiScaler_NR.bat', 'Uninstall_OptiScaler_NR.ps1',
+        # Runtime 0.8.0's host folder: OptiScaler's copies and what the runtime wrote there.
+        'dlssnr_amd_host\neuralhub_host.dll', 'dlssnr_amd_host\neuralhub.ini',
+        'dlssnr_amd_host\dlssnr_on_amd.log', 'dlssnr_amd_host\dlssnr_on_amd.ini',
+        'dlssnr_amd_host\nvngx_dlssnr.dll', 'dlssnr_amd_host\dlssnr_on_amd_weights.bin')
     foreach ($root in $roots) {
         foreach ($relative in $preserved) { Put-File (Join-Path $root $relative) }
         foreach ($relative in $removed) { Put-File (Join-Path $root $relative) }
@@ -83,6 +87,7 @@ public class UninstallProxyFixture { }
         foreach ($relative in $preserved) { Assert-Exists (Join-Path $root $relative) }
         foreach ($relative in $removed) { Assert-Removed (Join-Path $root $relative) }
         foreach ($relative in $deps) { Assert-Removed (Join-Path $root ('OptiScaler\' + $relative)) }
+        Assert-Removed (Join-Path $root 'dlssnr_amd_host')
     }
     Copy-Item -LiteralPath $uninstall -Destination (Join-Path $game 'Uninstall_OptiScaler_NR.ps1')
     $inPlace = & $powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $game 'Uninstall_OptiScaler_NR.ps1') -NonInteractive -NoPause 2>&1
@@ -119,7 +124,7 @@ public class UninstallProxyFixture { }
     }
     Write-Host 'PASS relative and absolute proxy paths in install records are rejected'
 
-    foreach ($linkedRelative in @('_storage_', 'OptiScaler', 'OptiScaler\D3D12_OptiScaler')) {
+    foreach ($linkedRelative in @('_storage_', 'OptiScaler', 'OptiScaler\D3D12_OptiScaler', 'dlssnr_amd_host')) {
         $id = [guid]::NewGuid().ToString('N')
         $linkGame = Join-Path $testRoot ('linked-game-' + $id)
         $target = Join-Path $testRoot ('external-' + $id)
@@ -136,7 +141,7 @@ public class UninstallProxyFixture { }
             Assert-Exists (Join-Path $target $relative)
         }
     }
-    Write-Host 'PASS storage, dependency and Agility junction targets preserved'
+    Write-Host 'PASS storage, dependency, Agility and dlssnr_amd_host junction targets preserved'
     Write-Host 'All uninstall regression checks passed.'
 } finally {
     # Remove junctions themselves before fixture cleanup. Never recursively

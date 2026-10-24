@@ -1454,6 +1454,18 @@ static void printQuirks(flag_set<GameQuirk>& quirks)
     if (quirks & GameQuirk::UnlockPathTracingMenu)
         stringQuirks.push_back("Unlock Path Tracing / Ray Reconstruction menu options");
 
+    if (quirks & GameQuirk::MochizukiGameExposureFeed)
+        stringQuirks.push_back("mochizuki's RenoDX feed takes the game's exposure");
+
+    if (quirks & GameQuirk::HideFsr4FromGame)
+        stringQuirks.push_back("FSR 4 left out of the game's FSR version list");
+
+    if (quirks & GameQuirk::DisableXeSSInputs)
+        stringQuirks.push_back("XeSS inputs disabled by default");
+
+    if (quirks & GameQuirk::MochizukiPreprocessOn)
+        stringQuirks.push_back("mochizuki's pre-process on by default");
+
     state->detectedQuirks.append_range(stringQuirks);
     for (auto& stringQuirk : stringQuirks)
         spdlog::info("Quirk: {}", stringQuirk);
@@ -1509,6 +1521,11 @@ static void CheckQuirks(bool isNvidia)
         Config::Instance()->EnableFfxInputs.set_volatile_value(false);
     else
         quirks.reset(GameQuirk::DisableFFXInputs);
+
+    if (quirks & GameQuirk::DisableXeSSInputs && !Config::Instance()->EnableXeSSInputs.has_value())
+        Config::Instance()->EnableXeSSInputs.set_volatile_value(false);
+    else
+        quirks.reset(GameQuirk::DisableXeSSInputs);
 
     if (quirks & GameQuirk::DisableDxgiSpoofing && !Config::Instance()->DxgiSpoofing.has_value())
         Config::Instance()->DxgiSpoofing.set_volatile_value(false);
@@ -1700,6 +1717,18 @@ static void CheckQuirks(bool isNvidia)
     else
         quirks.reset(GameQuirk::DoNotLoadAmdxc64);
 
+    if (quirks & GameQuirk::MochizukiGameExposureFeed && !Config::Instance()->MochizukiRenoFeedMode.has_value())
+    {
+        Config::Instance()->MochizukiRenoFeedMode.set_volatile_value(2);
+    }
+    else
+        quirks.reset(GameQuirk::MochizukiGameExposureFeed);
+
+    if (quirks & GameQuirk::MochizukiPreprocessOn && !Config::Instance()->MochizukiPreprocess.has_value())
+        Config::Instance()->MochizukiPreprocess.set_volatile_value(true);
+    else
+        quirks.reset(GameQuirk::MochizukiPreprocessOn);
+
     // For Luma, we assume if Luma addon in game folder it's used
     const auto dir = Util::ExePath().parent_path();
     bool lumaDetected = false;
@@ -1809,6 +1838,14 @@ void CheckForExcludedProcess()
 {
     std::wstring exeLower = Util::ExePath().filename().wstring();
     std::transform(exeLower.begin(), exeLower.end(), exeLower.begin(), ::towlower);
+
+    // Chromium/CEF children (BeamNG's UI) run the game's own exe with --type=renderer/gpu-process/...: they would
+    // load us too and truncate the main process's OptiScaler.log.
+    if (wcsstr(GetCommandLineW(), L" --type=") != nullptr)
+    {
+        _passThruMode = true;
+        return;
+    }
 
     // If target process is set, only that process is hooked
     if (Config::Instance()->TargetProcess.has_value())
@@ -1977,7 +2014,15 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         if (std::filesystem::path mainDllPath(Config::Instance()->MainDllPath.value()); mainDllPath.is_relative())
         {
-            Config::Instance()->MainDllPath.set_volatile_value(Util::ExePath().parent_path() / mainDllPath);
+            // Packaged (Xbox) games load us from the package root, while the exe sits in a subfolder
+            wchar_t ownPath[MAX_PATH];
+            GetModuleFileNameW(hModule, ownPath, MAX_PATH);
+            auto besideExe = Util::ExePath().parent_path() / mainDllPath;
+            auto besideDll = std::filesystem::path(ownPath).parent_path() / mainDllPath;
+
+            Config::Instance()->MainDllPath.set_volatile_value(
+                !std::filesystem::is_directory(besideExe) && std::filesystem::is_directory(besideDll) ? besideDll
+                                                                                                    : besideExe);
         }
 
         // If path is invalid or doesn't exist, use the exe folder as main
@@ -2079,19 +2124,21 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             LOG_INFO("External frame generation: leaving Streamline/Reflex and MFG control to the game or unlocker; "
                      "NR/SR remain available");
         }
-        if (Config::Instance()->DlssNrPresent.value_or_default() &&
-            Config::Instance()->FGOutput.value_or_default() == FGOutput::XeFG &&
+        // XeFG and the DLSSG output (OptiScaler's own Streamline; on AMD served by NeuralHub's DLSS-FG) take the final
+        // image's optical-flow guides as their input.
+        const auto finalImageFgOutput = Config::Instance()->FGOutput.value_or_default();
+        const bool finalImageFgCapable = finalImageFgOutput == FGOutput::XeFG || finalImageFgOutput == FGOutput::DLSSG;
+        if (Config::Instance()->DlssNrPresent.value_or_default() && finalImageFgCapable &&
             Config::Instance()->FGInput.value_or_default() == FGInput::NoFG)
         {
             Config::Instance()->FGInput.set_volatile_value(FGInput::Upscaler);
-            LOG_INFO("Final-image NR: using optical-flow guides as XeFG input");
+            LOG_INFO("Final-image NR: using optical-flow guides as {} input", magic_enum::enum_name(finalImageFgOutput));
         }
         // XeFG keeps the INI's motion vector and depth setup, the one a game's upscaler needs: the final image's
         // optical flow is at output size, which is its render size (as under native AA), and its synthetic depth is a
         // constant 0.5 either way round. Forcing high-res MVs here locked XeFG out once the game turned an upscaler on.
         if (Config::Instance()->DlssNrPresent.value_or_default() &&
-            Config::Instance()->FGInput.value_or_default() == FGInput::Upscaler &&
-            Config::Instance()->FGOutput.value_or_default() != FGOutput::XeFG)
+            Config::Instance()->FGInput.value_or_default() == FGInput::Upscaler && !finalImageFgCapable)
         {
             // Final-image NR has no upscaler evaluation to supply OptiFG's motion/depth inputs.
             Config::Instance()->FGInput.set_volatile_value(FGInput::NoFG);

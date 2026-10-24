@@ -394,6 +394,50 @@ ffxReturnCode_t ffxConfigure_Dx12(ffxContext* context, ffxConfigureDescHeader* d
     return FFX_API_RETURN_OK;
 }
 
+// The upscaler versions the game is offered, without FSR 4 (GameQuirk::HideFsr4FromGame): asked in full of the real
+// module, then copied back without the names that start at 4, within the caller's capacity.
+static ffxReturnCode_t QueryVersionsWithoutFsr4(ffxContext* context, ffxQueryDescGetVersions* asked)
+{
+    uint64_t count = 0;
+    ffxQueryDescGetVersions all = *asked;
+    all.outputCount = &count;
+    all.versionIds = nullptr;
+    all.versionNames = nullptr;
+    auto result = FfxApiProxy::D3D12_Query(context, &all.header);
+    if (result != FFX_API_RETURN_OK)
+        return result;
+
+    std::vector<uint64_t> ids(count);
+    std::vector<const char*> names(count);
+    all.versionIds = ids.data();
+    all.versionNames = names.data();
+    result = FfxApiProxy::D3D12_Query(context, &all.header);
+    if (result != FFX_API_RETURN_OK)
+        return result;
+
+    const bool filling = asked->versionIds != nullptr || asked->versionNames != nullptr;
+    const uint64_t capacity = filling ? *asked->outputCount : 0;
+    uint64_t kept = 0;
+    for (uint64_t i = 0; i < count; ++i)
+    {
+        if (names[i] != nullptr && names[i][0] >= '4' && names[i][0] <= '9')
+        {
+            LOG_INFO("Left out of the game's version list: {}", names[i]);
+            continue;
+        }
+        if (filling && kept < capacity)
+        {
+            if (asked->versionIds != nullptr)
+                asked->versionIds[kept] = ids[i];
+            if (asked->versionNames != nullptr)
+                asked->versionNames[kept] = names[i];
+        }
+        ++kept;
+    }
+    *asked->outputCount = filling ? std::min(kept, capacity) : kept;
+    return FFX_API_RETURN_OK;
+}
+
 ffxReturnCode_t ffxQuery_Dx12(ffxContext* context, ffxQueryDescHeader* desc)
 {
     LOG_DEBUG("");
@@ -415,6 +459,14 @@ ffxReturnCode_t ffxQuery_Dx12(ffxContext* context, ffxQueryDescHeader* desc)
             return FfxApiProxy::D3D12_Query(context, desc);
 
         return result;
+    }
+
+    if (desc->type == FFX_API_QUERY_DESC_TYPE_GET_VERSIONS && type == FFXStructType::Upscaling &&
+        State::Instance().gameQuirks & GameQuirk::HideFsr4FromGame)
+    {
+        auto versions = (ffxQueryDescGetVersions*) desc;
+        if (versions->outputCount != nullptr)
+            return QueryVersionsWithoutFsr4(context, versions);
     }
 
     if (desc->type == FFX_API_QUERY_DESC_TYPE_UPSCALE_GETRENDERRESOLUTIONFROMQUALITYMODE)

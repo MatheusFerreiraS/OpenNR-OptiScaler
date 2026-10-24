@@ -38,6 +38,7 @@ typedef decltype(&xessGetProperties) PFN_xessGetProperties;
 typedef decltype(&xessDestroyContext) PFN_xessDestroyContext;
 typedef decltype(&xessSetVelocityScale) PFN_xessSetVelocityScale;
 typedef decltype(&xessGetVelocityScale) PFN_xessGetVelocityScale;
+typedef decltype(&xessSetMaxResponsiveMaskValue) PFN_xessSetMaxResponsiveMaskValue;
 
 typedef decltype(&xessD3D12GetInitParams) PFN_xessD3D12GetInitParams;
 typedef decltype(&xessForceLegacyScaleFactors) PFN_xessForceLegacyScaleFactors;
@@ -91,6 +92,7 @@ struct XeSSModule
     PFN_xessGetVelocityScale xessGetVelocityScale = nullptr;
     PFN_xessDestroyContext xessDestroyContext = nullptr;
     PFN_xessSetVelocityScale xessSetVelocityScale = nullptr;
+    PFN_xessSetMaxResponsiveMaskValue xessSetMaxResponsiveMaskValue = nullptr;
 
     PFN_xessD3D12GetInitParams xessD3D12GetInitParams = nullptr;
     PFN_xessForceLegacyScaleFactors xessForceLegacyScaleFactors = nullptr;
@@ -363,6 +365,9 @@ class XeSSProxy
                 (PFN_xessDestroyContext) KernelBaseProxy::GetProcAddress_()(_module_hooked.dll, "xessDestroyContext");
             _module_hooked.xessSetVelocityScale = (PFN_xessSetVelocityScale) KernelBaseProxy::GetProcAddress_()(
                 _module_hooked.dll, "xessSetVelocityScale");
+            _module_hooked.xessSetMaxResponsiveMaskValue =
+                (PFN_xessSetMaxResponsiveMaskValue) KernelBaseProxy::GetProcAddress_()(
+                    _module_hooked.dll, "xessSetMaxResponsiveMaskValue");
 
             _module_hooked.xessD3D12GetInitParams = (PFN_xessD3D12GetInitParams) KernelBaseProxy::GetProcAddress_()(
                 _module_hooked.dll, "xessD3D12GetInitParams");
@@ -468,6 +473,11 @@ class XeSSProxy
             if (_module_hooked.xessSetVelocityScale != nullptr)
                 DetourAttach(&(PVOID&) _module_hooked.xessSetVelocityScale, hk_xessSetVelocityScale);
 
+            // The real one would be handed our context handle (BeamNG calls it right after the velocity scale)
+            if (_module_hooked.xessSetMaxResponsiveMaskValue != nullptr)
+                DetourAttach(&(PVOID&) _module_hooked.xessSetMaxResponsiveMaskValue,
+                             hk_xessSetMaxResponsiveMaskValue);
+
             if (_module_hooked.xessD3D12GetInitParams != nullptr)
                 DetourAttach(&(PVOID&) _module_hooked.xessD3D12GetInitParams, hk_xessD3D12GetInitParams);
 
@@ -556,6 +566,7 @@ class XeSSProxy
                 _module_hooked.xessGetProperties = nullptr;
                 _module_hooked.xessDestroyContext = nullptr;
                 _module_hooked.xessSetVelocityScale = nullptr;
+                _module_hooked.xessSetMaxResponsiveMaskValue = nullptr;
                 _module_hooked.xessD3D12GetInitParams = nullptr;
                 _module_hooked.xessForceLegacyScaleFactors = nullptr;
                 _module_hooked.xessGetExposureMultiplier = nullptr;

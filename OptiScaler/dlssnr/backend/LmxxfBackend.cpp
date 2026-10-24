@@ -897,16 +897,33 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
                                                  reinterpret_cast<void**>(&logical))) ||
                       !logical))
     {
+        if (!boundaryLogged)
+        {
+            boundaryLogged = true;
+            // Whose list it is: the module its methods come from (the driver's for a native list).
+            HMODULE owner = nullptr;
+            char name[MAX_PATH] {};
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   *reinterpret_cast<LPCSTR*>(cmd), &owner))
+                GetModuleFileNameA(owner, name, MAX_PATH);
+            LOG_WARN("lmxxf: Evaluate on cmd {:X}, which is no proxy (methods from {}), likely made before the "
+                     "swapchain by a module not taken for the game's; frames on it get no NR (logged once)",
+                     (size_t) cmd, name);
+        }
         return declineFrame("lmxxf: same-frame boundary unavailable (original Color; NO NR)");
     }
     const bool ineligible = logical && logical->IsSplitIneligible();
-    const char* reason = logical ? logical->SplitRejectionReason() : nullptr;
+    char status[160] {};
+    if (ineligible)
+    {
+        const char* reason = logical->SplitRejectionReason();
+        std::snprintf(status, sizeof(status), "%s: split ineligible: %s (NO NR)", Lmxxf() ? "lmxxf" : "mochizuki",
+                      reason ? reason : "unknown");
+    }
     if (logical)
         logical->Release();
     if (ineligible)
     {
-        char status[128] {};
-        std::snprintf(status, sizeof(status), "lmxxf: split ineligible: %s (NO NR)", reason ? reason : "unknown");
         static std::atomic<uint32_t> s_ineligibleCount { 0 };
         const uint32_t c = s_ineligibleCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (c <= 10 || (c <= 100 && (c % 20 == 0)) || (c <= 1000 && (c % 100 == 0)) || (c % 1000 == 0))
@@ -959,6 +976,8 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
             fi.flags |= LMXXF_NR_FRAME_FLAG_VIT_REUSE;
         if (Config::Instance()->LmxxfCompact1080.value_or_default())
             fi.flags |= LMXXF_NR_FRAME_FLAG_COMPACT_1080;
+        if (Config::Instance()->LmxxfOriginalModel.value_or_default())
+            fi.flags |= LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL;
         if (Config::Instance()->LmxxfPassEstimate.value_or_default())
             fi.flags |= LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE;
         if (Config::Instance()->LmxxfSkinProtect.value_or_default())
@@ -1263,6 +1282,8 @@ ID3D12Resource* LmxxfBackend::RecordDiagnostic(ID3D12GraphicsCommandList* cmd, c
                     fi.style = std::min(Config::Instance()->LmxxfStyle.value_or_default(), 2u);
                     if (Config::Instance()->LmxxfCompact1080.value_or_default())
                         fi.flags |= LMXXF_NR_FRAME_FLAG_COMPACT_1080;
+                    if (Config::Instance()->LmxxfOriginalModel.value_or_default())
+                        fi.flags |= LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL;
                 }
                 else
                 {

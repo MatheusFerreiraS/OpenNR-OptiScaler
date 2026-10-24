@@ -3,7 +3,8 @@
 //
 //   dx12_final_image_smoke.exe <nr|fg> [--bgra] [--debug-layer] [--lock <dir>] [--timeout <seconds>]
 //                              [--log-level <OptiScaler LogLevel, 2 by default>] [--cpu-ms <game CPU ms per frame>]
-//                              [--dump] [--lifecycle] [--nr-off-start] [--bad-runtime] [--r10] [--no-probe]
+//                              [--dump] [--lifecycle] [--nr-off-start] [--bad-runtime] [--r10] [--hdr10]
+//                              [--still] [--no-probe]
 //                              [--set <Section/Key=Value>] [--expect-2x] [--perf] [--gpu-load <iterations>]
 //                              [--borderless] [--waitable <max latency>] [--vsync] [--wheel] [--dinput] [--reflex]
 //                              [--hitch]
@@ -19,7 +20,9 @@
 // XeFG's on the next.
 // --nr-off-start starts with NR off in the INI and turns it on with Numpad 5.
 // --bad-runtime puts another DLL in dlssnr_amd_pass1.dll's place for the run, so the runtime fails to load.
-// --r10 presents R10G10B10A2 frames, which final-image NR leaves alone and XeFG gets no guides for.
+// --r10 presents R10G10B10A2 frames in the default sRGB colour space, which final-image NR takes as it takes 8-bit
+// ones. --hdr10 presents them in HDR10 (ST.2084), which it leaves alone and XeFG gets no guides for.
+// --still holds the scene on one frame, so --dump writes the same picture in every run (one run against another).
 // --expect-2x expects 2X where frame generation runs, for a provider that allows no MFG.
 // --perf measures the presented frame rate with NR and XeFG in each on/off combination, without probes, and
 // expects XeFG to raise it. --gpu-load gives the game frame that many shader iterations per pixel, --borderless
@@ -46,6 +49,7 @@
 #include <tlhelp32.h>
 #include <wrl/client.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <cstdio>
@@ -204,6 +208,8 @@ struct Options
     bool dump = false;                  // writes each phase's first probe frame as <phase>.bmp
     bool bgra = false;
     bool r10 = false;
+    bool hdr10 = false;
+    bool still = false;
     bool debugLayer = false;
     bool lifecycle = false;   // swapchain on a new queue and again, the FG page, minimize, restore (nr: WARP device)
     bool nrOffStart = false;  // NR disabled in the INI and turned on with Numpad 5 later
@@ -327,9 +333,9 @@ struct App
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         Check(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue)), "CreateCommandQueue");
 
-        format = options.r10    ? DXGI_FORMAT_R10G10B10A2_UNORM
-                 : options.bgra ? DXGI_FORMAT_B8G8R8A8_UNORM
-                                : DXGI_FORMAT_R8G8B8A8_UNORM;
+        format = options.r10 || options.hdr10 ? DXGI_FORMAT_R10G10B10A2_UNORM
+                 : options.bgra               ? DXGI_FORMAT_B8G8R8A8_UNORM
+                                              : DXGI_FORMAT_R8G8B8A8_UNORM;
         BOOL tearing = FALSE;
         factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof(tearing));
         swapFlags = tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
@@ -348,6 +354,8 @@ struct App
         Check(factory->CreateSwapChainForHwnd(queue.Get(), window, &desc, nullptr, nullptr, &swap1),
               "CreateSwapChainForHwnd");
         Check(swap1.As(&swapchain), "IDXGISwapChain3");
+        if (options.hdr10)
+            Check(swapchain->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020), "SetColorSpace1 HDR10");
         Waitable();
         Out("objects queue=%p", queue.Get());
         LogBuffers();
@@ -573,7 +581,8 @@ struct App
 
     void Draw(D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     {
-        const float constants[4] = { float(frame) / 60.0f, float(width), float(height), float(options.gpuLoad) };
+        const float constants[4] = { options.still ? 1.0f : float(frame) / 60.0f, float(width), float(height),
+                                     float(options.gpuLoad) };
         D3D12_VIEWPORT viewport { 0, 0, float(width), float(height), 0, 1 };
         D3D12_RECT scissor { 0, 0, LONG(width), LONG(height) };
         list->SetGraphicsRootSignature(root.Get());
@@ -710,12 +719,32 @@ struct App
         for (UINT y = 0; y < height; ++y)
         {
             std::memcpy(row.data(), (const unsigned char*) data + UINT64(y) * footprint.Footprint.RowPitch, row.size());
-            if (format == DXGI_FORMAT_R8G8B8A8_UNORM)
+            if (format == DXGI_FORMAT_R10G10B10A2_UNORM)
+                for (UINT x = 0; x < width; ++x)
+                {
+                    const auto rgb = Levels(row.data(), x);
+                    row[x * 4] = rgb[2];
+                    row[x * 4 + 1] = rgb[1];
+                    row[x * 4 + 2] = rgb[0];
+                    row[x * 4 + 3] = 255;
+                }
+            else if (format == DXGI_FORMAT_R8G8B8A8_UNORM)
                 for (UINT x = 0; x < width; ++x)
                     std::swap(row[x * 4], row[x * 4 + 2]);
             out.write((const char*) row.data(), row.size());
         }
         readBack->Unmap(0, nullptr);
+    }
+
+    // A pixel's three colour channels in 8-bit levels, in the order the format stores them (R, G, B for 10-bit).
+    std::array<unsigned char, 3> Levels(const unsigned char* row, UINT x) const
+    {
+        if (format != DXGI_FORMAT_R10G10B10A2_UNORM)
+            return { row[x * 4], row[x * 4 + 1], row[x * 4 + 2] };
+        UINT v = 0;
+        std::memcpy(&v, row + x * 4, 4);
+        const auto level = [](UINT c) { return (unsigned char) ((c * 255 + 511) / 1023); };
+        return { level(v & 1023), level(v >> 10 & 1023), level(v >> 20 & 1023) };
     }
 
     // Over the frame right of 35% of its width: a driver performance overlay may draw on the left.
@@ -734,9 +763,10 @@ struct App
             for (UINT x = left; x < width; ++x)
             {
                 int worst = 0;
+                const auto pa = Levels(rowA, x), pb = Levels(rowB, x);
                 for (int c = 0; c < 3; ++c)
                 {
-                    const int d = std::abs(int(rowA[x * 4 + c]) - int(rowB[x * 4 + c]));
+                    const int d = std::abs(int(pa[c]) - int(pb[c]));
                     worst = std::max(worst, d);
                     sum += d;
                 }
@@ -1120,7 +1150,7 @@ static int Child(const Options& options)
     auto start = Clock::now();
     auto lastProbe = start;
     bool warm = false;
-    while (Seconds(start) < (options.nrOffStart || options.badRuntime || options.r10 ? 6 : 60) && !warm)
+    while (Seconds(start) < (options.nrOffStart || options.badRuntime || options.hdr10 ? 6 : 60) && !warm)
     {
         if (!Pump())
             break;
@@ -1693,7 +1723,7 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
         expect(Count(log, "OptiInput::ApplyMenuVisibilityChangeLocked menu visibility changed 1 -> 0") >= 2,
                "menu closed twice");
         // A Model scale change restarts the runtime's history for its settings.
-        if (!options.badRuntime && !options.r10)
+        if (!options.badRuntime && !options.hdr10)
             expect(SettingsResets(runtimeLog) >= 1, "Model scale changed from the menu during the session");
         withNr = {
             "steady", "menu-open", "menu-closed", "fg-off", "fg-on", "nr-on", "scale", "resized", "menu-resized"
@@ -1704,11 +1734,13 @@ static int Parent(const Options& options, const std::wstring& lock, DWORD timeou
                        "nr-on",  "scale",     "resized",     "menu-resized" };
         single = { "fg-off" };
     }
-    // Final-image NR takes 8-bit frames only, and XeFG's guides come from the same frame.
+    // Final-image NR takes 8-bit and SDR 10-bit frames, and XeFG's guides come from the same frame.
     if (options.r10)
+        expect(Count(log, "NR without upscaling: backbuffer format") == 0, "the SDR R10G10B10A2 backbuffer is taken");
+    if (options.hdr10)
     {
-        expect(Count(log, "NR without upscaling: backbuffer format 24 is not RGBA8 or BGRA8") == 1,
-               "OptiScaler.log names the R10G10B10A2 backbuffer once");
+        expect(Count(log, "NR without upscaling: backbuffer format 24 is 10-bit in an HDR colour space") == 1,
+               "OptiScaler.log names the HDR10 backbuffer once");
         for (auto name : withNr)
             if (std::string(name) != "menu-open" && std::string(name) != "menu-resized")
                 withoutNr.push_back(name);
@@ -1842,6 +1874,10 @@ int wmain(int argc, wchar_t** argv)
             options.bgra = true;
         else if (arg == L"--r10")
             options.r10 = true;
+        else if (arg == L"--hdr10")
+            options.hdr10 = true;
+        else if (arg == L"--still")
+            options.still = true;
         else if (arg == L"--debug-layer")
             options.debugLayer = true;
         else if (arg == L"--lock" && i + 1 < argc)
@@ -1895,7 +1931,8 @@ int wmain(int argc, wchar_t** argv)
     if (options.scenario != "nr" && options.scenario != "fg")
     {
         std::printf("usage: dx12_final_image_smoke.exe <nr|fg> [--bgra] [--debug-layer] [--lifecycle] "
-                    "[--nr-off-start] [--bad-runtime] [--r10] [--no-probe] [--lock <dir>] [--timeout <seconds>]\n");
+                    "[--nr-off-start] [--bad-runtime] [--r10] [--hdr10] [--still] [--no-probe] [--lock <dir>] "
+                    "[--timeout <seconds>]\n");
         return 2;
     }
     if (child)
@@ -1903,6 +1940,8 @@ int wmain(int argc, wchar_t** argv)
     std::wstring args(options.scenario.begin(), options.scenario.end());
     args += options.bgra ? L" --bgra" : L"";
     args += options.r10 ? L" --r10" : L"";
+    args += options.hdr10 ? L" --hdr10" : L"";
+    args += options.still ? L" --still" : L"";
     args += options.debugLayer ? L" --debug-layer" : L"";
     args += options.cpuMs > 0 ? L" --cpu-ms " + std::to_wstring(options.cpuMs) : L"";
     args += options.dump ? L" --dump" : L"";

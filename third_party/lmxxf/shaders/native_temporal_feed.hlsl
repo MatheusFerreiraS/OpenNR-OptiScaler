@@ -20,7 +20,11 @@ StructuredBuffer<float> rgb:register(t0);
 RWStructuredBuffer<float4> history:register(u0);
 [numthreads(16,16,1)]void history_main(uint3 id:SV_DispatchThreadID){
  if(id.x>=motion_width||id.y>=motion_height)return;
+#ifdef NATIVE_RGB_PROCESSING_WIDTH
+ uint p=(id.y*NATIVE_RGB_PROCESSING_WIDTH+id.x)*3; // OptiScaler: Small geometry, network rows wider than the history
+#else
  uint p=(id.y*motion_width+id.x)*3;
+#endif
  history[id.y*motion_width+id.x]=float4(rgb[p],rgb[p+1],rgb[p+2],1);
 }
 #endif

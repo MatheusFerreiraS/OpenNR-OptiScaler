@@ -6,8 +6,9 @@ rem   tools\test-dx12-final-image.cmd <dlssnr_amd_pass1.dll or version.dll> <dls
 rem                                   <folder with libxess_fg.dll and libxell.dll> [scenario args...]
 rem Without scenario args it runs: nr, fg, fg --bgra, fg --cpu-ms 6 (a game's CPU time per frame),
 rem fg --debug-layer, nr --lifecycle, fg --lifecycle, fg --lifecycle --nr-off-start, nr and fg with
-rem --bad-runtime (another DLL in the runtime's place), fg --r10 (a 10-bit backbuffer, which final-image
-rem NR leaves alone), fg with InterpolationCount=auto (3X), fg with UnlockMFG=false (2X), and
+rem --bad-runtime (another DLL in the runtime's place), nr and fg --r10 (a 10-bit SDR backbuffer, which
+rem final-image NR takes), fg --hdr10 (the same in HDR10, which it leaves alone), fg with
+rem InterpolationCount=auto (3X), fg with UnlockMFG=false (2X), and
 rem fg --lifecycle as rdr.exe (Red Dead Redemption's quirk: a plain first swapchain, XeFG's on the next),
 rem fg --perf at 3X windowed and borderless with a heavy game frame and at 2X windowed (presented frame rate with
 rem XeFG against without it, with NR and without, and XeFG's frames spread over the frame period), the mouse wheel
@@ -61,7 +62,9 @@ call :run fg --lifecycle
 call :run fg --lifecycle --nr-off-start
 call :run nr --bad-runtime
 call :run fg --bad-runtime
+call :run nr --r10
 call :run fg --r10
+call :run fg --hdr10
 call :run fg --set XeFG/InterpolationCount=auto
 call :run fg --set XeFG/UnlockMFG=false --expect-2x
 call :run fg --perf --gpu-load 2000 --cpu-ms 2

@@ -122,6 +122,16 @@ template <class T, HasDefaultValue defaultState = WithDefault> class CustomOptio
         return this->value();
     }
 
+    // For a key a game quirk may change: what the player set is written even when it is the default, so a quirk
+    // that acts only on auto does not undo it; a quirk's own value, or none, is written as auto.
+    constexpr std::optional<T> value_as_chosen()
+    {
+        if (_volatile)
+            return _configIni;
+
+        return *this;
+    }
+
     constexpr std::optional<T> value_for_config()
         requires(defaultState != WithDefault)
     {
@@ -278,7 +288,7 @@ class Config
     CustomOptional<bool> DlssNrRunBeforeSr { false };
     CustomOptional<bool> DlssNrApplyAfterRR { false };
     CustomOptional<unsigned int> DlssNrRRPasses { 1 };
-    CustomOptional<float> DlssNrRRWorkingScale { 0.5f };
+    CustomOptional<float> DlssNrRRWorkingScale { 1.0f };
     // Toggles the pass in game. Unbound by default -- a key that does something unexpected is worse
     // than one that does nothing.
     CustomOptional<int> DlssNrToggleKey { VK_NUMPAD5 };
@@ -377,11 +387,16 @@ class Config
     CustomOptional<int> AmdGraphicsWait { 1 };
     // One danielblnc job the GPU holds this long stands NR down for the session (StallWatch.h). 0 = off.
     CustomOptional<int> AmdStallStandDownMs { 2000 };
-    // danielblnc async: the game's queue does not wait for the network, which runs after the finished frame and
-    // lands a frame late. Read once per session.
-    CustomOptional<bool> AmdAsync { false };
     // NR host: daniel (default), lmxxf, mochizuki, off. Missing key = daniel. Restart to change.
     CustomOptional<std::string> NrBackend { "daniel" };
+    // Host compute runtime written to dlssnr_amd_host\neuralhub.ini ([Compute] Backend). auto: D3D12 when an
+    // nvngx_dlssg.dll is there for NeuralHub's DLSS-FG (D3D12 only), HIP otherwise. HIP: danielblnc's NR runs (HIP
+    // only on our path) and the FG stays off. D3D12: the kernels run as pipelines in the game's list. Restart.
+    CustomOptional<std::string> HostComputeBackend { "auto" };
+    // Host zero-copy interop ([Debug] HipZeroCopy): true (default) shares the game's textures with HIP and runs the
+    // network inline on the game's queue (the inline wait); false copies the inputs and runs the network
+    // asynchronously (no inline wait, no same-frame result, but no spin/staging deadlock either). Restart.
+    CustomOptional<bool> HostZeroCopy { true };
     // lmxxf diagnostics: original/copy-current/staging-current/staging-previous,
     // proxy-original/split-original (NO NR). off requires a same-frame boundary. Restart to change.
     CustomOptional<std::string> LmxxfDiagnostic { "off" };
@@ -407,6 +422,10 @@ class Config
     // The 1080 tier on 1920x1088 rows instead of 1152: about 4% faster, slightly lossy at the bottom. Rebuilds the
     // network when changed.
     CustomOptional<bool> LmxxfCompact1080 { false };
+    // The 71-block model instead of the Small one of NVIDIA's 310.9.16 DLL (lmxxf 0.44's 0.5x), which runs at any
+    // pass count when native-game-tiled-assets\small is there. A change rebuilds the network
+    // (LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL).
+    CustomOptional<bool> LmxxfOriginalModel { false };
     // Three passes: run two and extrapolate the third from them, about a third less time, close to a real third
     // pass (upstream's multi-pass predict). On by default.
     CustomOptional<bool> LmxxfPassEstimate { true };

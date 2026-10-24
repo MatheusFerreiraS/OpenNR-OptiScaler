@@ -1,6 +1,7 @@
 #pragma once
 #include <d3d12.h>
 #include <nvsdk_ngx.h>
+#include <filesystem>
 #include <string>
 class Config;
 namespace AmdPreSr
@@ -11,8 +12,23 @@ namespace DlssNr::AmdBridge
 {
 AmdPreSr::Settings SettingsFromConfig(const Config& cfg, float modelScale);
 bool HasFiles();
+// NeuralHub 0.8.0 serves DLSS Frame Generation: its host module sits in dlssnr_amd_host\ beside this DLL and an
+// nvngx_dlssg.dll beside the host or the game. Only files are checked, so it answers before the host loads (slInit,
+// the INI); a game that ships nvngx_dlssg.dll without the host is not taken for one. Never with the host kept on HIP.
+bool NeuralHubFgInstalled();
+// The same with OptiScaler's library folder and HostComputeBackend given: Config's own load asks this way, since
+// LibraryFolder() reads Config and would construct it again from inside its constructor.
+bool NeuralHubFgInstalled(const std::filesystem::path& library, const std::string& backend);
+// The armed host found an nvngx_dlssg.dll, or NeuralHubFgInstalled(): DLSS-FG is offered on AMD.
+bool NeuralHubFgServed();
+// [DlssNr] HostComputeBackend=HIP: the 0.8.0 host stays on HIP for danielblnc's NR, and its DLSS-FG (D3D12 only) is off.
+bool HostKeptOnHip();
+// OptiScaler's library folder ([Libraries] OptiDllPath, OptiScaler\ beside this DLL by default). NVIDIA's
+// nvngx_dlss(.d/.g).dll placed there feed NeuralHub ahead of the game's own copies.
+std::filesystem::path LibraryFolder();
 // Install submission expansion before the first wrapped list is exposed. No runtime/HIP initialization.
 bool EnsureSubmissionHook(ID3D12CommandQueue*);
+bool EnsureNgxHost(ID3D12Device*, ID3D12CommandQueue* = nullptr);
 bool Before(ID3D12GraphicsCommandList*, NVSDK_NGX_Parameter*, ID3D12CommandQueue*);
 // Post-upscale placement: runs the model over the frame the upscaler (or Ray Reconstruction) has
 // already finished, and hands its answer back instead of substituting the upscaler's input. The
@@ -32,8 +48,6 @@ std::string Status();
 bool StandDownIfTripped();
 // Set when the stall watch switched NR off, cleared once NR runs again; what the menu shows next to Enabled.
 std::string StandDownNote();
-// AmdAsync as the INI had it when the session first asked: the runtime latches its timing when it starts.
-bool AsyncSession();
 // The runtime's own status line (for mochizuki: network size and time, or the build in progress), refreshed by
 // the render thread at most twice a second; empty until a session runs. Never waits on a frame being recorded.
 std::string RuntimeStatus();

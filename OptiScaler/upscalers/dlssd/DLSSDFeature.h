@@ -36,6 +36,32 @@ class DLSSDFeature : public virtual IFeature
     float GetSharpness(const NVSDK_NGX_Parameter* InParameters);
 
   public:
+    inline static std::optional<int> s_useHwDepth {};
+    inline static std::optional<int> s_denoiseMode {};
+    inline static std::optional<int> s_roughnessMode {};
+
+    static void SyncCreateParams(NVSDK_NGX_Parameter* InParameters)
+    {
+        if (InParameters == nullptr)
+            return;
+
+        int paramValue = -1;
+        if (InParameters->Get("DLSS.Use.HW.Depth", &paramValue) == NVSDK_NGX_Result_Success)
+            s_useHwDepth = paramValue;
+        else if (s_useHwDepth.has_value())
+            InParameters->Set("DLSS.Use.HW.Depth", *s_useHwDepth);
+
+        if (InParameters->Get("DLSS.Denoise.Mode", &paramValue) == NVSDK_NGX_Result_Success)
+            s_denoiseMode = paramValue;
+        else if (s_denoiseMode.has_value())
+            InParameters->Set("DLSS.Denoise.Mode", *s_denoiseMode);
+
+        if (InParameters->Get("DLSS.Roughness.Mode", &paramValue) == NVSDK_NGX_Result_Success)
+            s_roughnessMode = paramValue;
+        else if (s_roughnessMode.has_value())
+            InParameters->Set("DLSS.Roughness.Mode", *s_roughnessMode);
+    }
+
     feature_version Version() override { return feature_version { _version.major, _version.minor, _version.patch }; }
     Upscaler GetUpscalerType() const override { return Upscaler::DLSSD; }
 

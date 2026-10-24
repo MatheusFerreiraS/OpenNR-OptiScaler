@@ -28,15 +28,22 @@ RWStructuredBuffer<float4> residual : register(u1);
 [numthreads(64,1,1)]
 void residual_main(uint3 id : SV_DispatchThreadID) {
     uint p = id.x; if (p >= pixels) return;
+#ifdef NATIVE_RGB_PROCESSING_WIDTH
+    // Small geometry: the network's rows are wider than the colour's; residual keeps the colour's, as the history does.
+    uint x = p % NATIVE_RGB_PROCESSING_WIDTH; if (x >= NATIVE_VALID_WIDTH) return;
+    uint q = p / NATIVE_RGB_PROCESSING_WIDTH * NATIVE_VALID_WIDTH + x;
+#else
+    uint q = p;
+#endif
     float3 o = float3(rgb[p*3], rgb[p*3+1], rgb[p*3+2]);
     float3 b = base[p].xyz; float3 r = o - b;
-    if (all(o == 0) || any(!isfinite(r))) { residual[p] = float4(0,0,0,1); return; }
+    if (all(o == 0) || any(!isfinite(r))) { residual[q] = float4(0,0,0,1); return; }
     if (pad) {
         float3 h = warped[p].xyz;
         float d = max(max(abs(r.x-h.x), abs(r.y-h.y)), abs(r.z-h.z));
         float w = strength * saturate(1.0 - d / threshold);
         if (w > 0) { r = lerp(r, h, w); o = b + r; rgb[p*3] = o.x; rgb[p*3+1] = o.y; rgb[p*3+2] = o.z; }
     }
-    residual[p] = float4(r, 1);
+    residual[q] = float4(r, 1);
 }
 #endif

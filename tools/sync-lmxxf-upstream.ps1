@@ -383,6 +383,7 @@ $archivePaths = @(
     'Development/HIP/packed_weights.h',
     'Development/HIP/swin_persistent_network.h',
     'Development/HIP/swin_persistent_types.h',
+    'Development/HIP/small_model_assets.h',
     'Development/HIP/submit_pulse.h',
     'Development/HIP/submit_pulse_hip.h',
     'src/native_config_layers.h',
@@ -398,6 +399,7 @@ $archivePaths = @(
     'src/native_hip_network.h',
     'src/native_input_geometry.h',
     'src/native_lab_paths.h',
+    'src/native_model_mode.h',
     'src/native_network_geometry.h',
     'src/native_pinned_resource.h',
     'src/native_pso.h',
@@ -451,6 +453,7 @@ $headerFiles = @(
     'Development\HIP\packed_weights.h',
     'Development\HIP\swin_persistent_network.h',
     'Development\HIP\swin_persistent_types.h',
+    'Development\HIP\small_model_assets.h',
     'Development\HIP\submit_pulse.h',
     'Development\HIP\submit_pulse_hip.h',
     'src\native_config_layers.h',
@@ -466,6 +469,7 @@ $headerFiles = @(
     'src\native_hip_network.h',
     'src\native_input_geometry.h',
     'src\native_lab_paths.h',
+    'src\native_model_mode.h',
     'src\native_network_geometry.h',
     'src\native_pinned_resource.h',
     'src\native_pso.h',
@@ -833,6 +837,25 @@ if ($content -match '#include\s*"native_split\.h"') {
     Write-Host "  Applied patch: removed native_split.h in native_temporal_feed.h" -ForegroundColor Yellow
 }
 
+# Patch H: the history copy reads the network's RGB at its own row width, which the Small model's geometry makes wider
+# than the colour's (upstream's RGB texture and decode take NATIVE_RGB_PROCESSING_WIDTH the same way).
+$content = Get-Content -LiteralPath $feedH -Raw -Encoding UTF8
+$anchor = 'for(UINT i=0;i<2;i++){D3D_SHADER_MACRO macros[]={{"FEED_MOTION",i?"0":"1"},{nullptr,nullptr}};'
+if (-not $content.Contains('NATIVE_RGB_PROCESSING_WIDTH')) {
+    if (-not $content.Contains($anchor)) { throw "Patch H failed: shader macro anchor not found in native_temporal_feed.h" }
+    $content = $content.Replace($anchor, 'const std::string pw=std::to_string(geometry.processing_width);for(UINT i=0;i<2;i++){D3D_SHADER_MACRO macros[]={{"FEED_MOTION",i?"0":"1"},{i&&geometry.processing_width!=geometry.valid_width?"NATIVE_RGB_PROCESSING_WIDTH":nullptr,pw.c_str()},{nullptr,nullptr}};')
+    [IO.File]::WriteAllText($feedH, $content, [Text.UTF8Encoding]::new($false))
+}
+$feedHlsl = Join-Path $vendorRoot 'shaders\native_temporal_feed.hlsl'
+$content = Get-Content -LiteralPath $feedHlsl -Raw -Encoding UTF8
+if (-not $content.Contains('NATIVE_RGB_PROCESSING_WIDTH')) {
+    $anchor = ' uint p=(id.y*motion_width+id.x)*3;'
+    if (-not $content.Contains($anchor)) { throw "Patch H failed: history index not found in native_temporal_feed.hlsl" }
+    $content = $content.Replace($anchor, "#ifdef NATIVE_RGB_PROCESSING_WIDTH`r`n uint p=(id.y*NATIVE_RGB_PROCESSING_WIDTH+id.x)*3; // OptiScaler: Small geometry, network rows wider than the history`r`n#else`r`n" + $anchor + "`r`n#endif")
+    [IO.File]::WriteAllText($feedHlsl, $content, [Text.UTF8Encoding]::new($false))
+}
+Write-Host "  Applied patch: history copy at the network's row width (native_temporal_feed)" -ForegroundColor Yellow
+
 # Patch E: OptiScaler lets lmxxf's detail and colour strengths reach 2. The codec accepts them, and decode keeps
 # the extrapolated result a colour.
 $codecH = Join-Path $vendorRoot 'src\native_game_codec.h'
@@ -877,16 +900,23 @@ RWStructuredBuffer<float4> residual : register(u1);
 [numthreads(64,1,1)]
 void residual_main(uint3 id : SV_DispatchThreadID) {
     uint p = id.x; if (p >= pixels) return;
+#ifdef NATIVE_RGB_PROCESSING_WIDTH
+    // Small geometry: the network's rows are wider than the colour's; residual keeps the colour's, as the history does.
+    uint x = p % NATIVE_RGB_PROCESSING_WIDTH; if (x >= NATIVE_VALID_WIDTH) return;
+    uint q = p / NATIVE_RGB_PROCESSING_WIDTH * NATIVE_VALID_WIDTH + x;
+#else
+    uint q = p;
+#endif
     float3 o = float3(rgb[p*3], rgb[p*3+1], rgb[p*3+2]);
     float3 b = base[p].xyz; float3 r = o - b;
-    if (all(o == 0) || any(!isfinite(r))) { residual[p] = float4(0,0,0,1); return; }
+    if (all(o == 0) || any(!isfinite(r))) { residual[q] = float4(0,0,0,1); return; }
     if (pad) {
         float3 h = warped[p].xyz;
         float d = max(max(abs(r.x-h.x), abs(r.y-h.y)), abs(r.z-h.z));
         float w = strength * saturate(1.0 - d / threshold);
         if (w > 0) { r = lerp(r, h, w); o = b + r; rgb[p*3] = o.x; rgb[p*3+1] = o.y; rgb[p*3+2] = o.z; }
     }
-    residual[p] = float4(r, 1);
+    residual[q] = float4(r, 1);
 }
 #endif
 '@
