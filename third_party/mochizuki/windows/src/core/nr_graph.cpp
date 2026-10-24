@@ -171,13 +171,17 @@ static std::vector<uint8_t> g_tc_nobar;
 static std::vector<uint32_t> g_tc_words;
 static std::vector<size_t> g_tc_err;   // error words, as indices into g_tc_words
 static size_t g_tc_base = 0;
+static bool g_rdna3 = false;   // this build's Context::rdna3
+// RDNA3 keeps the barriers unless NR_TCHAIN=1: on an RX 7900 XT (Windows driver) the chained
+// 720p runs gave a darker picture that changed from run to run; the 9070 XT, forced onto the
+// same network, is bit-identical with and without them, so it is gfx11's side.
 static bool tchain_active() {
     const char* e = std::getenv("NR_TCHAIN");
-    return NR_TCHAIN_TILES && !(e && *e && std::atoi(e) == 0) && g_chain_epoch_word != 0xFFFFFFFFu;
+    const bool on = e && *e ? std::atoi(e) != 0 : !g_rdna3;
+    return NR_TCHAIN_TILES && on && g_chain_epoch_word != 0xFFFFFFFFu;
 }
 // The Linux network's kernel set (linux/shaders/<arch>/pipelines.json): ACO's, and RDNA3's, which the
 // driver compiles. Its tile counters, C=512 projections and frame tick differ from the Windows network's.
-static bool g_rdna3 = false;   // this build's Context::rdna3
 static bool linux_network() { return g_rdna3 || !nr::binary::directory().empty(); }
 // Which barriers a tile counter replaces. C=512: attn -> its projection ->
 // ffwd3 -> FFN projection -> attn. ViT: expand -> contraction -> QKV, and
