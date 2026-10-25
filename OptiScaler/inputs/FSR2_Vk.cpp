@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "FSR2_Vk.h"
 
+#include <unordered_set>
+
 #include "Util.h"
 #include "Config.h"
 #include "resource.h"
@@ -44,6 +46,15 @@ static PFN_ffxFsr2GetRenderResolutionFromQualityMode o_ffxFsr2GetRenderResolutio
 static PFN_ffxFsr2GetJitterPhaseCount o_ffxFsr2GetJitterPhaseCount_Vk = nullptr;
 static PFN_ffxFsr2GetScratchMemorySizeVK o_ffxFsr2GetScratchMemorySize_Vk = nullptr;
 static PFN_ffxGetDeviceVK o_ffxGetDevice_Vk = nullptr;
+
+typedef FfxErrorCode (*PFN_ffxFsr2GetInterfaceVK)(FfxFsr2Interface* outInterface, void* scratchBuffer,
+                                                  size_t scratchBufferSize, VkPhysicalDevice physicalDevice,
+                                                  PFN_vkGetDeviceProcAddr getDeviceProcAddr);
+static PFN_ffxFsr2GetInterfaceVK o_ffxFsr2GetInterface_Vk = nullptr;
+// fpCreateBackendContext the Vulkan backend DLL hands out, to tell its contexts from D3D12 ones
+static void* _vkCreateBackendContext = nullptr;
+// Contexts created through the generic FSR 2 DLL that run on the Vulkan backend
+static std::unordered_set<FfxFsr2Context*> _routedContexts;
 
 static std::unordered_map<FfxFsr2Context*, FfxFsr2ContextDescription> _initParams;
 static std::unordered_map<FfxFsr2Context*, NVSDK_NGX_Parameter*> _nvParams;
@@ -304,7 +315,8 @@ static std::optional<float> GetQualityOverrideRatioFfx(const FfxFsr2QualityMode 
 }
 
 // FSR2 Upscaler
-static FfxErrorCode ffxFsr2ContextCreate_Vk(FfxFsr2Context* context, FfxFsr2ContextDescription* contextDescription)
+static FfxErrorCode ContextCreate_Vk(PFN_ffxFsr2ContextCreate original, FfxFsr2Context* context,
+                                     FfxFsr2ContextDescription* contextDescription)
 {
     LOG_DEBUG("");
 
@@ -319,7 +331,7 @@ static FfxErrorCode ffxFsr2ContextCreate_Vk(FfxFsr2Context* context, FfxFsr2Cont
     {
         ScopedSkipHeapCapture skipHeapCapture {};
 
-        ccResult = o_ffxFsr2ContextCreate_Vk(context, contextDescription);
+        ccResult = original(context, contextDescription);
         _skipCreate = false;
 
         if (ccResult != FFX_OK)
@@ -340,6 +352,12 @@ static FfxErrorCode ffxFsr2ContextCreate_Vk(FfxFsr2Context* context, FfxFsr2Cont
 
     if (!state.nvngxVkInited)
     {
+        if (_vkPhysicalDevice == VK_NULL_HANDLE)
+        {
+            LOG_ERROR("No VkPhysicalDevice from the FSR 2 Vulkan backend, the game's FSR 2 runs");
+            return ccResult;
+        }
+
         NVSDK_NGX_FeatureCommonInfo fcInfo {};
         auto exePath = Util::ExePath().remove_filename();
 
@@ -348,8 +366,12 @@ static FfxErrorCode ffxFsr2ContextCreate_Vk(FfxFsr2Context* context, FfxFsr2Cont
             _vkPhysicalDevice, _vkDevice, vkGetInstanceProcAddr, vkGetDeviceProcAddr,
             state.NVNGX_Version == 0 ? NVSDK_NGX_Version_API : state.NVNGX_Version, &fcInfo);
 
+        // The game's context exists already, so its own FSR 2 keeps running (dispatch passes through)
         if (nvResult != NVSDK_NGX_Result_Success)
-            return FFX_ERROR_BACKEND_API_ERROR;
+        {
+            LOG_ERROR("NVSDK_NGX_VULKAN_Init_ProjectID_Ext: {:X}, the game's FSR 2 runs", (UINT) nvResult);
+            return ccResult;
+        }
 
         _nvnxgInited = true;
     }
@@ -357,7 +379,7 @@ static FfxErrorCode ffxFsr2ContextCreate_Vk(FfxFsr2Context* context, FfxFsr2Cont
     NVSDK_NGX_Parameter* params = nullptr;
 
     if (NVSDK_NGX_VULKAN_GetCapabilityParameters(&params) != NVSDK_NGX_Result_Success)
-        return FFX_ERROR_BACKEND_API_ERROR;
+        return ccResult;
 
     _nvParams[context] = params;
 
@@ -372,18 +394,23 @@ static FfxErrorCode ffxFsr2ContextCreate_Vk(FfxFsr2Context* context, FfxFsr2Cont
     return FFX_OK;
 }
 
+static FfxErrorCode ffxFsr2ContextCreate_Vk(FfxFsr2Context* context, FfxFsr2ContextDescription* contextDescription)
+{
+    return ContextCreate_Vk(o_ffxFsr2ContextCreate_Vk, context, contextDescription);
+}
+
 // FSR2.1
-static FfxErrorCode ffxFsr2ContextDispatch_Vk(FfxFsr2Context* context,
-                                              const FfxFsr2DispatchDescription* dispatchDescription)
+static FfxErrorCode ContextDispatch_Vk(PFN_ffxFsr2ContextDispatch original, FfxFsr2Context* context,
+                                       const FfxFsr2DispatchDescription* dispatchDescription)
 {
     LOG_DEBUG("");
 
-    // Skip OptiScaler stuff
-    if (!Config::Instance()->UseFsr2Inputs.value_or_default())
+    // Skip OptiScaler stuff, also for contexts OptiScaler could not take over
+    if (!Config::Instance()->UseFsr2Inputs.value_or_default() || !_initParams.contains(context))
     {
         _skipDispatch = true;
-        LOG_DEBUG("UseFsr2Inputs not enabled, skipping");
-        auto result = o_ffxFsr2ContextDispatch_Vk(context, dispatchDescription);
+        LOG_DEBUG("UseFsr2Inputs not enabled or context not ours, skipping");
+        auto result = original(context, dispatchDescription);
         _skipDispatch = false;
         return result;
     }
@@ -529,7 +556,13 @@ static FfxErrorCode ffxFsr2ContextDispatch_Vk(FfxFsr2Context* context,
     return FFX_ERROR_BACKEND_API_ERROR;
 }
 
-static FfxErrorCode ffxFsr2ContextDestroy_Vk(FfxFsr2Context* context)
+static FfxErrorCode ffxFsr2ContextDispatch_Vk(FfxFsr2Context* context,
+                                              const FfxFsr2DispatchDescription* dispatchDescription)
+{
+    return ContextDispatch_Vk(o_ffxFsr2ContextDispatch_Vk, context, dispatchDescription);
+}
+
+static FfxErrorCode ContextDestroy_Vk(PFN_ffxFsr2ContextDestroy original, FfxFsr2Context* context)
 {
     LOG_DEBUG("");
 
@@ -544,12 +577,17 @@ static FfxErrorCode ffxFsr2ContextDestroy_Vk(FfxFsr2Context* context)
     _initParams.erase(context);
 
     _skipDestroy = true;
-    auto cdResult = o_ffxFsr2ContextDestroy_Vk(context);
+    auto cdResult = original(context);
     _skipDestroy = false;
 
     LOG_INFO("result: {:X}", (UINT) cdResult);
 
     return FFX_OK;
+}
+
+static FfxErrorCode ffxFsr2ContextDestroy_Vk(FfxFsr2Context* context)
+{
+    return ContextDestroy_Vk(o_ffxFsr2ContextDestroy_Vk, context);
 }
 
 static int32_t ffxFsr2GetJitterPhaseCount_Vk(int32_t renderWidth, int32_t displayWidth)
@@ -608,6 +646,22 @@ static size_t ffxFsr2GetScratchMemorySize_Vk(VkPhysicalDevice physicalDevice)
     _vkPhysicalDevice = physicalDevice;
     LOG_DEBUG("VkPhysicalDevice: {:X}", (size_t) physicalDevice);
     return o_ffxFsr2GetScratchMemorySize_Vk(physicalDevice);
+}
+
+static FfxErrorCode ffxFsr2GetInterface_Vk(FfxFsr2Interface* outInterface, void* scratchBuffer,
+                                           size_t scratchBufferSize, VkPhysicalDevice physicalDevice,
+                                           PFN_vkGetDeviceProcAddr getDeviceProcAddr)
+{
+    auto result =
+        o_ffxFsr2GetInterface_Vk(outInterface, scratchBuffer, scratchBufferSize, physicalDevice, getDeviceProcAddr);
+
+    _vkPhysicalDevice = physicalDevice;
+
+    if (result == FFX_OK && outInterface != nullptr)
+        _vkCreateBackendContext = (void*) outInterface->fpCreateBackendContext;
+
+    LOG_DEBUG("VkPhysicalDevice: {:X}, result: {:X}", (size_t) physicalDevice, (UINT) result);
+    return result;
 }
 
 static FfxDevice ffxGetDevice_Vk(VkDevice device)
@@ -740,4 +794,101 @@ void HookFSR2VkExeInputs()
         o_ffxFsr2GetScratchMemorySize_Vk = nullptr;
         o_ffxGetDevice_Vk = nullptr;
     }
+}
+
+void HookFSR2VkBackendInputs(HMODULE module)
+{
+    if (module == nullptr || o_ffxFsr2GetInterface_Vk != nullptr)
+        return;
+
+    LOG_INFO("Trying to hook the FSR2 Vulkan backend");
+
+    o_ffxFsr2GetInterface_Vk =
+        (PFN_ffxFsr2GetInterfaceVK) KernelBaseProxy::GetProcAddress_()(module, "ffxFsr2GetInterfaceVK");
+
+    // The exe path may own this one already
+    PFN_ffxFsr2GetScratchMemorySizeVK scratch = nullptr;
+    if (o_ffxFsr2GetScratchMemorySize_Vk == nullptr)
+        scratch = (PFN_ffxFsr2GetScratchMemorySizeVK) KernelBaseProxy::GetProcAddress_()(
+            module, "ffxFsr2GetScratchMemorySizeVK");
+
+    if (o_ffxFsr2GetInterface_Vk == nullptr && scratch == nullptr)
+        return;
+
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+
+    if (o_ffxFsr2GetInterface_Vk != nullptr)
+        DetourAttach(&(PVOID&) o_ffxFsr2GetInterface_Vk, ffxFsr2GetInterface_Vk);
+
+    if (scratch != nullptr)
+    {
+        o_ffxFsr2GetScratchMemorySize_Vk = scratch;
+        DetourAttach(&(PVOID&) o_ffxFsr2GetScratchMemorySize_Vk, ffxFsr2GetScratchMemorySize_Vk);
+    }
+
+    auto detourResult = DetourTransactionCommit();
+    if (detourResult != NO_ERROR)
+    {
+        LOG_ERROR("Failed to attach FSR2 Vulkan backend hooks: {:X}", detourResult);
+        o_ffxFsr2GetInterface_Vk = nullptr;
+
+        if (scratch != nullptr)
+            o_ffxFsr2GetScratchMemorySize_Vk = nullptr;
+    }
+
+    LOG_DEBUG("ffxFsr2GetInterfaceVK: {:X}", (size_t) o_ffxFsr2GetInterface_Vk);
+}
+
+bool FSR2Vk_IsVkDescription(const void* contextDescription)
+{
+    if (contextDescription == nullptr)
+        return false;
+
+    auto cb = (void*) ((const FfxFsr2ContextDescription*) contextDescription)->callbacks.fpCreateBackendContext;
+
+    if (cb == nullptr)
+        return false;
+
+    if (cb == _vkCreateBackendContext)
+        return true;
+
+    // Backend not seen through ffxFsr2GetInterfaceVK: look at the module the callbacks live in
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR) cb, &module) ||
+        module == nullptr || module == exeModule)
+    {
+        return false;
+    }
+
+    return KernelBaseProxy::GetProcAddress_()(module, "ffxFsr2GetInterfaceVK") != nullptr &&
+           KernelBaseProxy::GetProcAddress_()(module, "ffxFsr2GetInterfaceDX12") == nullptr;
+}
+
+bool FSR2Vk_HasContext(void* context) { return _routedContexts.contains((FfxFsr2Context*) context); }
+
+int32_t FSR2Vk_ContextCreate(void* original, void* context, void* contextDescription)
+{
+    LOG_INFO("FSR 2 context on the Vulkan backend, using the Vulkan inputs");
+
+    auto result = ContextCreate_Vk((PFN_ffxFsr2ContextCreate) original, (FfxFsr2Context*) context,
+                                   (FfxFsr2ContextDescription*) contextDescription);
+
+    if (result == FFX_OK)
+        _routedContexts.insert((FfxFsr2Context*) context);
+
+    return result;
+}
+
+int32_t FSR2Vk_ContextDispatch(void* original, void* context, const void* dispatchDescription)
+{
+    return ContextDispatch_Vk((PFN_ffxFsr2ContextDispatch) original, (FfxFsr2Context*) context,
+                              (const FfxFsr2DispatchDescription*) dispatchDescription);
+}
+
+int32_t FSR2Vk_ContextDestroy(void* original, void* context)
+{
+    _routedContexts.erase((FfxFsr2Context*) context);
+    return ContextDestroy_Vk((PFN_ffxFsr2ContextDestroy) original, (FfxFsr2Context*) context);
 }

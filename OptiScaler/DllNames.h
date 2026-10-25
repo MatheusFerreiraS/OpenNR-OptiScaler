@@ -139,6 +139,7 @@ DEFINE_NAME_VECTORS(xefg, "libxess_fg");
 
 DEFINE_NAME_VECTORS(fsr2, "ffx_fsr2_api_x64");
 DEFINE_NAME_VECTORS(fsr2BE, "ffx_fsr2_api_dx12_x64");
+DEFINE_NAME_VECTORS(fsr2VkBE, "ffx_fsr2_api_vk_x64");
 
 DEFINE_NAME_VECTORS(fsr3, "ffx_fsr3upscaler_x64");
 DEFINE_NAME_VECTORS(fsr3BE, "ffx_backend_dx12_x64");

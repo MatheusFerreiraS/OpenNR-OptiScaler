@@ -19,6 +19,7 @@
 #include <proxies/FfxApi_Proxy.h>
 
 #include <inputs/FSR2_Dx12.h>
+#include <inputs/FSR2_Vk.h>
 #include <inputs/FSR3_Dx12.h>
 #include <inputs/FfxApiExe_Dx12.h>
 
@@ -466,6 +467,16 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
 
         if (module != nullptr)
             HookFSR2Dx12Inputs(module);
+
+        return module;
+    }
+
+    if (CheckDllNameW(&libName, &fsr2VkBENamesW))
+    {
+        auto module = NtdllProxy::LoadLibraryExW_Ldr(libName.c_str(), NULL, 0);
+
+        if (module != nullptr)
+            HookFSR2VkBackendInputs(module);
 
         return module;
     }

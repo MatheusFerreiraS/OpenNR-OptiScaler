@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "FSR2_Dx12.h"
+#include "FSR2_Vk.h"
 
 #include "Util.h"
 #include "Config.h"
@@ -369,6 +370,16 @@ static Fsr212::FfxErrorCode ffxFsr2ContextCreate_Dx12(Fsr212::FfxFsr2Context* co
     if (contextDescription == nullptr || contextDescription->device == nullptr)
         return Fsr212::FFX_ERROR_INVALID_ARGUMENT;
 
+    // ffx_fsr2_api_x64 serves both backends: a Vulkan context must never reach the D3D12 path
+    if (FSR2Vk_IsVkDescription(contextDescription))
+    {
+        _skipCreate = true;
+        auto result = (Fsr212::FfxErrorCode) FSR2Vk_ContextCreate((void*) o_ffxFsr2ContextCreate_Dx12, context,
+                                                                  contextDescription);
+        _skipCreate = false;
+        return result;
+    }
+
     auto& state = State::Instance();
 
     _skipCreate = true;
@@ -466,7 +477,7 @@ static Fsr212::FfxErrorCode ffxFsr2ContextCreate_Pattern_Dx12(Fsr212::FfxFsr2Con
 
         ccResult = o_ffxFsr2ContextCreate_Pattern_Dx12(context, contextDescription);
 
-        if (_skipCreate)
+        if (_skipCreate || FSR2Vk_IsVkDescription(contextDescription))
             return ccResult;
 
         if (ccResult != Fsr212::FFX_OK)
@@ -550,6 +561,10 @@ static Fsr212::FfxErrorCode ffxFsr2ContextDispatch_Dx12(Fsr212::FfxFsr2Context* 
 {
     LOG_DEBUG("");
 
+    if (FSR2Vk_HasContext(context))
+        return (Fsr212::FfxErrorCode) FSR2Vk_ContextDispatch((void*) o_ffxFsr2ContextDispatch_Dx12, context,
+                                                             dispatchDescription);
+
     // HACK, try to detected when we hooked FSR 2.0 call as FSR2.1/2.2
     if (std::labs(dispatchDescription->renderSize.width) > 20000)
     {
@@ -624,9 +639,9 @@ ffxFsr2ContextDispatch_Pattern_Dx12(Fsr212::FfxFsr2Context* context,
     LOG_DEBUG("");
 
     // Skip OptiScaler stuff
-    if (!Config::Instance()->UseFsr2Inputs.value_or_default() || _skipDispatch)
+    if (!Config::Instance()->UseFsr2Inputs.value_or_default() || _skipDispatch || !_nvParams.contains(context))
     {
-        LOG_DEBUG("UseFsr2Inputs not enabled, skipping");
+        LOG_DEBUG("UseFsr2Inputs not enabled or context not ours, skipping");
         return o_ffxFsr2ContextDispatch_Pattern_Dx12(context, dispatchDescription);
     }
 
@@ -889,6 +904,14 @@ static Fsr212::FfxErrorCode ffxFsr2ContextDestroy_Dx12(Fsr212::FfxFsr2Context* c
 
     if (context == nullptr)
         return Fsr212::FFX_ERROR_INVALID_ARGUMENT;
+
+    if (FSR2Vk_HasContext(context))
+    {
+        _skipDestroy = true;
+        auto result = (Fsr212::FfxErrorCode) FSR2Vk_ContextDestroy((void*) o_ffxFsr2ContextDestroy_Dx12, context);
+        _skipDestroy = false;
+        return result;
+    }
 
     if (_contexts.contains(context))
         NVSDK_NGX_D3D12_ReleaseFeature(_contexts[context]);

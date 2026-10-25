@@ -2154,6 +2154,10 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 if (handle != nullptr)
                     HookFSR2Dx12Inputs(handle);
 
+                handle = GetDllNameWModule(&fsr2VkBENamesW);
+                if (handle != nullptr)
+                    HookFSR2VkBackendInputs(handle);
+
                 HookFSR2ExeInputs();
             }
         }
