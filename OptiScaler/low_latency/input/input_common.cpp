@@ -293,6 +293,18 @@ bool InputCommon::xefg_paced()
     return activeOutput == LowLatencyMode::XeLL && State::Instance().activeFgOutput == FGOutput::XeFG;
 }
 
+bool InputCommon::neuralhub_multi_frame()
+{
+    auto& state = State::Instance();
+
+    if (state.dlssgLastSetMode != sl::DLSSGMode::eDynamic && state.dlssgDetectedInterpolationCount <= 1)
+        return false;
+
+    // Known by the time DLSS-FG runs, and the check can touch the disk
+    static const bool served = DlssNr::AmdBridge::NeuralHubFgServed();
+    return served;
+}
+
 LowLatencyInput InputCommon::default_input()
 {
     // With the XeFG input the game's own low latency for its frame generation is XeLL, Reflex markers it also sends
@@ -479,6 +491,28 @@ bool InputCommon::update_low_latency_tech(IUnknown* pDevice, API api, std::optio
 
     if (forced.has_value())
         desiredMode = *forced;
+
+    // NeuralHub's DLSS-FG at 3X and up: LatencyFlex, force disabled by update(), as 0.5.7's fakenvapi had it. A force
+    // disabled AntiLag 2 still sends frame types and frame ends to the driver, 0.5.7 had no AntiLag 2 context there.
+    // Back to AntiLag 2 at 2X or off, leaving it goes through the delay_deinit below.
+    if (!forced.has_value() && !mode.has_value() && api != API::Vulkan && desiredMode == LowLatencyMode::AntiLag2)
+    {
+        static std::atomic_bool lastNeuralHub = false;
+        bool neuralHub = neuralhub_multi_frame();
+
+        if (lastNeuralHub.exchange(neuralHub) != neuralHub)
+        {
+            auto& state = State::Instance();
+            auto count = state.dlssgDetectedInterpolationCount;
+            auto at = state.dlssgLastSetMode == sl::DLSSGMode::eDynamic ? std::string("Dynamic")
+                      : count > 0                                       ? std::format("{}X", count + 1)
+                                                                        : std::string("off");
+            LOG_INFO("NeuralHub DLSS-FG at {}: {}", at, neuralHub ? "LatencyFlex" : "AntiLag2");
+        }
+
+        if (neuralHub)
+            desiredMode = LowLatencyMode::LatencyFlex;
+    }
 
     desiredMode = for_api(desiredMode, api);
 
@@ -1355,22 +1389,31 @@ void InputCommon::update()
         // LatencyFlex and XeLL without XeFG fall apart with more than 1 generated DLSSG frame, AntiLag 2 only with
         // Dynamic MFG (its frame types come from the presents, dlssg_present). Only when it starts, Force State can be
         // changed back afterwards. The FPS Limiter doesn't care.
-        // NeuralHub's DLSS-FG paces badly with AntiLag 2 at 3X and up, there it stays off as in 0.5.7
-        static std::optional<bool> neuralHubDlssg;
-        if (!neuralHubDlssg.has_value() && state.dlssgDetectedInterpolationCount > 1)
-            neuralHubDlssg = DlssNr::AmdBridge::NeuralHubFgServed();
+        // NeuralHub's DLSS-FG at 3X and up runs on LatencyFlex, off as in 0.5.7 (update_low_latency_tech), and gets the
+        // Force State back at 2X or off
+        bool neuralHub = neuralhub_multi_frame();
+        static std::optional<ForceReflex> neuralHubRestore;
 
         static bool lastMultiFrame = false;
-        bool multiFrame = state.dlssgLastSetMode == sl::DLSSGMode::eDynamic ||
-                          (state.dlssgDetectedInterpolationCount > 1 &&
-                           (activeOutput != LowLatencyMode::AntiLag2 || neuralHubDlssg.value_or(false)));
+        bool multiFrame = neuralHub || state.dlssgLastSetMode == sl::DLSSGMode::eDynamic ||
+                          (state.dlssgDetectedInterpolationCount > 1 && activeOutput != LowLatencyMode::AntiLag2);
 
         if (!std::exchange(lastMultiFrame, multiFrame) && multiFrame && activeOutput != LowLatencyMode::Reflex &&
             activeOutput != LowLatencyMode::FpsLimiter && !xefgPaced &&
             Config::Instance()->FN_ForceReflex.value_or_default() != ForceReflex::ForceEnable)
         {
+            if (neuralHub)
+                neuralHubRestore = Config::Instance()->FN_ForceReflex.value_or_default();
+
             LOG_INFO("Multi frame generation, disabling {}", magic_enum::enum_name(activeOutput));
             Config::Instance()->FN_ForceReflex.set_volatile_value(ForceReflex::ForceDisable);
+        }
+        else if (!multiFrame && neuralHubRestore.has_value())
+        {
+            if (Config::Instance()->FN_ForceReflex.value_or_default() == ForceReflex::ForceDisable)
+                Config::Instance()->FN_ForceReflex.set_volatile_value(*neuralHubRestore);
+
+            neuralHubRestore.reset();
         }
 
         // OptiScaler's XeFG can start and stop at any time

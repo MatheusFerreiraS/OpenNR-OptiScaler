@@ -98,6 +98,9 @@ class InputCommon
 
     static bool xefg_paced();
 
+    // The game's DLSS-FG served by NeuralHub at 3X and up, or Dynamic
+    static bool neuralhub_multi_frame();
+
     inline static flag_set<LowLatencyInput> avaliableInputs {};
     inline static LowLatencyInput activeInput = LowLatencyInput::None;
     inline static LowLatencyMode activeOutput = LowLatencyMode::None;

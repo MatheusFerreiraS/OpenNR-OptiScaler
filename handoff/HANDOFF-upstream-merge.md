@@ -215,3 +215,43 @@ Re-test in Cyberpunk (keep `FGOutput=DLSSG`, then once with `FGOutput=auto`):
 3. Game at 3X: OptiScaler.log shows `Multi frame generation, disabling AntiLag2` and `Low latency Force State:
    ForceDisable`; play a minute and compare smoothness with 2X. If 3X is still unstable, send OptiScaler.log and
    the host log (count of `Frame rate over 100.00ms`).
+
+## Third Cyberpunk test (2026-10-25): 3X still stutters, LatencyFlex at 3X as in 0.5.7
+
+The previous fix force-disabled AntiLag 2 at 3X, but the merge's log still had 125 `Frame rate over 100.00ms`
+against 21 for 0.5.7 in the same scene.
+
+What 0.5.7 really did at 3X (nvapi/fakenvapi/low_latency_d3d.cpp, hooks/Reflex_Hooks.cpp:636-657 in 0.5.7): a
+change of `_FgNumFramesToGenerate` set `fakenvapiReloadLowLatency`, and the rebuilt tech skipped AntiLag 2 and XeLL
+when `dlssgDetectedInterpolationCount > 1` or Dynamic, so the output became LatencyFlex (0.5.7 log 15:03:48,
+`LowLatency algo: LatencyFlex` right after `generatedFrames=2`). The same block set Force State to ForceDisable, and
+`LatencyFlex::is_enabled()` honours it, so LatencyFlex never slept at 3X. 0.5.7's 3X pacing is therefore "no
+low-latency sleep and no AntiLag 2 context", not LatencyFlex pacing. The merge kept the AntiLag 2 context alive and
+only disabled it: it still sends `MarkEndOfFrameRendering` on every present marker and `SetFrameGenFrameType` on the
+out-of-band present markers to the driver (ll_antilag2.cpp), and `dlssg_present` keeps typing presents for it.
+
+Fix (low_latency/input/input_common.cpp, merge's own low-latency layer, no fakenvapi code restored; the game's
+Reflex markers already reach it through InputReflex):
+- `InputCommon::neuralhub_multi_frame()`: the game's DLSS-FG at 3X and up or Dynamic, and
+  `DlssNr::AmdBridge::NeuralHubFgServed()` (checked once, when it first matters).
+- `update_low_latency_tech`: when the output would be AntiLag 2 (Auto or picked, D3D, not a forced output, not
+  OptiScaler's own request) and that holds, the output is LatencyFlex. Leaving AntiLag 2 goes through the existing
+  `delay_deinit` (50 calls); going back to AntiLag 2 at 2X/off is immediate. Log:
+  `NeuralHub DLSS-FG at 3X: LatencyFlex`, and `NeuralHub DLSS-FG at 2X: AntiLag2` (or `at off`) on the way back.
+- `update`: the existing multi-frame rule still sets ForceDisable, as 0.5.7 did, so LatencyFlex doesn't sleep
+  (upstream and 0.5.7 both say it falls apart with more than 1 generated frame). New: at 2X/off the Force State it
+  had before goes back (0.5.7 left ForceDisable, which kept AntiLag 2 off at 2X after a 3X stretch). ForceEnable in
+  the INI still wins and lets LatencyFlex sleep at 3X.
+- Every other case (no NeuralHub, other FG outputs, Vulkan, XeFG, Reflex/FPS Limiter outputs) is unchanged.
+
+Build OK, headless all PASS (proxy-link vs 0.4.9, amd-host-contracts, shader-compatibility, the seven lmxxf tests,
+person).
+
+Re-test in Cyberpunk (same scene and INI, `FGOutput=auto`):
+1. 2X: `LowLatency algo: AntiLag2`, as before.
+2. Switch to 3X: `Multi frame generation, disabling AntiLag2`, `Low latency Force State: ForceDisable`,
+   `NeuralHub DLSS-FG at 3X: LatencyFlex`, then `FSR Anti-Lag 2.0 DX12 deinitialized` and `LowLatency algo:
+   LatencyFlex`. Play a minute; count `Frame rate over 100.00ms` (0.5.7: 21).
+3. Back to 2X: `NeuralHub DLSS-FG at 2X: AntiLag2`, `LowLatency algo: AntiLag2`, Force State back to InGame.
+If 3X is still worse than 0.5.7, the remaining differences are outside the output (Streamline's reflex/pcl handling,
+upstream's present path); send both logs.
