@@ -7,6 +7,7 @@
 #include <NVNGX_Parameter.h>
 
 #include <proxies/FfxApi_Proxy.h>
+#include <misc/DeferredRelease.h>
 
 #include <ffx_upscale.h>
 #include <vk/ffx_api_vk.h>
@@ -174,6 +175,17 @@ static VkFormat ffxApiGetVkFormat(uint32_t fmt)
         LOG_WARN("Unknown FFX API surface format: {}", fmt);
         return VK_FORMAT_UNDEFINED;
     }
+}
+
+static void ReleaseView(VkImageView& view)
+{
+    if (view == VK_NULL_HANDLE)
+        return;
+
+    // Command buffers in flight can still use it
+    DeferredRelease::Enqueue([device = _vkDevice, captured = view]() { vkDestroyImageView(device, captured, nullptr); },
+                             (uint64_t) _vkDevice);
+    view = VK_NULL_HANDLE;
 }
 
 static bool CreateIVandNVRes(FfxApiResource resource, VkImageView* imageView, NVSDK_NGX_Resource_VK* nvResource)
@@ -714,31 +726,17 @@ ffxReturnCode_t ffxDispatch_Vk(ffxContext* context, ffxDispatchDescHeader* desc)
     params->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, dispatchDesc->renderSize.width);
     params->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, dispatchDesc->renderSize.height);
 
-    // Clear last frames image views
-    LOG_DEBUG("Clear last frames image views");
-    if (depthImageView != nullptr)
-        vkDestroyImageView(_vkDevice, depthImageView, nullptr);
+    // Last frame's views: a mask missing this frame must not leave a freed view behind
+    for (auto view : { &depthImageView, &expImageView, &biasImageView, &colorImageView, &mvImageView,
+                       &outputImageView, &fsrReactiveView, &fsrTransparencyView })
+    {
+        ReleaseView(*view);
+    }
 
-    if (expImageView != nullptr)
-        vkDestroyImageView(_vkDevice, expImageView, nullptr);
-
-    if (biasImageView != nullptr)
-        vkDestroyImageView(_vkDevice, biasImageView, nullptr);
-
-    if (colorImageView != nullptr)
-        vkDestroyImageView(_vkDevice, colorImageView, nullptr);
-
-    if (mvImageView != nullptr)
-        vkDestroyImageView(_vkDevice, mvImageView, nullptr);
-
-    if (outputImageView != nullptr)
-        vkDestroyImageView(_vkDevice, outputImageView, nullptr);
-
-    if (fsrReactiveView != nullptr)
-        vkDestroyImageView(_vkDevice, fsrReactiveView, nullptr);
-
-    if (fsrTransparencyView != nullptr)
-        vkDestroyImageView(_vkDevice, fsrTransparencyView, nullptr);
+    params->Set(NVSDK_NGX_Parameter_ExposureTexture, (void*) nullptr);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, (void*) nullptr);
+    params->Set("FSR.transparencyAndComposition", (void*) nullptr);
+    params->Set("FSR.reactive", (void*) nullptr);
 
     // generate new ones with nvidia resource infos
     if (dispatchDesc->depth.resource == nullptr || !CreateIVandNVRes(dispatchDesc->depth, &depthImageView, &depthNVRes))

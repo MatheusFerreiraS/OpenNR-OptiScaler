@@ -317,3 +317,44 @@ Re-test:
 3. Cyberpunk, `FGInput=DLSSG`, `FGOutput=DLSSG`, game's DLSS-FG on at 2X then 3X: one FG only (no black bands or
    freezes); Frame Gen page shows the line and the disabled slider; overlay says `Game DLSS-FG x2`/`x3`; Override
    DLSSG Ratio changes the multiplier; FG hotkey toggles the game's FG off/on.
+
+## RDR2 Vulkan FSR 2: pause menu crash and the format-0 depth (2026-10-25)
+
+Test of 613983a4 (hash matches the installed winmm.dll): FSR 2 on Vulkan works, Esc crashes, log has
+`ffxApiGetVkFormat Unknown FFX surface format: 0` every frame.
+
+Crash (dumps RDR2.exe.3760 and .24508 with the 613983a4 PDB, copy kept in the scratchpad): bucket
+`HEAP_CORRUPTION ... BlockNotBusy_DOUBLE_FREE ... amdvlk64`, stack `RtlFreeHeap <- amdvlk64 <-
+ContextDispatch_Vk <- FSR2Vk_ContextDispatch <- ffxFsr2ContextDispatch_Dx12 <- RDR2`. The calls are the
+"clear last frame's views" block: 3760 at `vkDestroyImageView(colorImageView)`, 24508 at
+`vkDestroyImageView(biasImageView)` (the reactive view). That block destroyed the static views but never reset
+them. When a mask is missing for a frame (the pause menu stops sending reactive), its view is not recreated, so the
+next frame destroys the same handle again; once amdvlk has handed the freed block to a new view (the color one),
+the stale destroy frees that view and its own destroy is the double free. The NGX params also kept pointing at the
+freed reactive/exposure resources. Same pattern in FfxApi_Vk.cpp.
+
+Format 0: the dispatch log shows `depth: vk: 0 ffx: 0`. RDR2's FSR 2 Vulkan backend describes its depth as
+FFX_SURFACE_FORMAT_UNKNOWN (its VkFormat -> FFX table has no entry for it), so the view was created with
+VK_FORMAT_UNDEFINED. That's also why `IFeature_VkwDx12::ProcessVulkanTextures Depth not exist!!` showed up: that
+feature was the menu's pick ("FSR 3.X/4 w/Dx12", 18:32:04); the ~10 re-creations in that log are upscaler changes
+from the menu (w/Dx12, FSR 2.2.1, FSR 4 FP8/INT8/INT8 Lite), not the game. Routing Vulkan FSR 2 inputs to the
+Vulkan provider, which offers w/Dx12 upscalers, is intended.
+
+Fix (FSR2_Vk.cpp, FfxApi_Vk.cpp):
+- Last frame's views go through `DeferredRelease` (they can still be in flight) and are reset to null; the
+  optional params (exposure, bias mask, `FSR.reactive`, `FSR.transparencyAndComposition`) are cleared every
+  dispatch before they are set again.
+- FSR2_Vk.cpp no longer overwrites `FSR.reactive`/`FSR.transparencyAndComposition` with the raw VkImage after
+  setting them to the NGX resource; FFXFeature_Vk reads them as `NVSDK_NGX_Resource_VK*`.
+- `ffxGetTextureResourceVK` of ffx_fsr2_api_vk_x64 is hooked: when the backend returns UNKNOWN, the VkImage and the
+  VkFormat the game passed are kept (map capped at 64), and the view uses that format. The WWZ quirk stays the
+  fallback. The unknown-format warning is logged once per value.
+
+Build OK, headless all PASS (proxy-link vs 0.4.9, amd-host-contracts, shader-compatibility, the seven lmxxf tests,
+person).
+
+Re-test RDR2 Vulkan, FSR 2 on, INI defaults:
+1. No `Unknown FFX surface format: 0` spam; with LogLevel debug the FSR 4 dispatch shows `depth: ... vk: <non-zero>`.
+2. Open/close the pause menu (Esc) several times, also the map: no crash.
+3. Pick `FSR 3.X/4 w/Dx12` in the menu: no `Depth not exist!!`, picture OK. Then FSR 2.2.1 and FSR 4 again.
+4. NR on (mochizuki) with Esc in and out.

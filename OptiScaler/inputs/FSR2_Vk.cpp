@@ -2,6 +2,7 @@
 #include "FSR2_Vk.h"
 
 #include <unordered_set>
+#include <mutex>
 
 #include "Util.h"
 #include "Config.h"
@@ -9,6 +10,7 @@
 #include "NVNGX_Parameter.h"
 
 #include <proxies/KernelBase_Proxy.h>
+#include <misc/DeferredRelease.h>
 
 #include "scanner/scanner.h"
 #include "detours/detours.h"
@@ -55,6 +57,14 @@ static PFN_ffxFsr2GetInterfaceVK o_ffxFsr2GetInterface_Vk = nullptr;
 static void* _vkCreateBackendContext = nullptr;
 // Contexts created through the generic FSR 2 DLL that run on the Vulkan backend
 static std::unordered_set<FfxFsr2Context*> _routedContexts;
+
+typedef FfxResource (*PFN_ffxGetTextureResourceVK)(FfxFsr2Context* context, VkImage imgVk, VkImageView imageView,
+                                                   uint32_t width, uint32_t height, VkFormat imgFormat,
+                                                   const wchar_t* name, FfxResourceStates state);
+static PFN_ffxGetTextureResourceVK o_ffxGetTextureResource_Vk = nullptr;
+// VkFormat of images the backend describes as FFX_SURFACE_FORMAT_UNKNOWN (RDR2's depth)
+static std::unordered_map<VkImage, VkFormat> _unknownFormats;
+static std::mutex _unknownFormatsMutex;
 
 static std::unordered_map<FfxFsr2Context*, FfxFsr2ContextDescription> _initParams;
 static std::unordered_map<FfxFsr2Context*, NVSDK_NGX_Parameter*> _nvParams;
@@ -137,15 +147,65 @@ static VkFormat ffxApiGetVkFormat(uint32_t fmt)
         return VK_FORMAT_R8_UINT;
 
     default:
-        LOG_WARN("Unknown FFX surface format: {}", fmt);
+        static uint32_t lastWarned = UINT32_MAX;
+        if (fmt != lastWarned)
+        {
+            LOG_WARN("Unknown FFX surface format: {}", fmt);
+            lastWarned = fmt;
+        }
+
         return VK_FORMAT_UNDEFINED;
     }
+}
+
+static void ReleaseView(VkImageView& view)
+{
+    if (view == VK_NULL_HANDLE)
+        return;
+
+    // Command buffers in flight can still use it
+    DeferredRelease::Enqueue([device = _vkDevice, captured = view]() { vkDestroyImageView(device, captured, nullptr); },
+                             (uint64_t) _vkDevice);
+    view = VK_NULL_HANDLE;
+}
+
+static FfxResource ffxGetTextureResource_Vk(FfxFsr2Context* context, VkImage imgVk, VkImageView imageView,
+                                            uint32_t width, uint32_t height, VkFormat imgFormat,
+                                            const wchar_t* name, FfxResourceStates state)
+{
+    auto result = o_ffxGetTextureResource_Vk(context, imgVk, imageView, width, height, imgFormat, name, state);
+
+    if (result.description.format == FFX_SURFACE_FORMAT_UNKNOWN && imgVk != VK_NULL_HANDLE &&
+        imgFormat != VK_FORMAT_UNDEFINED)
+    {
+        std::scoped_lock lock(_unknownFormatsMutex);
+
+        if (_unknownFormats.size() > 64)
+            _unknownFormats.clear();
+
+        _unknownFormats[imgVk] = imgFormat;
+    }
+
+    return result;
+}
+
+static VkFormat ResourceVkFormat(const FfxResource& resource)
+{
+    if (resource.description.format != FFX_SURFACE_FORMAT_UNKNOWN)
+        return ffxApiGetVkFormat(resource.description.format);
+
+    std::scoped_lock lock(_unknownFormatsMutex);
+
+    if (auto it = _unknownFormats.find((VkImage) resource.resource); it != _unknownFormats.end())
+        return it->second;
+
+    return VK_FORMAT_UNDEFINED;
 }
 
 static bool CreateIVandNVRes(FfxResource resource, VkImageView* imageView, NVSDK_NGX_Resource_VK* nvResource,
                              bool isUAV = false, bool isDepth = false)
 {
-    auto sf = ffxApiGetVkFormat(resource.description.format);
+    auto sf = ResourceVkFormat(resource);
 
     // This is for WWZ depth issue
     if (sf == VK_FORMAT_UNDEFINED && State::Instance().gameQuirks & GameQuirk::ForceDepthD32S8)
@@ -438,31 +498,17 @@ static FfxErrorCode ContextDispatch_Vk(PFN_ffxFsr2ContextDispatch original, FfxF
     params->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, dispatchDescription->renderSize.width);
     params->Set(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, dispatchDescription->renderSize.height);
 
-    // Clear last frames image views
-    LOG_DEBUG("Clear last frames image views");
-    if (depthImageView != nullptr)
-        vkDestroyImageView(_vkDevice, depthImageView, nullptr);
+    // Last frame's views: a mask missing this frame must not leave a freed view behind (RDR2 pause menu double free)
+    for (auto view : { &depthImageView, &expImageView, &biasImageView, &colorImageView, &mvImageView,
+                       &outputImageView, &fsrReactiveView, &fsrTransparencyView })
+    {
+        ReleaseView(*view);
+    }
 
-    if (expImageView != nullptr)
-        vkDestroyImageView(_vkDevice, expImageView, nullptr);
-
-    if (biasImageView != nullptr)
-        vkDestroyImageView(_vkDevice, biasImageView, nullptr);
-
-    if (colorImageView != nullptr)
-        vkDestroyImageView(_vkDevice, colorImageView, nullptr);
-
-    if (mvImageView != nullptr)
-        vkDestroyImageView(_vkDevice, mvImageView, nullptr);
-
-    if (outputImageView != nullptr)
-        vkDestroyImageView(_vkDevice, outputImageView, nullptr);
-
-    if (fsrReactiveView != nullptr)
-        vkDestroyImageView(_vkDevice, fsrReactiveView, nullptr);
-
-    if (fsrTransparencyView != nullptr)
-        vkDestroyImageView(_vkDevice, fsrTransparencyView, nullptr);
+    params->Set(NVSDK_NGX_Parameter_ExposureTexture, (void*) nullptr);
+    params->Set(NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, (void*) nullptr);
+    params->Set("FSR.transparencyAndComposition", (void*) nullptr);
+    params->Set("FSR.reactive", (void*) nullptr);
 
     // generate new ones with nvidia resource infos
     if (dispatchDescription->depth.resource == nullptr ||
@@ -537,8 +583,6 @@ static FfxErrorCode ContextDispatch_Vk(PFN_ffxFsr2ContextDispatch original, FfxF
     params->Set("FSR.cameraFar", dispatchDescription->cameraFar);
     params->Set("FSR.cameraFovAngleVertical", dispatchDescription->cameraFovAngleVertical);
     params->Set("FSR.frameTimeDelta", dispatchDescription->frameTimeDelta);
-    params->Set("FSR.transparencyAndComposition", dispatchDescription->transparencyAndComposition.resource);
-    params->Set("FSR.reactive", dispatchDescription->reactive.resource);
     params->Set(NVSDK_NGX_Parameter_Sharpness, dispatchDescription->sharpness);
 
     LOG_DEBUG("handle: {:X}, internalResolution: {}x{}", handle->Id, dispatchDescription->renderSize.width,
@@ -815,11 +859,17 @@ void HookFSR2VkBackendInputs(HMODULE module)
     if (o_ffxFsr2GetInterface_Vk == nullptr && scratch == nullptr)
         return;
 
+    o_ffxGetTextureResource_Vk =
+        (PFN_ffxGetTextureResourceVK) KernelBaseProxy::GetProcAddress_()(module, "ffxGetTextureResourceVK");
+
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
 
     if (o_ffxFsr2GetInterface_Vk != nullptr)
         DetourAttach(&(PVOID&) o_ffxFsr2GetInterface_Vk, ffxFsr2GetInterface_Vk);
+
+    if (o_ffxGetTextureResource_Vk != nullptr)
+        DetourAttach(&(PVOID&) o_ffxGetTextureResource_Vk, ffxGetTextureResource_Vk);
 
     if (scratch != nullptr)
     {
@@ -832,6 +882,7 @@ void HookFSR2VkBackendInputs(HMODULE module)
     {
         LOG_ERROR("Failed to attach FSR2 Vulkan backend hooks: {:X}", detourResult);
         o_ffxFsr2GetInterface_Vk = nullptr;
+        o_ffxGetTextureResource_Vk = nullptr;
 
         if (scratch != nullptr)
             o_ffxFsr2GetScratchMemorySize_Vk = nullptr;
