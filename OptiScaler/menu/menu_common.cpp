@@ -2041,8 +2041,9 @@ void MenuCommon::HandleMenuShortcuts(RenderMenuContext& ctx)
         {
             inputFG = false;
 
-            // DLSSG via Nvngx - activeFgOutput is NoFG, game's DLSSG is controlled by Override DLSSG Ratio
-            if (state.activeFgInput == FGInput::NvngxFG)
+            // DLSSG via Nvngx - activeFgOutput is NoFG, game's DLSSG is controlled by Override DLSSG Ratio.
+            // Same for the game's DLSS-FG on NeuralHub, where our DLSSG output is blocked.
+            if (state.activeFgInput == FGInput::NvngxFG || state.GameDlssgBlocksOwnFG())
             {
                 if (state.dlssgMfgMax.has_value() && state.dlssgMfgMax.value() >= 1)
                 {
@@ -2772,6 +2773,11 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             else if (activeNvngxFg == FGNvngxReplacement::Combo)
             {
                 fgText = formatFg("Combo", Nvngx_FG::getMaxFakeFramesCount());
+            }
+            else if (state.GameDlssgBlocksOwnFG())
+            {
+                fgText = state.GameDlssgGenerating() ? std::format(" (Game DLSS-FG x{})", state.dlssgLastSetFrames + 1)
+                                                     : std::string(" (Game DLSS-FG off)");
             }
             else if (state.activeFgOutput == FGOutput::DLSSG && fg)
             {
@@ -6253,7 +6259,8 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
         }
 
         const bool dlssgInputOrOutput =
-            state.activeFgOutput == FGOutput::DLSSG || state.activeFgInput == FGInput::DLSSG;
+            (state.activeFgOutput == FGOutput::DLSSG || state.activeFgInput == FGInput::DLSSG) &&
+            !state.GameDlssgBlocksOwnFG();
 
         ImGui::BeginDisabled(state.dlssgGameDMFGSupported && config->FGDLSSGOverrideForceDMFG.value_or_default());
         if (state.dlssgMfgMax.has_value() && state.dlssgMfgMax.value() >= 1 && !dlssgInputOrOutput)
@@ -7283,9 +7290,13 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             }
         }
 
-        ImGui::Text("Current DLSSG state:");
+        const bool gameDlssg = state.GameDlssgBlocksOwnFG();
+
+        ImGui::Text(gameDlssg ? "Game's DLSS-FG:" : "Current DLSSG state:");
         ImGui::SameLine();
-        if (auto count = state.dlssgDetectedInterpolationCount; count > 0)
+        if (auto count = gameDlssg ? (state.GameDlssgGenerating() ? state.dlssgLastSetFrames : 0)
+                                   : state.dlssgDetectedInterpolationCount;
+            count > 0)
         {
             ImGui::TextColored(toneMapColor(ImVec4(0.f, 1.f, 0.25f, 1.f)), std::format("ON {}x", count + 1).c_str());
         }
@@ -7293,6 +7304,11 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         {
             ImGui::TextColored(StatusError(), "OFF");
         }
+
+        if (gameDlssg)
+            ImGui::TextColored(StatusWarn(), "The game's DLSS-FG is running; set it in the game");
+
+        ImGui::BeginDisabled(gameDlssg);
 
         RenderFGModeSlider(ctx, "Frame Gen##dlssg", dlssg->GetMaxInterpolationCount(),
                            &config->FGDLSSGInterpolationCount);
@@ -7333,6 +7349,8 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
                 ImGui::EndDisabled();
             }
         }
+
+        ImGui::EndDisabled();
 
         bool useGamesMarkers = config->FGDLSSGUseGamesReflexMarkers.value_or_default();
         // Vulkan games' markers don't reach OptiScaler's Streamline

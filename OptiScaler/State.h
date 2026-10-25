@@ -316,6 +316,10 @@ class State
 
     bool dlssgGameDMFGSupported = false;
     sl::DLSSGMode dlssgLastSetMode = sl::DLSSGMode::eOff;
+    // Frames the game's DLSS-G was last asked to generate (with dlssgLastSetMode)
+    int dlssgLastSetFrames = 0;
+    // slInit kept the game's own DLSS-G (NeuralHub's NGX host serves DLSS-FG)
+    bool gameDlssgNative = false;
     int dlssgDetectedInterpolationCount = 0;
 
     // What the game requested from DLSSG when it's used as FG Input
@@ -480,6 +484,19 @@ class State
     bool FGSwapchainExists() const
     {
         return currentFGSwapchain != nullptr || (currentVkFG != nullptr && currentVkFG->HasSwapchain());
+    }
+
+    // The game's DLSS-FG runs through to its own DLSS-G, so a DLSSG output of ours would stack a second FG on it
+    bool GameDlssgBlocksOwnFG() const
+    {
+        return gameDlssgNative && activeFgOutput == FGOutput::DLSSG &&
+               (activeFgInput == FGInput::DLSSG || activeFgInput == FGInput::NoFG);
+    }
+
+    // The game's DLSS-FG is generating through its own DLSS-G
+    bool GameDlssgGenerating() const
+    {
+        return gameDlssgNative && dlssgLastSetMode != sl::DLSSGMode::eOff && dlssgLastSetFrames > 0;
     }
 
     static UINT GetOwner()

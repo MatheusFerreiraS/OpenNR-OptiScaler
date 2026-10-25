@@ -1123,8 +1123,13 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
                                 State::Instance().activeFgOutput != FGOutput::XeFG &&
                                 State::Instance().activeFgOutput != FGOutput::FSRFG;
 
+    State::Instance().gameDlssgNative = useNativeDlssg;
+
     if (useNativeDlssg)
     {
+        if (State::Instance().GameDlssgBlocksOwnFG())
+            LOG_INFO("hkslInit: the game's DLSS-FG runs on NeuralHub, OptiScaler's DLSSG output stays off");
+
         std::vector<sl::Feature> localFeaturesToLoad(pref.featuresToLoad, pref.featuresToLoad + pref.numFeaturesToLoad);
         if (std::find(localFeaturesToLoad.begin(), localFeaturesToLoad.end(), sl::kFeatureDLSS_G) == localFeaturesToLoad.end())
         {
@@ -2448,6 +2453,7 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     }
 
     state.dlssgLastSetMode = newOptions.mode;
+    state.dlssgLastSetFrames = newOptions.mode == sl::DLSSGMode::eOff ? 0 : (int) newOptions.numFramesToGenerate;
 
     const auto result = o_slDLSSGSetOptions(viewport, newOptions);
     static thread_local int loggedMode = -1;
