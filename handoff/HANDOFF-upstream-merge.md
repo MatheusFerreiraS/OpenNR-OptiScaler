@@ -175,3 +175,43 @@ Anti-Lag 2 stalled-marker fix checked: present (ll_antilag2.cpp:196, combined wi
 
 Re-test: Cyberpunk with `FGOutput=DLSSG` and with `FGOutput=auto`, game's DLSS-FG on: host log shows
 `NGX CreateFeature DLSS-FG`, OptiScaler.log shows `DLSSG options: requested=1 forwarded=1`.
+
+## Second Cyberpunk test (2026-10-25): DLSS-FG multiplier override missing, 3X unstable
+
+### Override DLSSG Ratio missing from the menu
+
+The menu code is unchanged from 0.5.7 (`Override DLSSG Ratio`, `Force Dynamic MFG`, same `[DLSSG]
+OverrideInterpolationCount` / `OverrideForceDMFG` / `FramerateTargetDMFG` keys, menu_common.cpp:6253). It shows only
+when OptiScaler has no DLSSG instance of its own (`!dlssgInputOrOutput`). The test INI has `FGOutput=DLSSG` with no FG
+input, so `activeFgOutput` was DLSSG and the section was hidden. In 0.5.7 that INI turned the game's DLSS-FG off
+(see the previous section), so the working 0.5.7 setup was output auto/None, where the section shows.
+
+Fix: DLSSG output without an FG input is now run as no output (dllmain.cpp, after "Ensure valid FG configuration";
+log line `FG Output DLSSG without an FG Input, the game's DLSSG runs as with no output`). That is exactly 0.5.7's
+working path for the game's DLSS-FG, and it also keeps the DLSSG-output-only code away from the game's own DLSS-G
+(ALLOW_TEARING forced on ResizeBuffers from b48fcb0dc, the local sl.reflex/sl.pcl handling, NvApi DRS overrides).
+The menu's "restart to apply" check maps the same case to no output.
+
+### DLSS-FG 3X unstable
+
+0.5.7 built without `LOW_LATENCY_INPUTS`: fakenvapi drove Anti-Lag 2 and force-disabled low latency once DLSSG
+generated more than 1 frame (Reflex_Hooks `_FgNumFramesToGenerate > 1`, fakenvapi did not create AL2 then).
+Upstream removed that path (a79c2f34b, 5dfedd683) and e1351b397 keeps AL2 on with MFG, typing frames by counting
+presents in the wrapped swapchain (`InputCommon::dlssg_present`). The test log has `LowLatency algo: AntiLag2` and no
+`Multi frame generation, disabling` line during the 3X stretch: AL2 stayed on, which 0.5.7 never did at 3X. Streamline
+logs `Frame rate over 100.00ms` and skipped presents there.
+
+Fix: `InputCommon::update` (input_common.cpp) treats AL2 like LatencyFlex/XeLL when NeuralHub serves DLSS-FG
+(`NeuralHubFgServed()`, cached once the count goes above 1): low latency is force-disabled at 3X and up, as in 0.5.7.
+Upstream's AL2 MFG typing stays for every other case; 2X is unchanged.
+
+Build OK, headless tests all PASS (proxy-link vs 0.4.9, amd-host-contracts, shader-compatibility, lmxxf
+list-split/create-execute/evaluate-cut/interposer-wrap/list1-wrap/same-frame-boundary/color-probe, person).
+
+Re-test in Cyberpunk (keep `FGOutput=DLSSG`, then once with `FGOutput=auto`):
+1. OptiScaler.log has the `FG Output DLSSG without an FG Input` line; host log has `CreateFeature DLSS frame generation`.
+2. Frame Gen page shows `Override DLSSG Ratio` (Default/Off/2X/3X/4X) and `Force Dynamic MFG`; 3X from the menu gives
+   `DLSSG options: ... generatedFrames=2`.
+3. Game at 3X: OptiScaler.log shows `Multi frame generation, disabling AntiLag2` and `Low latency Force State:
+   ForceDisable`; play a minute and compare smoothness with 2X. If 3X is still unstable, send OptiScaler.log and
+   the host log (count of `Frame rate over 100.00ms`).

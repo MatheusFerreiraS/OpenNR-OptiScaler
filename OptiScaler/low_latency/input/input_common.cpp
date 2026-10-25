@@ -16,6 +16,7 @@
 #include <inputs/FG/XeFG_Inputs_Dx12.h>
 #include <framegen/IFGFeature_Dx12.h>
 #include <nvapi/fakenvapi.h>
+#include <dlssnr/amd/AmdBridge.h>
 
 #include <deque>
 
@@ -1354,9 +1355,15 @@ void InputCommon::update()
         // LatencyFlex and XeLL without XeFG fall apart with more than 1 generated DLSSG frame, AntiLag 2 only with
         // Dynamic MFG (its frame types come from the presents, dlssg_present). Only when it starts, Force State can be
         // changed back afterwards. The FPS Limiter doesn't care.
+        // NeuralHub's DLSS-FG paces badly with AntiLag 2 at 3X and up, there it stays off as in 0.5.7
+        static std::optional<bool> neuralHubDlssg;
+        if (!neuralHubDlssg.has_value() && state.dlssgDetectedInterpolationCount > 1)
+            neuralHubDlssg = DlssNr::AmdBridge::NeuralHubFgServed();
+
         static bool lastMultiFrame = false;
         bool multiFrame = state.dlssgLastSetMode == sl::DLSSGMode::eDynamic ||
-                          (state.dlssgDetectedInterpolationCount > 1 && activeOutput != LowLatencyMode::AntiLag2);
+                          (state.dlssgDetectedInterpolationCount > 1 &&
+                           (activeOutput != LowLatencyMode::AntiLag2 || neuralHubDlssg.value_or(false)));
 
         if (!std::exchange(lastMultiFrame, multiFrame) && multiFrame && activeOutput != LowLatencyMode::Reflex &&
             activeOutput != LowLatencyMode::FpsLimiter && !xefgPaced &&

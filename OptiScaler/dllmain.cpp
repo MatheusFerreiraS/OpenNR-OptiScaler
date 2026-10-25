@@ -1919,6 +1919,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             State::Instance().activeFgInput = FGInput::NoFG;
         }
 
+        // The DLSSG output without an FG input has no instance of ours: the game's DLSS-FG runs as with no output
+        // (on AMD on NeuralHub's NGX host), so the game's multiplier override and 0.5.7's pacing path apply
+        if (State::Instance().activeFgOutput == FGOutput::DLSSG && State::Instance().activeFgInput == FGInput::NoFG)
+        {
+            spdlog::info("FG Output DLSSG without an FG Input, the game's DLSSG runs as with no output");
+            State::Instance().activeFgOutput = FGOutput::NoFG;
+        }
+
         if (State::Instance().activeFgInput != FGInput::NvngxFG && State::Instance().activeFgOutput != FGOutput::DLSSG)
             State::Instance().activeFgNvngx = FGNvngxReplacement::None;
 

@@ -6228,6 +6228,11 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
         if (config->FGInput.value_or_default() == FGInput::XeFG && configFgOutput == FGOutput::XeFG)
             configFgOutput = FGOutput::NoFG;
 
+        // So does the DLSSG output without an FG input (the game's own DLSSG)
+        if (config->FGInput.value_or_default() == FGInput::NoFG && configFgOutput == FGOutput::DLSSG &&
+            state.activeFgInput == FGInput::NoFG)
+            configFgOutput = FGOutput::NoFG;
+
         state.fgSettingsChanged = state.activeFgOutput != configFgOutput ||
                                   state.activeFgInput != config->FGInput.value_or_default() || nvngxFgChanged;
 
