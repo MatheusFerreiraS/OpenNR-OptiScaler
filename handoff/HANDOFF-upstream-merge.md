@@ -156,3 +156,22 @@ the new keys ship as `auto` without changes. Keys worth a decision:
    back to a fixed multiplier.
 9. A D3D11 game (Assetto Corsa or a Unity title) with NR on the D3D11 bridge and DLSS on12; Witcher 3 DRS
    (upstream's XeFGCameraMotionFill quirk is new there).
+
+## Fix after the first Cyberpunk test (2026-10-25): NeuralHub DLSS-FG did nothing
+
+Symptom: the game's DLSS-FG on, no generated frames; the NeuralHub host log has no `NGX CreateFeature DLSS-FG`
+and OptiScaler.log has no `DLSSG options:` line. The INI had `FGOutput=DLSSG` with `FGInput=auto` (NoFG).
+
+Cause: `hkslDLSSGSetOptions` (hooks/Streamline_Hooks.cpp:2354) forces the game's DLSS-G mode to `eOff` whenever the
+output is DLSSG and the input is not DLSSG, to make room for OptiScaler's own DLSSG instance. With no FG input that
+instance never exists (`FGHooks::CheckForFGStatus` returns false: "Can't init FG Feature"), so sl.dlss_g never
+created the NGX feature. The same check is in 0.5.7 (`e42f3dc68`, older than the fork's merge base); 0.5.7 only
+looked fine because an FG output picked in the menu applies after a restart, and the next start reads the saved
+`FGOutput=DLSSG`. The game's DLSS-FG on NeuralHub (`useNativeDlssg`) needs the output at auto/None or DLSSG with
+no input.
+
+Fix: the game's DLSS-G is turned off only when OptiScaler has an FG input of its own (not NoFG, not DLSSG).
+Anti-Lag 2 stalled-marker fix checked: present (ll_antilag2.cpp:196, combined with upstream's `interpolated`).
+
+Re-test: Cyberpunk with `FGOutput=DLSSG` and with `FGOutput=auto`, game's DLSS-FG on: host log shows
+`NGX CreateFeature DLSS-FG`, OptiScaler.log shows `DLSSG options: requested=1 forwarded=1`.

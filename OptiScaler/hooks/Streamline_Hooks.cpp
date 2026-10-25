@@ -2351,8 +2351,10 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
 
     auto& state = State::Instance();
 
-    // Disable game's DLSSG when we are trying to create our own instance of DLSSG
-    if (state.activeFgInput != FGInput::DLSSG && state.activeFgOutput == FGOutput::DLSSG)
+    // Disable game's DLSSG when we are trying to create our own instance of DLSSG. Without an FG input there is no
+    // instance of ours, so the game's DLSS-FG stays on (on AMD it runs on NeuralHub's NGX host).
+    if (state.activeFgInput != FGInput::DLSSG && state.activeFgInput != FGInput::NoFG &&
+        state.activeFgOutput == FGOutput::DLSSG)
     {
         newOptions.mode = sl::DLSSGMode::eOff;
         return o_slDLSSGSetOptions(viewport, newOptions);
