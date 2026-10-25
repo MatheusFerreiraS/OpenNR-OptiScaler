@@ -311,7 +311,7 @@ person).
 
 Re-test:
 1. RDR2, `system.xml` API Vulkan, INI defaults (EnableFsr2Inputs/UseFsr2VulkanInputs auto), FSR 2 on in the game:
-   no crash; OptiScaler.log has the lines above; the overlay shows `FSR2 (Vk)` input with OptiScaler's upscaler;
+   no crash; OptiScaler.log has the lines above; the overlay shows `VLK` and `FSR 2.X -> <OptiScaler upscaler>`;
    NR on (mochizuki, then danielblnc) runs. Play a few minutes, change FSR 2 quality once (context recreate).
 2. RDR2 DX12: still the D3D12 handlers (`ffxFsr2ContextCreate_Dx12 context created`), as in the OK run.
 3. Cyberpunk, `FGInput=DLSSG`, `FGOutput=DLSSG`, game's DLSS-FG on at 2X then 3X: one FG only (no black bands or
