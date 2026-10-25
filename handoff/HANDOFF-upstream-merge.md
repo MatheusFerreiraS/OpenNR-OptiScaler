@@ -255,3 +255,65 @@ Re-test in Cyberpunk (same scene and INI, `FGOutput=auto`):
 3. Back to 2X: `NeuralHub DLSS-FG at 2X: AntiLag2`, `LowLatency algo: AntiLag2`, Force State back to InGame.
 If 3X is still worse than 0.5.7, the remaining differences are outside the output (Streamline's reflex/pcl handling,
 upstream's present path); send both logs.
+
+## In-game results and open tasks (2026-10-25, written by the main session)
+- OK: RDR2 DX12 + mochizuki; Cyberpunk lmxxf, mochizuki, danielblnc DLSS-FG at 2x/3x (after f9ebeac92, 6870c2183, b5aba4cfe). danielblnc NR stays off while its host is on D3D12 for FG (as in 0.5.7). 4x small hitches = NeuralHub.
+- Open: (1) RDR2 Vulkan: FSR 2 DLLs hooked as DX12 -> amdvlk crash; UseFsr2VulkanInputs only hooks exe exports. (2) installer: ship a 310.x nvngx_dlss.dll for danielblnc 0.8.0 when the game's is older (RDR2 2.2.10 -> NeuralHub FSR fallback throws). (3) WrongGPU crashes RDR2 DX12 at start (D3D12Core.dll+0x2483e2). (4) OptiScaler's own FG in a game whose DLSS-FG already runs through the host stacks two FGs (black bands, hitches): block/hide it.
+- Not yet tested: BeamNG, Crimson Desert, RE9, a Vulkan game with FSR 4, D3D11.
+
+## FSR 2 DLLs on Vulkan, and OptiScaler's FG over the game's DLSS-FG (2026-10-25)
+
+### RDR2 Vulkan: FSR 2 DLLs hooked as D3D12
+
+Cause: `ffx_fsr2_api_x64.dll` (the generic FSR 2 API, shared by both backends) was always hooked with the D3D12
+handlers. With a Vulkan context `ffxFsr2ContextCreate_Dx12` did not find the VkDevice among the D3D12 devices, took
+the last D3D12 device instead (the Vk w/Dx12 interop one), built a D3D12 feature, and the dispatch then handed a
+VkCommandBuffer to D3D12 (amdvlk64 crash). `UseFsr2VulkanInputs=true` only looked for exports in the exe.
+
+Fix (general, any game with the FSR 2 DLLs on Vulkan; no game check):
+- `ffx_fsr2_api_vk_x64.dll` is hooked too (dllmain and LoadLibrary, name vector `fsr2VkBE`):
+  `ffxFsr2GetInterfaceVK` keeps the VkPhysicalDevice and the `fpCreateBackendContext` it hands out,
+  `ffxFsr2GetScratchMemorySizeVK` the physical device.
+- The handler set is picked per context at `ffxFsr2ContextCreate`: `FSR2Vk_IsVkDescription` compares the
+  description's `callbacks.fpCreateBackendContext` with the Vulkan backend's (fallback: the module holding the callback
+  exports `ffxFsr2GetInterfaceVK` and not `ffxFsr2GetInterfaceDX12`). Vulkan contexts go to the FSR2_Vk handlers
+  (now taking the original function as an argument, so the exe path and the DLL path share them); dispatch and
+  destroy follow the context. The pattern-hook variants pass Vulkan contexts through.
+- If OptiScaler can't take the Vulkan context (no physical device, NGX init fails) the game's FSR 2 runs: create
+  returns the game's result and dispatch passes through for contexts that are not ours (also fixes a null
+  dereference in the exe Vk and pattern D3D12 dispatches).
+- RDR2's GameConfigs quirk and d9b621109 untouched. D3D12 RDR2 is unchanged (its callbacks live in the dx12 DLL).
+
+Log to look for: `Trying to hook the FSR2 Vulkan backend`, `ffxFsr2GetInterfaceVK: <addr>`, then on FSR 2 on
+`FSR 2 context on the Vulkan backend, using the Vulkan inputs` and `ContextCreate_Vk context created`.
+
+### OptiScaler's own DLSSG output stacked on the game's DLSS-FG (Cyberpunk, NeuralHub host)
+
+With `FGInput=DLSSG`, `FGOutput=DLSSG` and NeuralHub serving DLSS-FG, `hkslInit` keeps the game's DLSS-G
+(`useNativeDlssg`) and `hkslDLSSGSetOptions` forwards the game's mode to it, while OptiScaler's DLSSG output (its own
+Streamline copy) generated on top whenever the menu's Frame Gen was Default or 2X+.
+
+Fix:
+- `State::gameDlssgNative` is set from `useNativeDlssg` in `hkslInit`; `State::GameDlssgBlocksOwnFG()` = that, DLSSG
+  output, and FG input DLSSG (or none). `Config::IsFGEnabled()` returns false then, so our DLSSG instance stays
+  deactivated whatever the menu or the INI say (log `hkslInit: the game's DLSS-FG runs on NeuralHub, OptiScaler's
+  DLSSG output stays off`).
+- Frame Gen page, DLSSG card: "Game's DLSS-FG: ON 3x / OFF" from the forwarded options, the line "The game's
+  DLSS-FG is running; set it in the game", and the Frame Gen slider/Force Dynamic MFG disabled. Override DLSSG Ratio
+  and the game's Force Dynamic MFG show (same `hkslDLSSGSetOptions` path as with no output). The FG hotkey drives the
+  game's DLSS-FG through the ratio override, as with the Nvngx FG input.
+- FPS overlay: `(Game DLSS-FG x3)` / `(Game DLSS-FG off)` from `dlssgLastSetMode` and the new `dlssgLastSetFrames`
+  (the forwarded `numFramesToGenerate`).
+- Without NeuralHub (game's DLSS-G removed, our DLSSG output) nothing changes.
+
+Build OK, headless all PASS (proxy-link vs 0.4.9, amd-host-contracts, shader-compatibility, the seven lmxxf tests,
+person).
+
+Re-test:
+1. RDR2, `system.xml` API Vulkan, INI defaults (EnableFsr2Inputs/UseFsr2VulkanInputs auto), FSR 2 on in the game:
+   no crash; OptiScaler.log has the lines above; the overlay shows `FSR2 (Vk)` input with OptiScaler's upscaler;
+   NR on (mochizuki, then danielblnc) runs. Play a few minutes, change FSR 2 quality once (context recreate).
+2. RDR2 DX12: still the D3D12 handlers (`ffxFsr2ContextCreate_Dx12 context created`), as in the OK run.
+3. Cyberpunk, `FGInput=DLSSG`, `FGOutput=DLSSG`, game's DLSS-FG on at 2X then 3X: one FG only (no black bands or
+   freezes); Frame Gen page shows the line and the disabled slider; overlay says `Game DLSS-FG x2`/`x3`; Override
+   DLSSG Ratio changes the multiplier; FG hotkey toggles the game's FG off/on.
