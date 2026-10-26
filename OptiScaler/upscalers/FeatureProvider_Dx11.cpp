@@ -17,6 +17,7 @@
 #include "upscalers/xess/XeSSFeature_Dx11.h"
 #include "upscalers/xess/XeSSFeature_Dx11on12.h"
 #include <misc/IdentifyGpu.h>
+#include <dlssnr/amd/AmdBridge.h>
 #include <imgui/ImGuiNotify.hpp>
 
 bool FeatureProvider_Dx11::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NGX_Parameter* parameters,
@@ -25,6 +26,19 @@ bool FeatureProvider_Dx11::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
     State& state = State::Instance();
     Config& cfg = *Config::Instance();
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
+    // As on Vulkan: the NeuralHub host answers NGX for D3D12 only and a D3D11 game never arms it, so DLSS runs as
+    // DLSS w/Dx12 with the host armed on the bridge's D3D12 device.
+    const bool wantsDlss = upscaler == Upscaler::DLSS || upscaler == Upscaler::DLSS_on12;
+    if (wantsDlss && !primaryGpu.dlssCapable && DlssNr::AmdBridge::NgxHostInstalled())
+    {
+        DlssNr::AmdBridge::EnsureNgxHostForInterop();
+        if (upscaler == Upscaler::DLSS)
+        {
+            LOG_INFO("DLSS on D3D11 runs w/Dx12: the NeuralHub host serves DLSS on D3D12 only");
+            upscaler = Upscaler::DLSS_on12;
+        }
+    }
+
     // AmdPreSr NeuralHub host: the armed host module serves DLSS on an AMD GPU too.
     const bool dlssCapableForThisProcess = primaryGpu.dlssCapable || state.NeuralHubArmOk;
 
@@ -132,7 +146,7 @@ bool FeatureProvider_Dx11::ChangeFeature(Upscaler upscaler, ID3D11Device* device
     State& state = State::Instance();
     Config& cfg = *Config::Instance();
 
-    const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && !state.NeuralHubArmOk &&
+    const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && !DlssNr::AmdBridge::NgxHostInstalled() &&
                                   (state.newBackend == Upscaler::DLSS || state.newBackend == Upscaler::DLSS_on12);
     if (state.newBackend == Upscaler::Reset || dlssOnNonCapable)
         state.newBackend = cfg.Dx11Upscaler.value_or_default();
