@@ -126,8 +126,12 @@ static bool CheckForFGStatus()
     }
     else if (State::Instance().activeFgOutput == FGOutput::DLSSG && !StreamlineProxy::LoadStreamline())
     {
-        ImGui::InsertNotification(
-            { ImGuiToastType::Error, 20000, "Can't init DLSSG Output\nAre you missing the streamline folder?" });
+        // With the game's DLSS-FG on NeuralHub our DLSSG output stays off anyway, nothing is missing
+        if (!State::Instance().gameDlssgNative)
+        {
+            ImGui::InsertNotification(
+                { ImGuiToastType::Error, 20000, "Can't init DLSSG Output\nAre you missing the streamline folder?" });
+        }
 
         LOG_DEBUG("Can't init StreamlineProxy, disabling FGOutput");
         Config::Instance()->FGOutput.set_volatile_value(FGOutput::NoFG);

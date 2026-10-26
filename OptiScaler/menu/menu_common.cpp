@@ -7314,62 +7314,63 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             ImGui::TextColored(StatusError(), "OFF");
         }
 
+        // The game sets its DLSS-FG, so our DLSSG controls are left out: they repeated the ratio override, disabled
         if (gameDlssg)
+        {
             ImGui::TextColored(StatusWarn(), "The game's DLSS-FG is running; set it in the game");
-
-        ImGui::BeginDisabled(gameDlssg);
-
-        RenderFGModeSlider(ctx, "Frame Gen##dlssg", dlssg->GetMaxInterpolationCount(),
-                           &config->FGDLSSGInterpolationCount);
-
-        if (dlssg->GetMaxInterpolationCount() > 1)
+        }
+        else
         {
-            if (dlssg->GetDMFGSupport())
+            RenderFGModeSlider(ctx, "Frame Gen##dlssg", dlssg->GetMaxInterpolationCount(),
+                               &config->FGDLSSGInterpolationCount);
+
+            if (dlssg->GetMaxInterpolationCount() > 1)
             {
-                ImGui::SameLine(0.0f, 16.0f);
-
-                if (bool dynamicMFG = config->FGDLSSGForceDMFG.value_or_default();
-                    ImGui::Checkbox("Force Dynamic MFG", &dynamicMFG))
+                if (dlssg->GetDMFGSupport())
                 {
-                    config->FGDLSSGForceDMFG = dynamicMFG;
-                    state.fgChanged = true;
+                    ImGui::SameLine(0.0f, 16.0f);
+
+                    if (bool dynamicMFG = config->FGDLSSGForceDMFG.value_or_default();
+                        ImGui::Checkbox("Force Dynamic MFG", &dynamicMFG))
+                    {
+                        config->FGDLSSGForceDMFG = dynamicMFG;
+                        state.fgChanged = true;
+                    }
+
+                    ImGui::BeginDisabled(!config->FGDLSSGForceDMFG.value_or_default());
+                    static float fpsTarget = config->FGDLSSGFramerateTargetDMFG.value_or_default();
+                    float fpsSliderMax = (float) std::max(200, refreshRate);
+                    ImGui::SliderFloat("DMFG FPS Target", &fpsTarget, 0, fpsSliderMax, "%.0f");
+
+                    ShowTooltip("An active limit of 0 means auto-detect the display refresh rate");
+
+                    if (ImGui::Button("Apply Target"))
+                    {
+                        config->FGDLSSGFramerateTargetDMFG = fpsTarget;
+                    }
+
+                    ImGui::SameLine(0.0f, 16.0f);
+
+                    if (ImGui::Button("Reset Target"))
+                    {
+                        fpsTarget = 0.0f;
+                        config->FGDLSSGFramerateTargetDMFG.reset();
+                    }
+
+                    ImGui::EndDisabled();
                 }
-
-                ImGui::BeginDisabled(!config->FGDLSSGForceDMFG.value_or_default());
-                static float fpsTarget = config->FGDLSSGFramerateTargetDMFG.value_or_default();
-                float fpsSliderMax = (float) std::max(200, refreshRate);
-                ImGui::SliderFloat("DMFG FPS Target", &fpsTarget, 0, fpsSliderMax, "%.0f");
-
-                ShowTooltip("An active limit of 0 means auto-detect the display refresh rate");
-
-                if (ImGui::Button("Apply Target"))
-                {
-                    config->FGDLSSGFramerateTargetDMFG = fpsTarget;
-                }
-
-                ImGui::SameLine(0.0f, 16.0f);
-
-                if (ImGui::Button("Reset Target"))
-                {
-                    fpsTarget = 0.0f;
-                    config->FGDLSSGFramerateTargetDMFG.reset();
-                }
-
-                ImGui::EndDisabled();
             }
-        }
 
-        ImGui::EndDisabled();
-
-        bool useGamesMarkers = config->FGDLSSGUseGamesReflexMarkers.value_or_default();
-        // Vulkan games' markers don't reach OptiScaler's Streamline
-        ImGui::BeginDisabled(!ReflexHooks::gameIsSendingMarkers() || state.swapchainApi == API::Vulkan);
-        if (ImGui::Checkbox("Use Game's Reflex Markers", &useGamesMarkers))
-        {
-            config->FGDLSSGUseGamesReflexMarkers = useGamesMarkers;
-            LOG_DEBUG("Changed set FGDLSSGUseGamesReflexMarkers: {}", useGamesMarkers);
+            bool useGamesMarkers = config->FGDLSSGUseGamesReflexMarkers.value_or_default();
+            // Vulkan games' markers don't reach OptiScaler's Streamline
+            ImGui::BeginDisabled(!ReflexHooks::gameIsSendingMarkers() || state.swapchainApi == API::Vulkan);
+            if (ImGui::Checkbox("Use Game's Reflex Markers", &useGamesMarkers))
+            {
+                config->FGDLSSGUseGamesReflexMarkers = useGamesMarkers;
+                LOG_DEBUG("Changed set FGDLSSGUseGamesReflexMarkers: {}", useGamesMarkers);
+            }
+            ImGui::EndDisabled();
         }
-        ImGui::EndDisabled();
     }
 
     if (auto reprojectionOutput = state.CurrentFG();
@@ -8262,9 +8263,10 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         ShowTooltip("Do not use HUDless set at ffxDispatch");
     }
 
-    // Streamline FG Inputs
+    // Streamline FG Inputs. Not while the game's DLSS-FG runs on NeuralHub: the DLSSG card shows that, and this one
+    // flipped between OFF and ACTIVATE FG for an instance of ours that stays off.
     if (ScopedCard::Shows("fg_sl_inputs") && state.currentFGSwapchain != nullptr &&
-        state.activeFgInput == FGInput::DLSSG)
+        state.activeFgInput == FGInput::DLSSG && !state.GameDlssgBlocksOwnFG())
     {
         ScopedCard card;
 
