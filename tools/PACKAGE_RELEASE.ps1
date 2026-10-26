@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.5.7-opennr, the version in OptiScaler/resource.h.
+  Default product: OptiScaler-0.5.8-opennr, the version in OptiScaler/resource.h.
   The danielblnc runtime it drives is 0.8.0 (NeuralHub's neuralhub_host.dll; 0.6.0, 0.5.1, 0.5.0, 0.4.3, 0.4.2, 0.4.1,
   0.4.0, 0.3.1 and 0.3.0 still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
@@ -9,11 +9,11 @@
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.5.7-opennr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.5.8-opennr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.5.7-opennr',
+    [string]$Version = '0.5.8-opennr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',
