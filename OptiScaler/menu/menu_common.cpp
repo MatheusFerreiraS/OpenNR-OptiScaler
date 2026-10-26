@@ -1046,9 +1046,11 @@ void MenuCommon::AddDx12Backends(Upscaler upscaler)
 
 void MenuCommon::AddVulkanBackends(Upscaler upscaler)
 {
+    // No FSR w/Dx12 on Vulkan: FFX runs FSR 4 natively there now, and the w/Dx12 copies crashed RDR2. DLSS w/Dx12 stays,
+    // it is how NeuralHub's DLSS reaches a Vulkan game.
     RenderUpscalerCombo(API::Vulkan, upscaler,
-                        { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::FSR21_on12,
-                          Upscaler::FFX_on12, Upscaler::DLSS, Upscaler::DLSS_on12 });
+                        { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::DLSS,
+                          Upscaler::DLSS_on12 });
 }
 
 template <HasDefaultValue B> void MenuCommon::AddResourceBarrier(std::string name, CustomOptional<int32_t, B>* value)

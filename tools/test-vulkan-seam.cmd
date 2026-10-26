@@ -7,7 +7,7 @@ rem   tools\test-vulkan-seam.cmd <runtime folder> [mochizuki] [lmxxf] [daniel]
 rem The runtime folder holds what the runtimes named want beside OptiScaler.dll: MochizukiNrRuntime.dll and
 rem dlssnr-amd\; LmxxfNrRuntime.dll, lmxxf-modules\, shaders\ and native-game-tiled-assets\; dlssnr_amd_pass1.dll and
 rem dlssnr_on_amd_weights.bin. Its dxgi.dll, OptiScaler files, INI and logs are not copied. Without names: mochizuki.
-rem With UPSCALER set to a w/Dx12 upscaler (fsr21_12, ffx_12) NR runs at the D3D12 seam inside that bridge instead,
+rem With UPSCALER set to a w/Dx12 upscaler (fsr22_12) NR runs at the D3D12 seam inside that bridge instead,
 rem and the run checks that the Vulkan seam stays out of it.
 rem UPSCALER=dlss_12 (or dlss, which must be routed to w/Dx12) with danielblnc 0.8.0 (dlssnr_amd_pass1.dll = the
 rem NeuralHub host, dlssnr_amd_host\ with neuralhub_host.dll and nvngx_dlss.dll in the folder): DLSS-SR from the host
@@ -20,6 +20,9 @@ if not defined UPSCALER set "UPSCALER=fsr22"
 set "MODE=native"
 if not "%UPSCALER:_12=%"=="%UPSCALER%" set "MODE=bridged"
 if "%UPSCALER%"=="dlss" set "MODE=bridged"
+rem fsr21_12 and ffx_12 now run as the native Vulkan FSR (no FSR w/Dx12 on Vulkan any more): the native checks apply.
+if "%UPSCALER%"=="fsr21_12" set "MODE=native"
+if "%UPSCALER%"=="ffx_12" set "MODE=native"
 set "OUT=exports\vulkan-seam"
 if "%MODE%"=="bridged" set "OUT=exports\vulkan-seam-%UPSCALER%"
 set "DLL=exports\release-local\OptiScaler.dll"

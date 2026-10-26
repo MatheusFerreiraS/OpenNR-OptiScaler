@@ -52,7 +52,9 @@ bool FeatureProvider_Vk::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NGX_
         break;
 
     case Upscaler::FSR21_on12:
-        *feature = std::make_unique<FSR2FeatureVkOnDx12_212>(handleId, parameters);
+        // An ini that still names fsr21_12 gets the native one: the w/Dx12 FSR is no longer offered on Vulkan.
+        *feature = std::make_unique<FSR2FeatureVk212>(handleId, parameters);
+        upscaler = Upscaler::FSR21;
         break;
 
     case Upscaler::FSR22:
@@ -64,7 +66,8 @@ bool FeatureProvider_Vk::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NGX_
         break;
 
     case Upscaler::FFX_on12:
-        *feature = std::make_unique<FFXFeatureVkOn12>(handleId, parameters);
+        *feature = std::make_unique<FFXFeatureVk>(handleId, parameters);
+        upscaler = Upscaler::FFX;
         break;
 
     case Upscaler::DLSS:
