@@ -477,10 +477,19 @@ inline HMODULE LoadHost(const wchar_t* path, const AmdLayout* layout)
     if (CompareStringOrdinal(std::filesystem::path(path).filename().c_str(), -1, L"neuralhub_host.dll", -1, TRUE) !=
         CSTR_EQUAL)
         throw std::runtime_error("AMD runtime 0.8.0 must be loaded as neuralhub_host.dll");
-    // NeuralHub's own stub runs its copy with every hook in place; two hosts in one game cannot share it.
-    if (GetModuleHandleW(L"neuralhub_host.dll"))
+    // NeuralHub's own stub runs its copy with every hook in place; two hosts in one game cannot share it. Ours runs
+    // once per game too: a second backend (the final image's) finds the copy the first one loaded.
+    if (HMODULE loaded = GetModuleHandleW(L"neuralhub_host.dll"))
+    {
+        wchar_t file[MAX_PATH] {};
+        std::error_code ec;
+        const DWORD n = GetModuleFileNameW(loaded, file, MAX_PATH);
+        if (n && n < MAX_PATH && std::filesystem::equivalent(file, path, ec))
+            throw std::runtime_error("danielblnc 0.8.0 already runs once in this game (OptiScaler's upscaler side); "
+                                     "it can't run a second time for the final image");
         throw std::runtime_error("NeuralHub's runtime is already loaded in this game (its own mod loader is "
                                  "installed here): remove it with NeuralHub to use it through OptiScaler");
+    }
     HMODULE module = LoadLibraryExW(path, nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if (!module)
         throw std::runtime_error("Private AMD runtime LoadLibrary failed: " + std::to_string(GetLastError()));

@@ -331,10 +331,24 @@ bool LmxxfBackend::EnsureRuntime()
     if (runtimeDll && api && api->table.EnqueueHip)
         return true;
     const auto dllPath = directory / runtimeFile;
+    // No "Bad Image" box over the game when Windows refuses the file: the status says why.
+    DWORD oldMode = 0;
+    SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, &oldMode);
     runtimeDll = reinterpret_cast<void*>(LoadLibraryW(dllPath.c_str()));
+    const DWORD error = runtimeDll ? 0 : GetLastError();
+    SetThreadErrorMode(oldMode, nullptr);
     if (!runtimeDll)
     {
-        SetStatus("lmxxf: runtime DLL missing next to OptiScaler");
+        const std::string name = dllPath.filename().string();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_MOD_NOT_FOUND)
+            SetStatus(("lmxxf: " + name + " missing next to OptiScaler").c_str());
+        else if (error == ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION || error == ERROR_INVALID_IMAGE_HASH ||
+                 error == ERROR_ACCESS_DISABLED_BY_POLICY)
+            SetStatus(("lmxxf: Windows blocked " + name + " (error " + std::to_string(error) +
+                      ": Smart App Control or a code integrity policy); allow it or turn Smart App Control off")
+                          .c_str());
+        else
+            SetStatus(("lmxxf: " + name + " did not load (error " + std::to_string(error) + ")").c_str());
         return false;
     }
     auto getApi = reinterpret_cast<int32_t (*)(uint32_t, LmxxfNrApi*)>(
