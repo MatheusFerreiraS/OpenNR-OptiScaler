@@ -87,6 +87,19 @@ class IFeature_VkwDx12 : public virtual IFeature_Vk
     uint64_t pendingResourceCopyValue = 0;
     std::mutex EvaluateMutex;
 
+    // lmxxf and mochizuki at the D3D12 seam (proxied lists): the frame's D3D12 work is queued after the game's submit.
+    struct DeferredSubmit
+    {
+        IFeature_VkwDx12* owner = nullptr;
+        uint32_t frame = 0;
+        uint64_t waitValue = 0, completeValue = 0, frameCount = 0;
+        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+        std::atomic<bool> queued { false };
+    };
+    bool deferSubmit = false;
+    DeferredSubmit deferredSubmit[VKDX12_BUFFER_COUNT];
+    static void Settled(void* context, bool aborted);
+
     std::vector<DetailedGpuTime> detailedGpuTimes;
 
     // Copy shaders

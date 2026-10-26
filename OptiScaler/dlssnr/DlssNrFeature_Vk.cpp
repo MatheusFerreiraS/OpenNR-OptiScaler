@@ -1,6 +1,7 @@
 #include "pch.h"
 
 #include "DlssNrFeature_Vk.h"
+#include "amd/VulkanSeam.h"
 
 #include <Config.h>
 #include <State.h>
@@ -1198,6 +1199,14 @@ bool EvaluateAtSeamVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, Vk
 void EvaluateAfterUpscaleVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, VkInstance instance,
                             VkPhysicalDevice physicalDevice, VkDevice device)
 {
+    // On AMD with an AMD runtime installed NR runs at the seam before the upscaler (VkSeam), and NVIDIA's model has
+    // no business here.
+    if (VkSeam::Owns(physicalDevice))
+    {
+        ReportSkipOnceVk("an AMD NR runtime runs before Super Resolution instead");
+        return;
+    }
+
     // The model runs inside the upscaler's own pipeline, at render resolution. Running it here as well
     // runs it on the enlarged frame at full cost, which is the cost the arrangement exists to avoid --
     // and a game driving a second upscaler feature arrives here once per evaluate of that one too, so
@@ -1228,7 +1237,8 @@ bool EvaluateStageVk(VkCommandBuffer cmdBuffer, NVSDK_NGX_Parameter* params, VkI
                      VkPhysicalDevice physicalDevice, VkDevice device, const VkImageInfo& source,
                      const VkImageInfo& dest)
 {
-    if (cmdBuffer == VK_NULL_HANDLE || source.ImageView == VK_NULL_HANDLE || dest.ImageView == VK_NULL_HANDLE)
+    if (cmdBuffer == VK_NULL_HANDLE || source.ImageView == VK_NULL_HANDLE || dest.ImageView == VK_NULL_HANDLE ||
+        VkSeam::Owns(physicalDevice))
         return false;
 
     // Set on entry, not on the frame completing. What the pass after the upscale needs to know is

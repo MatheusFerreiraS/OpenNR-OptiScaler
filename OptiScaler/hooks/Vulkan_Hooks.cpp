@@ -28,6 +28,7 @@
 
 #include <dlssnr/DlssNr_VkExtensions.h>
 #include <dlssnr/amd/VulkanPresentExperimental.h>
+#include <dlssnr/amd/AmdBridge.h>
 
 #include <detours/detours.h>
 #include <misc/IdentifyGpu.h>
@@ -670,6 +671,16 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
             LOG_WARN("Timeline semaphores aren't supported, can't use FG with this device");
             fg = nullptr;
         }
+    }
+
+    // The AMD NR seam in front of OptiScaler's Vulkan upscalers splits the game's submit around a D3D12 fence imported
+    // as a timeline semaphore (dlssnr/amd/VulkanSeam), as the w/Dx12 upscalers do.
+    if (fg == nullptr && !State::Instance().vulkanSkipHooks && !State::Instance().creatingD3DDevice &&
+        getPhysicalDeviceFeatures2 != nullptr && !IsDxgiBackedCaller(_ReturnAddress()) &&
+        Config::Instance()->DlssNrEnabled.value_or_default() && DlssNr::AmdBridge::HasFiles())
+    {
+        LOG_INFO("DLSS-NR Vulkan seam: timeline semaphores {}",
+                 fgFeatures.EnableTimelineSemaphores(physicalDevice) ? "enabled" : "not supported");
     }
 
     VkResult result;

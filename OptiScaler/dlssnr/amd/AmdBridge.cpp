@@ -49,7 +49,7 @@ using ExitFn = void(NTAPI*)(LONG);
 ExecuteFn executeOriginal = nullptr;
 ExitFn exitOriginal = nullptr;
 bool submissionHookReady = false; // guarded by initMutex
-std::string message = "AMD pre-SR: waiting for a DirectX 12 SR frame";
+std::string message = "AMD pre-SR: waiting for an upscaler frame";
 std::mutex messageMutex;
 std::mutex initMutex;
 std::mutex observedMutex;
@@ -1426,6 +1426,7 @@ std::string Status()
         return b->Status();
     return "AMD pre-SR: idle";
 }
+void Note(const std::string& text) { Message(text.c_str()); }
 std::string RuntimeStatus()
 {
     if (auto b = backend.load())

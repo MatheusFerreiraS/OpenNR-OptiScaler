@@ -1,5 +1,7 @@
 #include <pch.h>
 #include <dlssnr/amd/AmdBridge.h>
+#include <dlssnr/backend/Selector.h>
+#include <dlssnr/submission/SubmissionHooks.h>
 
 #include "IFeature_VkwDx12.h"
 
@@ -1659,10 +1661,35 @@ bool IFeature_VkwDx12::CopyBackOutput(VkCommandBuffer InCmdBuffer)
     submission.copyBackCommandBuffer = b.VulkanCopyCommandBuffer[frame];
     submission.barrierCommandBuffer = b.VulkanBarrierCommandBuffer[frame];
 
+    // lmxxf's HIP waits on the CPU, inside ExecuteCommandLists, for the half of the list before NR, which waits on the
+    // GPU for the Vulkan copies: queued now, before the game has submitted them, that wait never ends. With those
+    // runtimes the D3D12 work goes to the queue once the game's submit is made (Settled).
+    auto& deferred = deferredSubmit[frame];
+    if (deferSubmit)
+    {
+        deferred.owner = this;
+        deferred.frame = frame;
+        deferred.waitValue = pendingResourceCopyValue;
+        deferred.completeValue = d3d12CompleteValue;
+        deferred.frameCount = _frameCount;
+        deferred.commandBuffer = InCmdBuffer;
+        deferred.queued = true;
+        submission.settled = &Settled;
+        submission.settledContext = &deferred;
+    }
+
     if (!Vulkan_wDx12::RegisterPendingSubmission(submission))
     {
+        deferred.queued = false;
         LOG_ERROR("Failed to register Vulkan w/Dx12 pending submission");
         return false;
+    }
+
+    if (deferSubmit)
+    {
+        UpscalerTime->SubmitInterop(vkSemaphoreCopyBack[frame], copyBackValue);
+        pendingResourceCopyValue = 0;
+        return true;
     }
 
     // Queue D3D12 work only after the complete Vulkan/D3D12 transaction has been prepared and registered.
@@ -1715,6 +1742,24 @@ bool IFeature_VkwDx12::CopyBackOutput(VkCommandBuffer InCmdBuffer)
               d3d12CompleteValue, copyBackValue);
     pendingResourceCopyValue = 0;
     return true;
+}
+
+void IFeature_VkwDx12::Settled(void* context, bool)
+{
+    auto& deferred = *static_cast<DeferredSubmit*>(context);
+    if (!deferred.queued.exchange(false))
+        return;
+    auto* feature = deferred.owner;
+    const auto frame = deferred.frame;
+    if (feature->Dx12CommandQueue->Wait(feature->dx12FenceTextureCopy[frame], deferred.waitValue) != S_OK)
+        LOG_ERROR("Dx12CommandQueue->Wait failed");
+    ID3D12CommandList* lists[] = { feature->Dx12CommandList[frame] };
+    feature->Dx12CommandQueue->ExecuteCommandLists(1, lists);
+    // The copy-back waits for this value on the GPU; without it the game's queue would hang.
+    if (feature->Dx12CommandQueue->Signal(feature->dx12FenceTextureCopy[frame], deferred.completeValue) != S_OK &&
+        feature->dx12FenceTextureCopy[frame]->GetCompletedValue() < deferred.completeValue)
+        feature->dx12FenceTextureCopy[frame]->Signal(deferred.completeValue);
+    feature->Dx12CommandQueue->Signal(feature->Dx12Fence, deferred.frameCount);
 }
 
 void IFeature_VkwDx12::AbortPendingInterop(VkCommandBuffer InCmdBuffer, uint32_t InFrame)
@@ -1927,6 +1972,20 @@ HRESULT IFeature_VkwDx12::CreateDx12Device()
         }
     }
 
+    // lmxxf and mochizuki run inside this frame's submission, before Super Resolution (the D3D12 seam's evaluate cut).
+    // A Vulkan game reaches the upscaler through these lists on OptiScaler's own D3D12 device, which the game's device
+    // hooks never see, so they are made as proxies and their queue gets the submission hook, as the D3D11 bridge does.
+    // Without the hook they stay plain lists: the upscaler still runs and those two runtimes stay off.
+    bool proxied = DlssNr::Backend::SubmissionHooksWanted() && Dx12CommandListType == D3D12_COMMAND_LIST_TYPE_DIRECT;
+    if (proxied)
+    {
+        proxied = DlssNr::AmdBridge::EnsureSubmissionHook(Dx12CommandQueue);
+        if (proxied)
+            DlssNr::Submission::Hooks::SetExpandEnabled(true);
+        deferSubmit = proxied;
+        LOG_INFO("VkwDx12 same-frame NR: submission hook {}", proxied ? "ready, lists proxied" : "failed, plain lists");
+    }
+
     for (size_t i = 0; i < VKDX12_BUFFER_COUNT; i++)
     {
         if (Dx12CommandAllocator[i] == nullptr)
@@ -1944,8 +2003,12 @@ HRESULT IFeature_VkwDx12::CreateDx12Device()
         if (Dx12CommandList[i] == nullptr && Dx12CommandAllocator[i] != nullptr)
         {
             // CreateCommandList
-            result = _dx11on12Device->CreateCommandList(0, Dx12CommandListType, Dx12CommandAllocator[i], nullptr,
-                                                        IID_PPV_ARGS(&Dx12CommandList[i]));
+            result = proxied
+                         ? DlssNr::Submission::Hooks::CreateProxiedCommandList(_dx11on12Device, 0, Dx12CommandListType,
+                                                                               Dx12CommandAllocator[i], nullptr,
+                                                                               IID_PPV_ARGS(&Dx12CommandList[i]))
+                         : _dx11on12Device->CreateCommandList(0, Dx12CommandListType, Dx12CommandAllocator[i], nullptr,
+                                                              IID_PPV_ARGS(&Dx12CommandList[i]));
 
             if (result != S_OK)
             {
@@ -1989,6 +2052,11 @@ IFeature_VkwDx12::~IFeature_VkwDx12()
 {
     if (State::Instance().isShuttingDown)
         return;
+
+    // A transaction the game never submitted must not call back into a released feature.
+    for (auto& deferred : deferredSubmit)
+        if (deferred.queued.exchange(false))
+            Vulkan_wDx12::CancelPendingSubmission(deferred.commandBuffer);
 
     ReleaseSharedResources();
 }

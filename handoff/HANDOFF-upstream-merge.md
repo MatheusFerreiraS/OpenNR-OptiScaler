@@ -358,3 +358,117 @@ Re-test RDR2 Vulkan, FSR 2 on, INI defaults:
 2. Open/close the pause menu (Esc) several times, also the map: no crash.
 3. Pick `FSR 3.X/4 w/Dx12` in the menu: no `Depth not exist!!`, picture OK. Then FSR 2.2.1 and FSR 4 again.
 4. NR on (mochizuki) with Esc in and out.
+
+## DLSS-NR on AMD at the Vulkan upscaler seam (2026-10-25)
+
+Before: a Vulkan game with one of OptiScaler's native Vulkan upscalers (FSR 2.2 / FSR 3.X / XeSS / FSR 4 on Vulkan,
+`IFeature_Vk`) only had NVIDIA's model at the seam (`EvaluateAfterUpscaleVk`, `nvngx.dll_dlssnr.dll`), so on AMD NR
+never ran there (RDR2: `DLSS-NR Vulkan unavailable: nvngx.dll_dlssnr.dll was not found`), and the final image stood
+aside because an upscaler existed.
+
+### How it works now
+
+New `dlssnr/amd/VulkanSeam.{h,cpp}` (`DlssNr::VkSeam`), called from `NVSDK_NGX_VULKAN_EvaluateFeature`
+(inputs/NVNGX_DLSS_Vk.cpp) right before `deviceContext->Evaluate`, for every non-bridged feature:
+
+- `VkSeam::Owns(physicalDevice)`: AMD adapter (DXGI vendor by the Vulkan device LUID, past the spoof) and
+  `AmdBridge::HasFiles()`. On NVIDIA nothing changes; `EvaluateAfterUpscaleVk`/`EvaluateStageVk` decline when the seam
+  owns NR, so NVIDIA's Vulkan model is never tried on AMD.
+- The AMD runtimes take D3D12 resources (mochizuki imports them into its own Vulkan device), so the frame crosses to
+  OptiScaler's D3D12 device (one per adapter) the way the Vk w/Dx12 upscalers cross: colour (game format), motion,
+  depth (R32 through `DepthTransfer_Vk`) and exposure are copied by compute (`ResourceCopy_Vk`) into images shared
+  with D3D12, on the game's command buffer, with acquire/release to `VK_QUEUE_FAMILY_EXTERNAL`. No CPU round trip.
+- The game's command buffer is split at the evaluate with `Vulkan_wDx12`'s existing machinery (virtual command
+  buffer + pending submission split at `vkQueueSubmit`): game part signals R on a shared D3D12 fence (imported as a
+  timeline semaphore) -> D3D12 waits R, runs NR, signals D -> copy-back waits D -> continuation. The upscaler records
+  into the continuation, where the game's own recording goes on (state replayed by the tracker).
+- On D3D12, `DlssNr::EvaluateBeforeUpscale(list, params, queue)` runs on the copies with the parameter block's
+  Color/Depth/MotionVectors/ExposureTexture pointed at them - the same seam a D3D12 game uses, so AmdBridge, all three
+  runtimes, the settling/warm-up/DRS gates, person protection, stabilizer, RenoDX composition, the neural timer,
+  the stall watch, status lines and per-game quirks are that path's, unchanged. Its replacement is copied (D3D12
+  compute, format-converting) into a shared R16G16B16A16 image that becomes the upscaler's Color until `VkSeam::After`.
+- lmxxf/mochizuki lists are proxies (`CreateProxiedCommandList` + `EnsureSubmissionHook` + `SetExpandEnabled`), as in
+  the D3D11 bridge. The D3D12 work is executed only after the game's submit (new `PendingSubmission::settled`
+  callback): lmxxf's (and danielblnc's) HIP wait on the CPU for the producer half, which needs the Vulkan copies to have
+  been submitted. Executing at evaluate time deadlocked lmxxf in the first test.
+- Pass-through (frame unchanged, upscaler reads the game's colour): NR off, runtime missing/settling/building/busy,
+  stall watch stood down, danielblnc with "After the finished frame" (D3D12 only; a note says so), a second evaluate
+  in an already split command buffer, a secondary command buffer, a colour/motion format with no exact D3D12 twin
+  (sRGB etc.). Creation failures stop the seam for the session with a status line (`AmdBridge::Note`, shown as Status
+  in the Neural page) and a log line. A submit that cannot be split (unsupported `pNext`) also stops it
+  (`Vulkan_wDx12::abortedSubmissions`), since that frame lost its continuation.
+- Log lines: `DLSS-NR Vulkan seam: ready on D3D12 device ... (proxied|plain lists)`, `first frame of NR before Super
+  Resolution (WxH, colour format N)`, `frames pass through (<AmdBridge status>)` / `NR answers again after N frames
+  passed through` (when it changes; first 40, then every 100th).
+- Menu: each AMD runtime's Info shows `Vulkan: NR runs before Super Resolution on a D3D12 copy of the frame (N frames)`.
+  The FPS overlay's NR time is AmdBridge's, so it works as on D3D12.
+
+Other changes it needed:
+
+- Vk w/Dx12 (`IFeature_VkwDx12::CreateDx12Device`): its D3D12 lists are now proxies with the submission hook when
+  lmxxf/mochizuki run, like `IFeature_Dx11wDx12`, and its D3D12 work is then queued from the same `settled` callback
+  (after the game's submit) instead of at evaluate time. Before, the D3D12 seam inside the bridge could not split those
+  lists ("Split returned S_FALSE"), so lmxxf/mochizuki never ran with a w/Dx12 upscaler on Vulkan. The Vulkan seam
+  never runs for bridged features: `bridged` is now `deviceContext->IsWithDx12()` (the old upscaler-type list missed
+  upstream's bridges, whose type is the D3D12 feature's), checked before the evaluate, so NR runs once.
+- `CommandBuffer_StateTracker`: state is tracked for a w/Dx12 feature or once the seam engaged
+  (`State::vulkanSeamTracking`); one `Tracking()` helper replaces the 25 copies of the gate.
+- `Vulkan_wDx12`: a command buffer begun or reset again while its transaction is pending (recorded, never submitted)
+  now releases the D3D12 wait (`AbortUnsubmitted`) instead of leaving the D3D12 queue waiting forever; the CPU release
+  no longer moves a fence backwards (it is a Vulkan timeline semaphore). Also benefits the w/Dx12 upscalers.
+- `hkvkCreateDevice`: timeline semaphores are enabled when NR is on and an AMD runtime is installed (the split's
+  semaphores are timeline; before this only FG/low latency enabled them). Like the Vulkan final image, NR must be on
+  before the game starts.
+- `AmdBridge`: `Note()` for the seam's status; initial status reads "waiting for an upscaler frame" (was "DirectX 12").
+- The seam's state is never destroyed (the driver may be gone at exit; an exit-time destructor crashed the test).
+
+Costs/limits to watch: the tracker runs on every game `vkCmd*` once the seam is engaged (as for w/Dx12); the CPU may
+wait up to 2 s for the D3D12 work of the frame before last (3 slots), then frames pass through for a second; one
+copy of colour/motion/depth (+exposure) per frame and one answer copy. Native DLSS passthrough on Vulkan (real NGX /
+NeuralHub) is not covered.
+
+### Tests
+
+- Build OK. Headless all PASS (proxy-link vs 0.4.9, amd-host-contracts, shader-compatibility, the seven lmxxf tests,
+  person).
+- New `tests/vulkan_seam_smoke.cpp` + `tools/test-vulkan-seam.cmd <runtime folder> [mochizuki] [lmxxf] [daniel]`: a
+  headless Vulkan "game" driving OptiScaler's NGX Vulkan exports with `VulkanUpscaler=fsr22`: first frames until NR
+  reaches the upscaler, a quality change (feature recreated 1280x720 -> 960x540), 60 frames without evaluate (menu), a
+  command buffer recorded twice before its submit, and after every evaluate a copy of the upscaled frame recorded by
+  the game (must land after the upscaler). Each runtime's frames are compared with an NR-off run.
+  `set UPSCALER=fsr21_12` (or `ffx_12`) runs the same through a Vk w/Dx12 upscaler and checks the Vulkan seam stays
+  out and the D3D12 seam inside the bridge runs (`fsr22_12` is not a Vulkan option; it falls back to native FSR 2.2).
+  Results on the RX 9070 XT (runtimes: mochizuki and lmxxf 0.5.7, danielblnc 0.6.0, folder
+  `exportsulkan-seam-runtimes`): native FSR 2.2, all three ALL PASSED (mean frame difference against NR off 0.009 to
+  0.018 at every checkpoint, longest frame under 50 ms after warm-up); FSR 2.1 w/Dx12, all three ALL PASSED.
+  Found and fixed on the way: lmxxf deadlocked when the D3D12 work was executed at evaluate time (now after the game's
+  submit, in the seam and in the w/Dx12 bridge), the seam's exit-time destructor crashed the process, and the w/Dx12
+  check by upscaler type missed upstream's bridges (now `IsWithDx12()`).
+  danielblnc 0.8.0 (NeuralHub host) was not tested here; RDR2 has it installed.
+- `test-final-image-gate` with the Vulkan cases (fake VULKAN_SDK from external\vulkan + library\vulkan): all Vulkan
+  final-image cases pass. The D3D11 `stall` case fails the same way with the 0.5.7 release DLL (runtime timing, not this
+  change).
+- Not run: `test-vulkan-present` (moves the real cursor), D3D12 game smoke tests (nothing on that path changed besides
+  the status text), anything in game folders.
+
+### In-game test (RDR2 Vulkan, FSR 2)
+
+Install `exports\release-local\OptiScaler.dll` as `winmm.dll` in `E:\SteamLibrary\steamapps\common\Red Dead
+Redemption 2` (keep a backup); `system.xml` API Vulkan; FSR 2 on in the game; OptiScaler.ini `[DlssNr] Enabled=true`,
+`NrBackend=mochizuki`, `[Upscalers] VulkanUpscaler=auto` (FSR 2.2.1 Vulkan).
+
+1. Start, load the save. OptiScaler.log: `DLSS-NR Vulkan seam: timeline semaphores enabled`, `... is an AMD GPU`,
+   `ready on D3D12 device ... (proxied lists)`, `AMD neural: NrBackend=mochizuki runs mochizuki`, then (the first build
+   of the network takes up to half a minute) `first frame of NR before Super Resolution (..., colour format N)`. None of:
+   `DLSS-NR Vulkan unavailable`, `Aborting Vulkan w/Dx12 submit transaction: unsupported`, `NR is off until the game
+   restarts`.
+2. Insert menu, Neural page: Info shows `Vulkan: NR runs before Super Resolution ... (N frames)` with N growing; the FPS
+   overlay shows the NR time. Toggle NR off/on and change a mochizuki strength: the picture follows.
+3. Esc in and out ten times, open the map, back: no crash; NR comes back (`NR answers again` lines are fine).
+4. Change FSR 2 quality in the game (Quality, Balanced, Performance, Ultra Performance): NR resumes after each
+   (mochizuki rebuilds its network for a new render size; frames pass through meanwhile).
+5. In OptiScaler's menu pick `FSR 3.X` (Vulkan), then `FSR 3.X/4 w/Dx12`: with w/Dx12 the log has `VkwDx12 same-frame
+   NR: submission hook ready, lists proxied` and NR still runs (once: the NR time does not double).
+6. Repeat 1-4 with `NrBackend=lmxxf`, then `NrBackend=daniel` (restart after each change; daniel shows `plain lists`).
+7. Note the frame rate and NR time with NR on/off at the same spot. If something is off, send OptiScaler.log,
+   mochizuki_nr.log and amd_bridge.log.

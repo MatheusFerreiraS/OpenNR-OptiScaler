@@ -27,6 +27,11 @@ class Vulkan_wDx12
         uint64_t copyBackValue = 0;
         VkCommandBuffer copyBackCommandBuffer = VK_NULL_HANDLE;
         VkCommandBuffer barrierCommandBuffer = VK_NULL_HANDLE;
+        // Called once the transaction's fate is known: right after the queue submit that carries it, or with aborted
+        // when it was abandoned and the D3D12 wait released on the CPU. For a caller whose D3D12 work may block its
+        // submitting thread until the Vulkan side has run, which it can only do after that submit.
+        void (*settled)(void* context, bool aborted) = nullptr;
+        void* settledContext = nullptr;
     };
 
     static bool RegisterPendingSubmission(const PendingSubmission& submission);
@@ -34,6 +39,12 @@ class Vulkan_wDx12
     static bool RegisterVirtualCommandBuffer(VkCommandBuffer commandBuffer, VkCommandBuffer virtualCommandBuffer);
     static VkCommandBuffer RemoveVirtualCommandBuffer(VkCommandBuffer commandBuffer);
     static VkCommandBuffer GetVirtualCommandBuffer(VkCommandBuffer commandBuffer);
+    // Takes the transaction of a command buffer that is being recorded again without having been submitted.
+    static bool TakeUnsubmitted(VkCommandBuffer commandBuffer, PendingSubmission& submission);
+
+    // Transactions abandoned at a submit that could not be split: the continuation of such a command buffer never
+    // ran, so a caller that would split every frame stops instead.
+    inline static std::atomic<uint32_t> abortedSubmissions { 0 };
 
   private:
     static VkResult hk_vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits, VkFence fence);

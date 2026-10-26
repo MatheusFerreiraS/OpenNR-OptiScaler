@@ -1,5 +1,6 @@
 #include "pch.h"
 #include <dlssnr/DlssNrFeature_Vk.h>
+#include <dlssnr/amd/VulkanSeam.h>
 #include "Util.h"
 #include "Config.h"
 #include "resource.h"
@@ -1093,12 +1094,27 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
     deviceContext = VkContexts[handleId].feature.get();
     state.currentFeature = deviceContext;
 
+    // A backend ending in _on12 does its work on a D3D12 device and IFeature_VkwDx12 runs the model there, on the
+    // D3D12 command list, over the D3D12 copies of these surfaces (the D3D12 seam, AMD runtimes included). Running it
+    // here as well would evaluate the model twice per frame, once on each side of the bridge.
+    //
+    // Asked of the live feature rather than of the config: the config is what was requested and the feature is what
+    // is actually running, and they differ for a frame after any backend change and permanently after a fallback.
+    // Its upscaler type is the D3D12 feature's inside (FSR 2.2.1 w/Dx12 answers FSR22), so the bridge itself is asked.
+    const bool bridged = deviceContext != nullptr && deviceContext->IsWithDx12();
+
     UpscalerInputsVk::UpscaleStart(InCmdList, InParameters, deviceContext);
 
     NVSDK_NGX_Resource_VK* output = nullptr;
     InParameters->Get(NVSDK_NGX_Parameter_Output, (void**) &output);
 
-    auto upscaleResult = deviceContext->Evaluate(InCmdList, InParameters);
+    // On AMD the NR runtimes run here, before Super Resolution, on the colour this upscaler is about to read: the
+    // frame crosses to D3D12 and back, and the upscaler records into the continuation of the game's command buffer.
+    const VkCommandBuffer upscaleCmd =
+        bridged ? InCmdList : DlssNr::VkSeam::Before(InCmdList, InParameters, vkPD, vkDevice);
+
+    auto upscaleResult = deviceContext->Evaluate(upscaleCmd, InParameters);
+    DlssNr::VkSeam::After(InParameters);
 
     if (upscaleResult)
         UpscalerInputsVk::UpscaleEnd(InCmdList, output);
@@ -1113,24 +1129,10 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
         return NVSDK_NGX_Result_Success;
     }
 
-    // Same pass, for OptiScaler's own upscalers rather than native DLSS. Natively on Vulkan now: the
-    // model exports a complete Vulkan surface and OptiScaler's vkCreateDevice hook already adds the
-    // two NVX extensions NGX needs, so there is nothing left for the D3D12 bridge to do here.
-    //
-    // Except when the upscaler itself is bridged. A backend ending in _on12 does its work on a D3D12
-    // device and IFeature_VkwDx12 already runs the model there, on the D3D12 command list, over the
-    // D3D12 copies of these surfaces. Running it here as well would evaluate the model twice per
-    // frame -- once on each side of the bridge -- at double the cost, with the second pass composing
-    // over a frame the first had already edited.
-    //
-    // Asked of the live feature rather than of the config: the config is what was requested and the
-    // feature is what is actually running, and they differ for a frame after any backend change and
-    // permanently after a fallback.
-    const auto backend = deviceContext != nullptr ? deviceContext->GetUpscalerType() : Upscaler::FSR22;
-    const bool bridged = backend == Upscaler::XeSS_on12 || backend == Upscaler::FSR21_on12 ||
-                         backend == Upscaler::FSR22_on12 || backend == Upscaler::FFX_on12 ||
-                         backend == Upscaler::DLSS_on12;
-
+    // Same pass, for OptiScaler's own upscalers rather than native DLSS, with NVIDIA's own model natively on Vulkan:
+    // the model exports a complete Vulkan surface and OptiScaler's vkCreateDevice hook already adds the two NVX
+    // extensions NGX needs. Not for a bridged upscaler (above), and on AMD with an AMD runtime the seam before the
+    // upscaler has it instead (EvaluateAfterUpscaleVk declines).
     if (upscaleResult && !bridged)
         DlssNr::EvaluateAfterUpscaleVk(InCmdList, InParameters, vkInstance, vkPD, vkDevice);
     return upscaleResult ? NVSDK_NGX_Result_Success : NVSDK_NGX_Result_Fail;

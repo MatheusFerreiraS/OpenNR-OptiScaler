@@ -203,6 +203,8 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="dlssnr\amd\AmdBridge.cpp" />
     <ClCompile Include="dlssnr\amd\VulkanPresentExperimental.cpp" />
     <ClInclude Include="dlssnr\amd\VulkanPresentExperimental.h" />
+    <ClCompile Include="dlssnr\amd\VulkanSeam.cpp" />
+    <ClInclude Include="dlssnr\amd\VulkanSeam.h" />
     <ClInclude Include="dlssnr\amd\FgChildPresenter.h" />
     <ClCompile Include="dlssnr\amd\GLPresentExperimental.cpp" />
     <ClInclude Include="dlssnr\amd\GLPresentExperimental.h" />

@@ -398,6 +398,9 @@ class State
     // and overlapping ScopedCreatingD3DDevice from different threads could leave it stuck
     inline static thread_local bool creatingD3DDevice = false;
     bool vulkanSkipHooks = false;
+    // The AMD NR seam splits the game's command buffers at a native Vulkan upscaler's evaluate (dlssnr/amd/VulkanSeam),
+    // so Vulkan_wDx12's state tracker follows them as it does for a w/Dx12 upscaler.
+    bool vulkanSeamTracking = false;
     // MenuOverlayVk holds ImGui's renderer backend. Independent of swapchainApi, and the condition
     // MenuOverlayDx::Present stands down on: ImGui has one renderer backend at a time.
     bool menuOverlayIsVulkan = false;

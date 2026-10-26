@@ -42,6 +42,8 @@ void InvalidateHistory();
 std::string PersonStatus();
 void TraceContextRelease(unsigned int handle, bool after);
 std::string Status();
+// A note from a path in front of the bridge (the Vulkan seam), shown as Status until the next frame reaches the runtime.
+void Note(const std::string& text);
 // When the stall watch (StallWatch.h) tripped: NR goes off for this session (the INI keeps it), the note below says
 // why and the watch is cleared, so NR switched on again retries. Otherwise the note is cleared. True when it stood
 // NR down. The upscaler path and NR without upscaling both ask before each frame.

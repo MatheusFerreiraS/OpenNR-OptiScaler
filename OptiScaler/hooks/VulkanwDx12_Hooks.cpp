@@ -6156,7 +6156,23 @@ bool Vulkan_wDx12::TakePendingSubmission(VkCommandBuffer commandBuffer, PendingS
     return true;
 }
 
+static void ReleasePendingD3D12Wait(const Vulkan_wDx12::PendingSubmission& pending, const char* reason);
+
 static void AbortPendingD3D12Wait(const Vulkan_wDx12::PendingSubmission& pending, const char* reason)
+{
+    ReleasePendingD3D12Wait(pending, reason);
+    if (pending.settled != nullptr)
+        pending.settled(pending.settledContext, true);
+}
+
+static void SettleSubmitted(const PendingInterop* interops, size_t count)
+{
+    for (size_t i = 0; i < count; i++)
+        if (interops[i].pending.settled != nullptr)
+            interops[i].pending.settled(interops[i].pending.settledContext, false);
+}
+
+static void ReleasePendingD3D12Wait(const Vulkan_wDx12::PendingSubmission& pending, const char* reason)
 {
     bool logAbort = true;
     if (reason != nullptr && std::strcmp(reason, "unsupported legacy VkSubmitInfo pNext chain") == 0)
@@ -6169,6 +6185,11 @@ static void AbortPendingD3D12Wait(const Vulkan_wDx12::PendingSubmission& pending
         LOG_WARN("Aborting Vulkan w/Dx12 submit transaction: {}", reason ? reason : "unknown reason");
 
     if (pending.resourceCopyFence == nullptr)
+        return;
+
+    // A later frame already took the fence past this value; it is shared with Vulkan as a timeline semaphore, which
+    // must never go back.
+    if (pending.resourceCopyFence->GetCompletedValue() >= pending.resourceCopyValue)
         return;
 
     // The private D3D12 interop queue is already waiting for this value. Host-signaling it drains only OptiScaler's
@@ -6279,6 +6300,7 @@ static void ReportRejectedLegacyPNext(const VkSubmitInfo& submit, const LegacyPN
 
 static void AbortPendingD3D12Waits(const PendingInterop* interops, size_t count, const char* reason)
 {
+    Vulkan_wDx12::abortedSubmissions.fetch_add(static_cast<uint32_t>(count), std::memory_order_relaxed);
     for (size_t i = 0; i < count; i++)
         AbortPendingD3D12Wait(interops[i].pending, reason);
 }
@@ -6431,6 +6453,10 @@ VkResult Vulkan_wDx12::hk_vkQueueSubmit(VkQueue queue, uint32_t submitCount, con
         LOG_ERROR("vkQueueSubmit failed after Vulkan w/Dx12 injection: {}", magic_enum::enum_name(result));
         AbortPendingD3D12Waits(injected.data(), injected.size(), "vkQueueSubmit failed");
     }
+    else if (result == VK_SUCCESS)
+    {
+        SettleSubmitted(injected.data(), injected.size());
+    }
 
     return result;
 }
@@ -6534,6 +6560,10 @@ static VkResult Submit2WithDx12Interop(SubmitFn originalSubmit, const char* name
         LOG_ERROR("{} failed after Vulkan w/Dx12 injection: {}", name, magic_enum::enum_name(result));
         AbortPendingD3D12Waits(injected.data(), injected.size(), "vkQueueSubmit2 failed");
     }
+    else if (result == VK_SUCCESS)
+    {
+        SettleSubmitted(injected.data(), injected.size());
+    }
 
     return result;
 }
@@ -6597,9 +6627,25 @@ VkResult Vulkan_wDx12::hk_vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCount,
                                   interops);
 }
 
+// A command buffer recorded again before it was submitted (begin and reset both start over): its evaluate's transaction
+// will never reach a queue submit, and the D3D12 queue would wait for it forever.
+static void AbortUnsubmitted(VkCommandBuffer commandBuffer)
+{
+    Vulkan_wDx12::PendingSubmission pending {};
+    if (Vulkan_wDx12::TakeUnsubmitted(commandBuffer, pending))
+        AbortPendingD3D12Wait(pending, "command buffer recorded again before it was submitted");
+}
+
+bool Vulkan_wDx12::TakeUnsubmitted(VkCommandBuffer commandBuffer, PendingSubmission& submission)
+{
+    return TakePendingSubmission(commandBuffer, submission);
+}
+
 VkResult Vulkan_wDx12::hk_vkBeginCommandBuffer(VkCommandBuffer commandBuffer,
                                                const VkCommandBufferBeginInfo* pBeginInfo)
 {
+    AbortUnsubmitted(commandBuffer);
+
     if (GetVirtualCommandBuffer(commandBuffer) == VK_NULL_HANDLE)
         cmdBufferStateTracker.OnBegin(commandBuffer, pBeginInfo);
 
@@ -6633,6 +6679,8 @@ VkResult Vulkan_wDx12::hk_vkEndCommandBuffer(VkCommandBuffer commandBuffer)
 
 VkResult Vulkan_wDx12::hk_vkResetCommandBuffer(VkCommandBuffer commandBuffer, VkCommandBufferResetFlags flags)
 {
+    AbortUnsubmitted(commandBuffer);
+
 #ifdef LOG_ALL_RECORDS
     LOG_DEBUG("commandBuffer: {:X}", (size_t) commandBuffer);
 #endif

@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "amd/PresentExperimental.h"
 #include "amd/AmdBridge.h"
+#include "amd/VulkanSeam.h"
 #include "amd/AmdLayout.h"
 #include "backend/Selector.h"
 #include "backend/LmxxfBackend.h"
@@ -52,6 +53,14 @@ static void HGap(float em)
     ImGui::SameLine();
     ImGui::Dummy(ImVec2(ImGui::GetFontSize() * em, 0.0f));
     ImGui::SameLine();
+}
+
+// A native Vulkan upscaler: the AMD runtime runs on a D3D12 copy of its inputs (amd/VulkanSeam).
+static void VulkanSeamLine()
+{
+    if (const auto frames = VkSeam::Frames(); frames > 0)
+        ImGui::TextWrapped("Vulkan: NR runs before Super Resolution on a D3D12 copy of the frame (%llu frames).",
+                           frames);
 }
 
 // A slider that only writes its value when the handle is released.
@@ -732,6 +741,7 @@ void RenderMenu(Config* config, float menuResScale)
             if (ImGui::TreeNode("Info"))
             {
                 ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
+                VulkanSeamLine();
                 ImGui::TextWrapped("Runs before Super Resolution only, so a game driving Ray Reconstruction"
                                    " gets no NR. Built for a render resolution of 1080p or less.");
                 ImGui::TreePop();
@@ -981,6 +991,7 @@ void RenderMenu(Config* config, float menuResScale)
             {
                 ScopedIndent indent {};
                 ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
+                VulkanSeamLine();
                 if (const auto runtimeStatus = DlssNr::AmdBridge::RuntimeStatus(); !runtimeStatus.empty())
                     ImGui::TextWrapped("%s", runtimeStatus.c_str());
                 if (MochizukiNrInfo info {}; DlssNr::Backend::LmxxfBackend::MochizukiInfo(info))
@@ -1513,7 +1524,10 @@ void RenderMenu(Config* config, float menuResScale)
                                        "OpenGL. RenoDX composition does not apply here.");
                 }
                 else
+                {
                     ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
+                    VulkanSeamLine();
+                }
                 ImGui::TextWrapped("AMD HIP backend. Each pass owns independent temporal history. More passes increase "
                                    "GPU time and memory. Restart the game after a backend failure.");
                 ImGui::TreePop();

@@ -16,6 +16,8 @@
 // Call sites, for the record:
 //   inputs/NVNGX_DLSS_Dx12.cpp        the pass after an upscale
 //   upscalers/IFeature_Dx11wDx12.cpp  the pass inside the D3D11-on-D3D12 bridge
+//   upscalers/IFeature_VkwDx12.cpp    the pass inside the Vulkan-on-D3D12 bridge
+//   amd/VulkanSeam.cpp                the AMD runtimes before a native Vulkan upscaler, on D3D12 copies
 //   menu/menu_common.cpp              the settings panel
 
 #include "DlssNrFeature_Dx12.h"

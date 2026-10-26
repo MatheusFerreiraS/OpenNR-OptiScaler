@@ -353,7 +353,7 @@ class CommandBufferStateTracker
 
     void OnBegin(VkCommandBuffer cmd, const VkCommandBufferBeginInfo* pBeginInfo)
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         const uint32_t flags = (pBeginInfo) ? pBeginInfo->flags : 0;
@@ -426,7 +426,7 @@ class CommandBufferStateTracker
 
     void OnEnd(VkCommandBuffer cmd)
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         // Fast path: get entry with read lock
@@ -449,7 +449,7 @@ class CommandBufferStateTracker
 
     void OnReset(VkCommandBuffer cmd)
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         // Fast path: get entry with read lock
@@ -472,7 +472,7 @@ class CommandBufferStateTracker
 
     void OnResetPool(VkCommandPool pool)
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         // Atomic increment - lock-free for the epoch counter
@@ -494,7 +494,7 @@ class CommandBufferStateTracker
 
     void OnBindPipeline(VkCommandBuffer cmd, VkPipelineBindPoint bindPoint, VkPipeline pipeline)
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         // Fast path: Try to get existing entry with read lock
@@ -532,7 +532,7 @@ class CommandBufferStateTracker
                               uint32_t firstSet, uint32_t descriptorSetCount, const VkDescriptorSet* pDescriptorSets,
                               uint32_t dynamicOffsetCount, const uint32_t* pDynamicOffsets)
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         // Fast path: Try to get existing entry with read lock
@@ -627,7 +627,7 @@ class CommandBufferStateTracker
     void OnPushConstants(VkCommandBuffer cmd, VkPipelineBindPoint bindPoint, VkPipelineLayout layout,
                          VkShaderStageFlags stageFlags, uint32_t offset, uint32_t size, const void* pValues)
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         auto entry = GetOrCreateEntry(cmd, true);
@@ -666,7 +666,7 @@ class CommandBufferStateTracker
 
     void OnSetViewport(VkCommandBuffer cmd, uint32_t first, uint32_t count, const VkViewport* pViewports)
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         if (count > 0 && !pViewports)
@@ -691,7 +691,7 @@ class CommandBufferStateTracker
 
     void OnSetScissor(VkCommandBuffer cmd, uint32_t first, uint32_t count, const VkRect2D* pScissors)
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         if (count > 0 && !pScissors)
@@ -717,7 +717,7 @@ class CommandBufferStateTracker
     void OnBindVertexBuffers(VkCommandBuffer cmd, uint32_t first, uint32_t count, const VkBuffer* pBuffers,
                              const VkDeviceSize* pOffsets)
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         if (count > 0 && (!pBuffers || !pOffsets))
@@ -744,7 +744,7 @@ class CommandBufferStateTracker
 
     void OnBindIndexBuffer(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkIndexType indexType)
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         auto entry = GetOrCreateEntry(cmd, true);
@@ -763,7 +763,7 @@ class CommandBufferStateTracker
                            const VkImageMemoryBarrier* pImageMemoryBarriers)
     {
 #ifndef LOW_PRECISION_TRACKING
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         auto entry = GetOrCreateEntry(cmd, true);
@@ -779,7 +779,7 @@ class CommandBufferStateTracker
 
     void OnSetCullMode(VkCommandBuffer cmd, VkCullModeFlags cullMode)
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         auto entry = GetOrCreateEntry(cmd, true);
@@ -791,7 +791,7 @@ class CommandBufferStateTracker
 
     void OnSetFrontFace(VkCommandBuffer cmd, VkFrontFace frontFace)
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         auto entry = GetOrCreateEntry(cmd, true);
@@ -803,7 +803,7 @@ class CommandBufferStateTracker
 
     void OnSetPrimitiveTopology(VkCommandBuffer cmd, VkPrimitiveTopology primitiveTopology)
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         auto entry = GetOrCreateEntry(cmd, true);
@@ -816,7 +816,7 @@ class CommandBufferStateTracker
     void OnSetDepthTestEnable(VkCommandBuffer cmd, VkBool32 depthTestEnable)
     {
 #ifndef LOW_PRECISION_TRACKING
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         auto entry = GetOrCreateEntry(cmd, true);
@@ -830,7 +830,7 @@ class CommandBufferStateTracker
     void OnSetDepthWriteEnable(VkCommandBuffer cmd, VkBool32 depthWriteEnable)
     {
 #ifndef LOW_PRECISION_TRACKING
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         auto entry = GetOrCreateEntry(cmd, true);
@@ -844,7 +844,7 @@ class CommandBufferStateTracker
     void OnSetDepthCompareOp(VkCommandBuffer cmd, VkCompareOp depthCompareOp)
     {
 #ifndef LOW_PRECISION_TRACKING
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         auto entry = GetOrCreateEntry(cmd, true);
@@ -858,7 +858,7 @@ class CommandBufferStateTracker
     void OnSetDepthBoundsTestEnable(VkCommandBuffer cmd, VkBool32 depthBoundsTestEnable)
     {
 #ifndef LOW_PRECISION_TRACKING
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         auto entry = GetOrCreateEntry(cmd, true);
@@ -872,7 +872,7 @@ class CommandBufferStateTracker
     void OnSetStencilTestEnable(VkCommandBuffer cmd, VkBool32 stencilTestEnable)
     {
 #ifndef LOW_PRECISION_TRACKING
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         auto entry = GetOrCreateEntry(cmd, true);
@@ -887,7 +887,7 @@ class CommandBufferStateTracker
                         VkStencilOp depthFailOp, VkCompareOp compareOp)
     {
 #ifndef LOW_PRECISION_TRACKING
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         auto entry = GetOrCreateEntry(cmd, true);
@@ -906,7 +906,7 @@ class CommandBufferStateTracker
     void OnBeginRenderPass(VkCommandBuffer cmd, const VkRenderPassBeginInfo* pRenderPassBegin)
     {
 #ifndef LOW_PRECISION_TRACKING
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         auto entry = GetOrCreateEntry(cmd, true);
@@ -921,7 +921,7 @@ class CommandBufferStateTracker
     void OnEndRenderPass(VkCommandBuffer cmd)
     {
 #ifndef LOW_PRECISION_TRACKING
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return;
 
         auto entry = GetOrCreateEntry(cmd, true);
@@ -997,7 +997,7 @@ class CommandBufferStateTracker
 
     bool CaptureAndReplay(VkCommandBuffer srcCmd, VkCommandBuffer dstCmd, const ReplayParams& params) const
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return false;
 
         if (!_hasCachedFns)
@@ -1012,7 +1012,7 @@ class CommandBufferStateTracker
     bool ReplayForGraphicsDraw(const VulkanCmdFns& fns, VkCommandBuffer srcCmd, VkCommandBuffer dstCmd,
                                const ReplayParams& params) const
     {
-        if (_state->currentFeature == nullptr || !_state->currentFeature->IsWithDx12())
+        if (!Tracking())
             return false;
 
         CommandBufferState snapshot;
@@ -1143,6 +1143,13 @@ class CommandBufferStateTracker
 
   private:
     inline static State* _state;
+
+    // A w/Dx12 upscaler, or the AMD NR seam in front of a native one, splits command buffers at the evaluate.
+    bool Tracking() const
+    {
+        return _state->currentFeature != nullptr &&
+               (_state->currentFeature->IsWithDx12() || _state->vulkanSeamTracking);
+    }
 
     // Helper method to replay descriptor sets with proper slicing and timeline ordering
     void ReplayDescriptorSets(const VulkanCmdFns& fns, VkCommandBuffer dstCmd, const BindPointState& bindPoint,
