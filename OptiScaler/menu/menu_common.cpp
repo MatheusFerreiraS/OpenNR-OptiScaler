@@ -6052,6 +6052,10 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
                                                  "Unsupported API");
     outputOptions[dlssgOutputIndex].set_disabled(!maySupportDlssg && !hasDlssgReplacement,
                                                  "Unsupported hardware and no replacements");
+    // Off NVIDIA nothing creates DLSSG on Vulkan: NeuralHub's host and the Nvngx replacements are D3D12 only
+    outputOptions[dlssgOutputIndex].set_disabled(state.swapchainApi == API::Vulkan &&
+                                                     primaryGpu.vendorId != VendorId::Nvidia,
+                                                 "No DLSSG on Vulkan without an NVIDIA GPU, use FSR FG");
 
     // For that one case of DX11 DLSSG
     const auto streamlineVersion = state.streamlineVersion;

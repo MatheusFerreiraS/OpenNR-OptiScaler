@@ -659,6 +659,40 @@ class StreamlineProxy
     {
         size_t len = std::strlen(msg) - 1;
 
+        // Streamline repeats a status error on every present (RDR2: hundreds a second), and writing each one stalls
+        // the presenting thread. A message is keyed past its time and thread prefix and logged once, then every
+        // 1000th time.
+        if (type != sl::LogType::eInfo)
+        {
+            std::string_view key(msg, len);
+            for (int i = 0; i < 5; i++)
+            {
+                auto pos = key.find(']');
+                if (pos == std::string_view::npos)
+                    break;
+                key.remove_prefix(pos + 1);
+            }
+
+            static std::mutex repeatsLock;
+            static std::unordered_map<std::string, uint64_t> repeats;
+            uint64_t count;
+            {
+                std::scoped_lock lock(repeatsLock);
+                if (repeats.size() > 1024)
+                    repeats.clear();
+                count = ++repeats[std::string(key)];
+            }
+
+            if (count > 1 && count % 1000 != 0)
+                return;
+
+            if (count > 1)
+            {
+                spdlog::warn("SL Log (repeated {} times): {:.{}s}", count, msg, len);
+                return;
+            }
+        }
+
         switch (type)
         {
         case sl::LogType::eInfo:

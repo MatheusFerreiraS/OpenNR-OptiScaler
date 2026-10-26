@@ -31,6 +31,7 @@
 #include "inputs/FG/FSR3_Dx12_FG.h"
 #include "inputs/FG/XeFG_Inputs_Dx12.h"
 
+#include <dlssnr/amd/AmdBridge.h>
 #include <hooks/Amdxc64_Hooks.h>
 #include <hooks/Dxgi_Hooks.h>
 #include <hooks/D3D11_Hooks.h>
@@ -1929,6 +1930,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         if (State::Instance().activeFgInput != FGInput::NvngxFG && State::Instance().activeFgOutput != FGOutput::DLSSG)
             State::Instance().activeFgNvngx = FGNvngxReplacement::None;
+
+        // NeuralHub's host serves real DLSS-FG on AMD, as an Ada+ GeForce does: no replacement unless the INI names one
+        if (State::Instance().activeFgNvngx != FGNvngxReplacement::None &&
+            !Config::Instance()->FGNvngxReplacement.has_value() && DlssNr::AmdBridge::NeuralHubFgServed())
+        {
+            spdlog::info("NeuralHub serves DLSS-FG, no DLSSG replacement");
+            State::Instance().activeFgNvngx = FGNvngxReplacement::None;
+        }
 
         if (State::Instance().activeFgInput == FGInput::NvngxFG)
             State::Instance().activeFgOutput = FGOutput::NoFG;

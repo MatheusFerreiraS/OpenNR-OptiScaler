@@ -3083,8 +3083,11 @@ static void HookToDevice(ID3D12Device* InDevice)
         ResTrack_Dx12::HookDevice(InDevice);
     }
 
+    // Streamline is initialized once per process. A Vulkan game (RDR2) makes D3D12 devices before its Vulkan one,
+    // and binding Streamline to them left the Vulkan DLSSG output without it; a D3D12 game still gets it when its
+    // FG swapchain is made.
     if (State::Instance().activeFgOutput == FGOutput::DLSSG && !State::Instance().creatingD3DDevice &&
-        StreamlineProxy::LoadStreamline())
+        KernelBaseProxy::GetModuleHandleW_()(L"vulkan-1.dll") == nullptr && StreamlineProxy::LoadStreamline())
     {
         StreamlineProxy::InitWithD3D12(InDevice);
     }
