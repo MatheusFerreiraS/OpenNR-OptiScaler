@@ -935,9 +935,12 @@ void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, co
     for (auto opt : options)
     {
         // Check if GPU is capable of a given backend; the AmdPreSr NeuralHub host makes DLSS-SR/DLSS-RR a live
-        // provider on an AMD GPU once armed
+        // provider on an AMD GPU once armed. On Vulkan it is armed when a DLSS feature is made, so an installed host
+        // is enough, and it serves D3D12 only: DLSS is offered there as DLSS w/Dx12 alone.
         if ((opt == Upscaler::DLSS || opt == Upscaler::DLSS_on12) && !primaryGpu.dlssCapable &&
-            !State::Instance().NeuralHubArmOk)
+            !(api == API::Vulkan ? DlssNr::AmdBridge::NgxHostInstalled() : State::Instance().NeuralHubArmOk))
+            continue;
+        if (opt == Upscaler::DLSS && api == API::Vulkan && !primaryGpu.dlssCapable)
             continue;
 
         // Not all Intel GPUs support native DX11 XeSS but don't think we have a good way to check exactly

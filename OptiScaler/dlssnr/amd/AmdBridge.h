@@ -29,6 +29,11 @@ std::filesystem::path LibraryFolder();
 // Install submission expansion before the first wrapped list is exposed. No runtime/HIP initialization.
 bool EnsureSubmissionHook(ID3D12CommandQueue*);
 bool EnsureNgxHost(ID3D12Device*, ID3D12CommandQueue* = nullptr);
+// NeuralHub 0.8.0 is installed beside this DLL on an AMD GPU (or already armed): its host can serve DLSS-SR/DLSS-RR.
+bool NgxHostInstalled();
+// For a Vulkan or D3D11 game, whose NGX calls never reach EnsureNgxHost: arms the host on OptiScaler's D3D12 device
+// before a w/Dx12 DLSS feature is made. True when armed.
+bool EnsureNgxHostForInterop();
 bool Before(ID3D12GraphicsCommandList*, NVSDK_NGX_Parameter*, ID3D12CommandQueue*);
 // Post-upscale placement: runs the model over the frame the upscaler (or Ray Reconstruction) has
 // already finished, and hands its answer back instead of substituting the upscaler's input. The

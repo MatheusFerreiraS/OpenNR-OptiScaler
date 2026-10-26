@@ -665,6 +665,27 @@ int Run(const std::string& label)
         Check(log.find("Aborting Vulkan w/Dx12 submit transaction: unsupported") == std::string::npos,
               "every submit was split");
     }
+    // VulkanUpscaler=dlss_12 or dlss with danielblnc 0.8.0: DLSS-SR is served by the NeuralHub host on D3D12. Native
+    // Vulkan DLSS is routed to w/Dx12, the host is armed for it, and its jobs never wait on a submit that comes later.
+    char upscalerName[32] {};
+    GetEnvironmentVariableA("UPSCALER", upscalerName, sizeof(upscalerName));
+    if (std::string(upscalerName).rfind("dlss", 0) == 0)
+    {
+        std::ifstream hostFile("dlssnr_amd_host/dlssnr_on_amd.log", std::ios::binary);
+        const std::string host(std::istreambuf_iterator<char>(hostFile), {});
+        if (std::string(upscalerName) == "dlss")
+            Check(log.find("DLSS on Vulkan runs w/Dx12") != std::string::npos, "native Vulkan DLSS went to w/Dx12");
+        Check(log.find("_CreateFeature result: NVSDK_NGX_Result_Success") != std::string::npos &&
+                  log.find("Falling back") == std::string::npos && log.find("init failed") == std::string::npos,
+              "DLSS w/Dx12 created through the NeuralHub host, no fallback");
+        Check(log.find("VkwDx12: D3D12 work queued after the game's submit") != std::string::npos ||
+                  log.find("lists proxied") != std::string::npos,
+              "the w/Dx12 D3D12 work waits for the game's submit");
+        Check(host.find("evaluates now done by DLSS-SR") != std::string::npos, "the host ran DLSS-SR");
+        Check(host.find("host watchdog: job") == std::string::npos && host.find("capture never landed") == std::string::npos,
+              ("no host job outlived its budget (" + std::to_string(Count(host, "host watchdog: job")) + " fired)").c_str());
+    }
+
     // The game's copy after its evaluate saw an upscaled frame (it ran after the upscaler, not before).
     bool lit = true;
     for (const auto& c : checkpoints)

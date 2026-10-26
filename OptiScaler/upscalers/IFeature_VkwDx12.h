@@ -87,7 +87,7 @@ class IFeature_VkwDx12 : public virtual IFeature_Vk
     uint64_t pendingResourceCopyValue = 0;
     std::mutex EvaluateMutex;
 
-    // lmxxf and mochizuki at the D3D12 seam (proxied lists): the frame's D3D12 work is queued after the game's submit.
+    // With an AMD NR runtime or the NeuralHub host, the frame's D3D12 work is queued after the game's submit.
     struct DeferredSubmit
     {
         IFeature_VkwDx12* owner = nullptr;

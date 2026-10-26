@@ -9,6 +9,9 @@ rem dlssnr-amd\; LmxxfNrRuntime.dll, lmxxf-modules\, shaders\ and native-game-ti
 rem dlssnr_on_amd_weights.bin. Its dxgi.dll, OptiScaler files, INI and logs are not copied. Without names: mochizuki.
 rem With UPSCALER set to a w/Dx12 upscaler (fsr21_12, ffx_12) NR runs at the D3D12 seam inside that bridge instead,
 rem and the run checks that the Vulkan seam stays out of it.
+rem UPSCALER=dlss_12 (or dlss, which must be routed to w/Dx12) with danielblnc 0.8.0 (dlssnr_amd_pass1.dll = the
+rem NeuralHub host, dlssnr_amd_host\ with neuralhub_host.dll and nvngx_dlss.dll in the folder): DLSS-SR from the host
+rem in the w/Dx12 bridge, checked for no host watchdog firing.
 setlocal EnableDelayedExpansion
 cd /d "%~dp0.."
 if "%~1"=="" goto usage
@@ -16,6 +19,7 @@ set "SRC=%~1"
 if not defined UPSCALER set "UPSCALER=fsr22"
 set "MODE=native"
 if not "%UPSCALER:_12=%"=="%UPSCALER%" set "MODE=bridged"
+if "%UPSCALER%"=="dlss" set "MODE=bridged"
 set "OUT=exports\vulkan-seam"
 if "%MODE%"=="bridged" set "OUT=exports\vulkan-seam-%UPSCALER%"
 set "DLL=exports\release-local\OptiScaler.dll"
@@ -52,6 +56,7 @@ exit /b %FAILED%
 set "DIR=%OUT%\%~1"
 if not exist "%DIR%" mkdir "%DIR%"
 del /q "%DIR%\*.log" "%DIR%\*.bin" 2>nul
+del /q "%DIR%\dlssnr_amd_host\*.log" 2>nul
 copy /y "%DLL%" "%DIR%\OptiScaler.dll" >nul || exit /b 1
 copy /y "%OUT%\vulkan_seam_smoke.exe" "%DIR%\" >nul || exit /b 1
 for %%F in ("%SRC%\*.dll" "%SRC%\*.bin") do (

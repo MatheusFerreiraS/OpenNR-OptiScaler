@@ -1982,9 +1982,16 @@ HRESULT IFeature_VkwDx12::CreateDx12Device()
         proxied = DlssNr::AmdBridge::EnsureSubmissionHook(Dx12CommandQueue);
         if (proxied)
             DlssNr::Submission::Hooks::SetExpandEnabled(true);
-        deferSubmit = proxied;
         LOG_INFO("VkwDx12 same-frame NR: submission hook {}", proxied ? "ready, lists proxied" : "failed, plain lists");
     }
+
+    // danielblnc and the NeuralHub host wait on the CPU too, inside ExecuteCommandLists, when NR and DLSS-SR share
+    // the list: NR has to finish before DLSS-SR is woken, and NR's capture sits behind the wait for the Vulkan copies.
+    // Executed at evaluate time, before the game's submit, every frame ran into the host's 200 ms watchdog (RDR2,
+    // DLSS w/Dx12 at ~1 fps). So with any AMD runtime the work is queued after the game's submit (Settled).
+    deferSubmit = proxied || DlssNr::AmdBridge::HasFiles() || State::Instance().NeuralHubArmOk;
+    if (deferSubmit && !proxied)
+        LOG_INFO("VkwDx12: D3D12 work queued after the game's submit (AMD NR runtime / NeuralHub host on plain lists)");
 
     for (size_t i = 0; i < VKDX12_BUFFER_COUNT; i++)
     {

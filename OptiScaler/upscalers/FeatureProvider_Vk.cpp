@@ -16,6 +16,7 @@
 #include "upscalers/xess/XeSSFeature_Vk.h"
 #include "upscalers/ffx/FFXFeature_VkOn12.h"
 #include <misc/IdentifyGpu.h>
+#include <dlssnr/amd/AmdBridge.h>
 
 bool FeatureProvider_Vk::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NGX_Parameter* parameters,
                                     std::unique_ptr<IFeature_Vk>* feature)
@@ -23,6 +24,20 @@ bool FeatureProvider_Vk::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NGX_
     State& state = State::Instance();
     Config& cfg = *Config::Instance();
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
+    // The NeuralHub host answers NGX for D3D12 only (NVSDK_NGX_VULKAN_Init is refused), so on an AMD GPU native
+    // Vulkan DLSS always failed and fell back to XeSS. It runs as DLSS w/Dx12 instead. A Vulkan game never makes the
+    // NGX D3D12 calls that arm the host, so it is armed here, on the D3D12 device the w/Dx12 bridge uses.
+    const bool wantsDlss = upscaler == Upscaler::DLSS || upscaler == Upscaler::DLSS_on12;
+    if (wantsDlss && !primaryGpu.dlssCapable && DlssNr::AmdBridge::NgxHostInstalled())
+    {
+        DlssNr::AmdBridge::EnsureNgxHostForInterop();
+        if (upscaler == Upscaler::DLSS)
+        {
+            LOG_INFO("DLSS on Vulkan runs w/Dx12: the NeuralHub host serves DLSS on D3D12 only");
+            upscaler = Upscaler::DLSS_on12;
+        }
+    }
+
     // AmdPreSr NeuralHub host: the armed host module serves DLSS on an AMD GPU too.
     const bool dlssCapableForThisProcess = primaryGpu.dlssCapable || state.NeuralHubArmOk;
 
@@ -125,7 +140,7 @@ bool FeatureProvider_Vk::ChangeFeature(Upscaler upscaler, VkInstance instance, V
     State& state = State::Instance();
     Config& cfg = *Config::Instance();
 
-    const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && !state.NeuralHubArmOk &&
+    const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && !DlssNr::AmdBridge::NgxHostInstalled() &&
                                   (state.newBackend == Upscaler::DLSS || state.newBackend == Upscaler::DLSS_on12);
     if (state.newBackend == Upscaler::Reset || dlssOnNonCapable)
         state.newBackend = cfg.VulkanUpscaler.value_or_default();

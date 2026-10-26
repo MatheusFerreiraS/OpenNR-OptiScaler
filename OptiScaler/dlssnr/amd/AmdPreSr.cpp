@@ -591,7 +591,9 @@ bool ArmDlssNgx(HMODULE hostModule, const AmdLayout* L, const char* tag,
     if (routed == nullptr || routed == hostModule)
     {
         NVNGXProxy::InitNVNGX(hostModule);
-        if (NVNGXProxy::NVNGXModule() == hostModule && NVNGXProxy::D3D12_CreateFeature() != nullptr)
+        // NVNGXProxy's getters stay null until its D3D12 init; ask the module itself.
+        if (NVNGXProxy::NVNGXModule() == hostModule &&
+            GetProcAddress(hostModule, "NVSDK_NGX_D3D12_CreateFeature") != nullptr)
             log("AMD NGX arm: " + name + ": NVNGXProxy routed to neuralhub_host exports (NVSDK_NGX_D3D12_*)");
         else
             log("AMD NGX arm: " + name + ": NVNGXProxy routed, but D3D12 NGX exports are missing");

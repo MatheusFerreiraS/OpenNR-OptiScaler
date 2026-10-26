@@ -472,3 +472,69 @@ Redemption 2` (keep a backup); `system.xml` API Vulkan; FSR 2 on in the game; Op
 6. Repeat 1-4 with `NrBackend=lmxxf`, then `NrBackend=daniel` (restart after each change; daniel shows `plain lists`).
 7. Note the frame rate and NR time with NR on/off at the same spot. If something is off, send OptiScaler.log,
    mochizuki_nr.log and amd_bridge.log.
+
+## DLSS-SR from the NeuralHub host in Vulkan games (2026-10-26)
+
+RDR2 Vulkan (build 9e5d3a4e1): `DLSS w/Dx12` with danielblnc 0.8.0 ran at ~0.9 fps (host log: `host watchdog: job N
+still running 200 ms`, `its capture never landed`), and `DLSS` (native Vulkan) fell back to XeSS.
+
+### Cause
+
+A CPU/GPU wait cycle, the same kind as the lmxxf deadlock fixed in 9e5d3a4e1. With NR before SR and DLSS-SR from the
+host on the same D3D12 list, `AmdPreSr::Backend::Submitted` (called right after `ExecuteCommandLists`) wakes NR,
+then **waits on the CPU for NR's job to finish** before waking DLSS-SR (`waitNrPass`, up to 5 s). NR's job first waits
+for its capture, which sits behind the D3D12 queue's wait for the Vulkan copies, and those are only signalled once the
+game calls `vkQueueSubmit`. For danielblnc the Vk w/Dx12 bridge used plain lists and executed its D3D12 work inside
+the evaluate, so the game thread stood in `waitNrPass` before it could submit: every frame ended through the host's
+200 ms watchdog or the 5 s timeout. The Vulkan seam never hit it (it always queues after the game's submit, and its
+list has no NGX feature).
+
+`[DlssNr] HostComputeBackend` is not involved: the wait is OptiScaler's submission order, the same with D3D12 compute.
+HIP stays (RDR2 has no nvngx_dlssg.dll).
+
+### Fix
+
+- `IFeature_VkwDx12::CreateDx12Device`: the D3D12 work goes to the queue after the game's submit (`Settled`) with any
+  AMD runtime installed or the host armed, not only with proxied lists. Log: `VkwDx12: D3D12 work queued after the
+  game's submit (AMD NR runtime / NeuralHub host on plain lists)`.
+- The host serves NGX for D3D12 only (`NVSDK_NGX_VULKAN_Init_ProjectID: not supported`). `FeatureProvider_Vk::GetFeature`:
+  on a non-DLSS GPU with the host installed, `DLSS` becomes `DLSS w/Dx12` (log `DLSS on Vulkan runs w/Dx12: the
+  NeuralHub host serves DLSS on D3D12 only`); the Vulkan menu lists only `DLSS w/Dx12` there.
+- A Vulkan game never makes the NGX D3D12 calls that arm the host (`EnsureNgxHost`), so `DLSS w/Dx12` only worked after
+  the Vulkan seam had run danielblnc once; picked at start it fell back to FSR 2.2. New `AmdBridge::NgxHostInstalled()`
+  (AMD + 0.8.0 pass file, or armed) and `EnsureNgxHostForInterop()` (arms it on WithDx12's D3D12 device) are called
+  when a Vulkan DLSS feature is made; the menu offers DLSS w/Dx12 once the host is installed (log `AMD neural:
+  NeuralHub host for a w/Dx12 DLSS feature: armed`).
+- `AMD NGX arm: ... D3D12 NGX exports are missing` was a false alarm in Vulkan games (NVNGXProxy's getters are null until
+  its D3D12 init); the check now asks the host module for `NVSDK_NGX_D3D12_CreateFeature`.
+
+### Tests
+
+- Build OK; the 11 headless tests PASS (proxy-link against 0.4.9).
+- `tools\test-vulkan-seam.cmd` takes `UPSCALER=dlss_12` or `UPSCALER=dlss` (routed, run as bridged). New checks: DLSS
+  w/Dx12 created through the host with no fallback, D3D12 work queued after the submit, the host ran DLSS-SR, no
+  `host watchdog: job` / `capture never landed` in `dlssnr_amd_host\dlssnr_on_amd.log`. Runtime folder
+  `exports\vulkan-seam-runtimes-080` (RDR2's danielblnc 0.8.0: dlssnr_amd_pass1.dll, weights, dlssnr_amd_host\ with
+  neuralhub_host.dll and nvngx_dlss.dll 310.9.1).
+- With the defer change reverted the test reproduces the bug: watchdog fired, `HIP completion timeout pass 1`, NR off
+  (no difference against NR off). With the fix, RX 9070 XT: `dlss_12` and `dlss` ALL PASSED (0 watchdog firings,
+  host NR jobs ~5 ms with 0.3 ms waiting for the capture, DLSS-SR ~1.3 ms on the GPU, longest frame 35 ms; NR changes
+  the DLSS frame by 0.010-0.012 mean); native FSR 2.2 (mochizuki, lmxxf, danielblnc 0.6.0, and 0.8.0) and FSR 2.1 w/Dx12
+  (all three) ALL PASSED. The script now deletes `dlssnr_amd_host\*.log` per run (the host appends to it).
+
+### In-game re-test (RDR2 Vulkan)
+
+Install `exportselease-local\OptiScaler.dll` as `winmm.dll` (keep the backup); API Vulkan, FSR 2 on in the game;
+OptiScaler.ini `[DlssNr] Enabled=true`, `NrBackend=daniel` (0.8.0 installed as now).
+
+1. `[Upscalers] VulkanUpscaler=dlss_12`, start, load the save. OptiScaler.log: `AMD neural: NeuralHub host for a w/Dx12
+   DLSS feature: armed`, `VkwDx12: D3D12 work queued after the game's submit`, `DLSSFeatureDx12::InitDLSS _CreateFeature
+   result: NVSDK_NGX_Result_Success`, no `Falling back`. Frame rate normal (compare with FSR 2 + NR at the same spot).
+2. `dlssnr_amd_host\dlssnr_on_amd.log`: `NGX: DLSS-SR #1 evaluates now done by DLSS-SR`, `SR job N done` lines, and no
+   `host watchdog: job`, `capture never landed` or `SPIKE` after the first seconds.
+3. Insert menu: the upscaler list shows `DLSS` only with the w/Dx12 tag. Switch to FSR 2.2 (Vulkan) and back to DLSS:
+   NR keeps running both ways (Vulkan seam, then the w/Dx12 bridge), no stall on the switch.
+4. Set `VulkanUpscaler=dlss` (native), restart: log has `DLSS on Vulkan runs w/Dx12`, same result as 1.
+5. Change the game's FSR 2 quality twice and Esc in/out a few times: no freeze, DLSS-SR follows the new render size.
+6. Optional: NR off with DLSS w/Dx12 (DLSS-SR alone) runs at normal speed too.
+If anything is off: OptiScaler.log, amd_presr.log, amd_bridge.log and dlssnr_amd_host\dlssnr_on_amd.log.

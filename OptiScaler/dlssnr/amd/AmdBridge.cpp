@@ -18,6 +18,8 @@
 #include <State.h>
 #include <Util.h>
 #include <misc/SkipSpoof.h>
+#include <misc/IdentifyGpu.h>
+#include <with_dx12/with_dx12.h>
 #include <gpu_time/GpuTime_Dx12.h>
 #include <detours/detours.h>
 #include <atomic>
@@ -670,6 +672,31 @@ bool EnsureNgxHost(ID3D12Device* device, ID3D12CommandQueue* q)
         confirmedQ->Release();
 
     return State::Instance().NeuralHubArmOk;
+}
+bool NgxHostInstalled()
+{
+    if (State::Instance().NeuralHubArmOk)
+        return true;
+    if (IdentifyGpu::getPrimaryGpu().vendorId != VendorId::AMD)
+        return false;
+    const char* build = RuntimeName();
+    return build && std::strcmp(build, "0.8.0") == 0;
+}
+bool EnsureNgxHostForInterop()
+{
+    if (State::Instance().NeuralHubArmOk)
+        return true;
+    if (Exiting() || !NgxHostInstalled())
+        return false;
+    ID3D12Device* device = nullptr;
+    {
+        ScopedSkipSpoofingGlobal skipSpoofing {};
+        ScopedSkipVulkanHooks skipVulkanHooks {};
+        device = WithDx12::RequestD3D12Device(D3D_FEATURE_LEVEL_12_0, nullptr);
+    }
+    const bool armed = device && EnsureNgxHost(device);
+    LOG_INFO("AMD neural: NeuralHub host for a w/Dx12 DLSS feature: {}", armed ? "armed" : "not armed");
+    return armed;
 }
 static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3D12CommandQueue* q, bool afterUpscale,
                 ID3D12Resource** outResult)
