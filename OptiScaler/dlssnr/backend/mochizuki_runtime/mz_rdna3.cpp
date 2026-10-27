@@ -850,12 +850,12 @@ std::string LayoutCheck(VkPhysicalDevice physical, VkDevice device, VkQueue queu
 }
 
 std::string PipelineCheck(const LUID& luid, const std::vector<std::wstring>& files, const std::wstring& work,
-                          const std::atomic<bool>* stop, bool& ran, std::string& note)
+                          const std::atomic<bool>* stop, bool& ran, std::string& note, unsigned timeout)
 {
     const auto t0 = std::chrono::steady_clock::now();
     ran = false;
     CreateDirectoryW(work.c_str(), nullptr);
-    DWORD timeoutMs = kPipelineTimeoutMs;
+    DWORD timeoutMs = timeout;
     if (char t[16] {}; GetEnvironmentVariableA("MZ_TEST_RDNA3_TIMEOUT_MS", t, sizeof t))
         timeoutMs = DWORD(std::strtoul(t, nullptr, 10));
     // As the prewarm: below-normal priority, a few threads, so the game keeps its CPU.

@@ -39,10 +39,13 @@ std::string LayoutCheck(VkPhysicalDevice physical, VkDevice device, VkQueue queu
 
 // Every file compiled in a child process on the adapter `luid`, as the runtime creates its pipelines (wave32, robust
 // access off, a layout read from the module). Empty when all compiled, else the pipeline and what happened (a crash
-// of the compiler, no answer in kPipelineTimeoutMs, a VkResult). `ran` false: the check could not be made (no child
+// of the compiler, no answer in `timeoutMs`, a VkResult). `ran` false: the check could not be made (no child
 // process, no device in it, `stop` set) and the text says why; the network then builds unprotected and nothing is
 // kept. `note`: how many compiled, in how long, the slowest. `work` holds the child's list and log.
-constexpr unsigned kPipelineTimeoutMs = 300000;
+// The RDNA2 network's emulated kernels take minutes each (the slowest about 7 on the RX 9070 XT with 8 at once), so
+// it waits kPipelineTimeoutRdna2Ms.
+constexpr unsigned kPipelineTimeoutMs = 300000, kPipelineTimeoutRdna2Ms = 1800000;
 std::string PipelineCheck(const LUID& luid, const std::vector<std::wstring>& files, const std::wstring& work,
-                          const std::atomic<bool>* stop, bool& ran, std::string& note);
+                          const std::atomic<bool>* stop, bool& ran, std::string& note,
+                          unsigned timeoutMs = kPipelineTimeoutMs);
 } // namespace mzr3

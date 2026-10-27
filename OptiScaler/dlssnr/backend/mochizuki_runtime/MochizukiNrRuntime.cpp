@@ -3488,7 +3488,9 @@ struct Session
             nr::g_build_stage = 6;
             why = mzr3::PipelineCheck(device->GetAdapterLuid(), files,
                                       DataDirectory() + L"\\dlssnr-amd\\" + Fp16Tag(vk.arch) + L"-check", &abandon,
-                                      ran, note);
+                                      ran, note,
+                                      vk.arch == nr::Arch::rdna2 ? mzr3::kPipelineTimeoutRdna2Ms
+                                                                 : mzr3::kPipelineTimeoutMs);
             nr::g_build_stage = 1;
             if (abandon)
                 throw std::runtime_error("stopped: the session is being destroyed");
