@@ -319,6 +319,15 @@ Local patches:
     It adds dispatches and barriers to that one recording only. Without `MZ_STAGE_DUMP` nothing is created or
     recorded: the output is byte-identical to the 0.5.8 DLL's (RX 9070 XT, harness, 12 sizes, both models, FP8 and
     ACO), and with it the frame is too. `tools\rx7000-diag\stagecmp.cpp` compares two dumps.
+19. No persistent runs on RDNA3 (`nr_graph.cpp`, the merge of plain fused-Swin layers into `fswinp*` dispatches):
+    an RDNA3 build runs every layer as its own dispatch, with the barrier between, unless `NR_RDNA3_PERSIST=1`, as
+    it keeps the barriers the tile counters would drop. The persistent runs pass data between workgroups of one
+    dispatch through flags. On the RX 7800 XT (driver 26.10.1) the RDNA3 network was wrong and changed from run to
+    run at every size; the RX 9070 XT forced onto that network runs out of its waits with the 310.8 model at
+    1600x900 and up (0.6 to 1.2 s a frame, error word set) and is byte-identical with and without them wherever
+    they finish (small model 1152x648, 1280x720, 1920x1080). Forced RDNA3, 310.8 model: 1600x900 583 -> 14.8 ms,
+    1920x1080 1188 -> 18.2 ms, run to run identical; small model 5.5 -> 5.8 ms at 1152x648, 6.9 -> 7.4 ms at 720p.
+    The RDNA4 network is unchanged (byte-identical to 0.5.8, harness, 720p and 1080p, both models).
 
 The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
 OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;

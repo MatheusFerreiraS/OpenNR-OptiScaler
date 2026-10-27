@@ -4184,9 +4184,17 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
     //
     // Off for every flag that reasons per step: they dispatch, seed or time
     // individual layers and a merged run has no individual layers left.
+    //
+    // RDNA3 runs every layer as its own dispatch unless NR_RDNA3_PERSIST=1, as it keeps the barriers the tile
+    // counters would drop (tchain_active): its persistent runs share data between workgroups of one dispatch, and
+    // on the RX 7800 XT the network changed from run to run at every size; the 9070 XT forced onto that network
+    // runs out of its waits with the 310.8 model at 1600x900 and up (0.6 s a frame), and its output is the same
+    // without them wherever they finish.
     {
+        const char* rdna3_persist = std::getenv("NR_RDNA3_PERSIST");
         const bool asked_off = flag(argc, argv, "--no-persist") ||
-            (std::getenv("NR_NO_PERSIST") && *std::getenv("NR_NO_PERSIST"));
+            (std::getenv("NR_NO_PERSIST") && *std::getenv("NR_NO_PERSIST")) ||
+            (g_rdna3 && !(rdna3_persist && std::atoi(rdna3_persist) != 0));
         const char* per_step_flags[] = {"--only", "--seed-dir", "--no-barrier-after",
                                         "--barrier-stride"};
         bool per_step = flag(argc, argv, "--oracle") || flag(argc, argv, "--no-barrier") ||
