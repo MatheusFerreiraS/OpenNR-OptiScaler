@@ -328,6 +328,12 @@ Local patches:
     they finish (small model 1152x648, 1280x720, 1920x1080). Forced RDNA3, 310.8 model: 1600x900 583 -> 14.8 ms,
     1920x1080 1188 -> 18.2 ms, run to run identical; small model 5.5 -> 5.8 ms at 1152x648, 6.9 -> 7.4 ms at 720p.
     The RDNA4 network is unchanged (byte-identical to 0.5.8, harness, 720p and 1080p, both models).
+20. The kernel capture (a diagnostic, both networks): `nr_runtime.cpp` `Impl::KernelCapture`, `nrvk.hpp`
+    `buffer_sizes()` (every buffer `Context::buffer` makes and its size) and `Kernel::spirv` / `bound_buffers` (what
+    `create` bound). With `MZ_KCAP=<dir>` and `MZ_KCAP_DISP=<n>`, in recording `MZ_KCAP_FRAME` (default 3) every
+    buffer network dispatch n binds is copied whole right before it (`MZ_KCAP_AFTER=1`: after it), with its SPIR-V
+    name, grid, push constants as pushed and bindings (`capture.txt`, `buf<k>.bin`), so `tools\rx7000-diag3\kreplay`
+    can run that one dispatch again. Without `MZ_KCAP` nothing is created or recorded.
 
 The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
 OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;

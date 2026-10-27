@@ -1295,6 +1295,119 @@ struct Runtime::Impl {
         if (d.full.handle) session.ctx.destroy(d.full);
     }
 
+    // MZ_KCAP=<dir> (diagnostic, off unless set; the RX 7000 kit 3): in the recording MZ_KCAP_FRAME (default 3), every
+    // buffer network dispatch MZ_KCAP_DISP binds, copied whole right before it runs (MZ_KCAP_AFTER=1: right after it
+    // and its barrier), with its SPIR-V name, grid, push constants and bindings, so a standalone tool can run that one
+    // dispatch again on the same bytes. Nothing is recorded, created or changed without MZ_KCAP.
+    struct KernelCapture {
+        bool tried{}, on{}, after{};
+        std::string dir;
+        uint64_t frame{3};
+        size_t disp{~size_t(0)};
+        std::vector<std::pair<VkBuffer, nrvk::Buffer>> bufs;   // the bound buffer, its host copy
+        std::string meta;
+        uint64_t written_at{~0ull};
+    };
+    KernelCapture kcap;
+    void kcap_setup() {
+        auto& k = kcap;
+        k.tried = true;
+        const char* e = std::getenv("MZ_KCAP");
+        const char* d = std::getenv("MZ_KCAP_DISP");
+        if (!e || !*e || !d || !*d) return;
+        k.dir = e;
+        k.disp = size_t(std::strtoull(d, nullptr, 0));
+        if (const char* f = std::getenv("MZ_KCAP_FRAME")) k.frame = std::strtoull(f, nullptr, 0);
+        if (const char* a = std::getenv("MZ_KCAP_AFTER")) k.after = std::atoi(a) != 0;
+        k.on = true;
+        nr::logf("[nr] kernel capture on: dispatch %zu, recording %llu, %s it, into %s", k.disp,
+                 (unsigned long long)k.frame, k.after ? "after" : "before", k.dir.c_str());
+    }
+    void kcap_take(VkCommandBuffer cmd, size_t i, const nrvk::Kernel& kern, const nrvk::Runner::Step& step, const void* push,
+                   bool after) {
+        auto& k = kcap;
+        auto& s = session;
+        if (!k.on || k.after != after || i != k.disp || recordings != k.frame || k.written_at != ~0ull) return;
+        try {
+            std::string m = "MZKCAP 1\n";
+            m += "network " + std::string(s.ctx.rdna3 ? "rdna3" : "fp8") + "\n";
+            m += "frame " + std::to_string(width) + "x" + std::to_string(height) + "\n";
+            m += "dispatch " + std::to_string(i) + "\n";
+            m += "when " + std::string(after ? "after" : "before") + "\n";
+            m += "spirv " + kern.spirv.substr(kern.spirv.find_last_of("/\\") + 1) + "\n";
+            m += "grid " + std::to_string(step.gx) + " " + std::to_string(step.gy) + " " + std::to_string(step.gz) + "\n";
+            m += "push_range " + std::to_string(kern.push_range) + "\n";
+            // The bytes vkCmdPushConstants gets (Kernel::push_constants), not the host's own push block.
+            std::vector<uint8_t> pushed(static_cast<const uint8_t*>(push), static_cast<const uint8_t*>(push) + step.push_bytes);
+            if (kern.aco_push_gap && step.push_bytes >= kern.aco_push_gap + 8) {
+                std::vector<uint8_t> c(step.push_bytes, 0);
+                std::memcpy(c.data(), pushed.data(), kern.aco_push_gap);
+                std::memcpy(c.data() + kern.aco_push_gap, pushed.data() + kern.aco_push_gap + 8,
+                            step.push_bytes - kern.aco_push_gap - 8);
+                pushed = c;
+            }
+            m += "push";
+            for (size_t w = 0; w + 4 <= pushed.size(); w += 4) {
+                uint32_t v; std::memcpy(&v, pushed.data() + w, 4);
+                char t[16]; std::snprintf(t, sizeof t, " %08x", v); m += t;
+            }
+            m += "\n";
+            std::vector<VkBufferCopy> one(1);
+            VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+            mb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+            for (const auto& b : kern.bound_buffers) {
+                size_t idx = k.bufs.size();
+                for (size_t j = 0; j < k.bufs.size(); ++j)
+                    if (k.bufs[j].first == b.second) idx = j;
+                if (idx == k.bufs.size()) {
+                    VkDeviceSize bytes = 0;
+                    {
+                        std::lock_guard<std::mutex> guard(nrvk::buffer_sizes_lock());
+                        const auto it = nrvk::buffer_sizes().find(b.second);
+                        if (it != nrvk::buffer_sizes().end()) bytes = it->second;
+                    }
+                    if (!bytes) throw std::runtime_error("binding " + std::to_string(b.first) + ": a buffer of unknown size");
+                    k.bufs.push_back({b.second, s.ctx.buffer(bytes, true)});
+                    one[0] = {0, 0, bytes};
+                    vkCmdCopyBuffer(cmd, b.second, k.bufs.back().second.handle, 1, one.data());
+                    m += "buffer " + std::to_string(idx) + " " + std::to_string(bytes) + "\n";
+                }
+                m += "binding " + std::to_string(b.first) + " " + std::to_string(idx) + "\n";
+            }
+            mb.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0,
+                                 nullptr, 0, nullptr);
+            k.meta = m;
+            k.written_at = recordings;
+        } catch (const std::exception& x) {
+            nr::logf("[nr] kernel capture failed (%s), off", x.what());
+            k.on = false;
+        }
+    }
+    void kcap_write() {
+        auto& k = kcap;
+        if (k.written_at == ~0ull || k.meta.empty()) return;
+        vkDeviceWaitIdle(session.ctx.device);
+        std::error_code ec;
+        std::filesystem::create_directories(k.dir, ec);
+        const auto path = [&](const std::string& n) { return (std::filesystem::path(k.dir) / n).string(); };
+        if (FILE* f = std::fopen(path("capture.txt").c_str(), "w")) { std::fputs(k.meta.c_str(), f); std::fclose(f); }
+        for (size_t j = 0; j < k.bufs.size(); ++j)
+            if (FILE* f = std::fopen(path("buf" + std::to_string(j) + ".bin").c_str(), "wb")) {
+                std::fwrite(k.bufs[j].second.mapped, 1, size_t(k.bufs[j].second.bytes), f);
+                std::fclose(f);
+            }
+        for (auto& b : k.bufs) session.ctx.destroy(b.second);
+        k.bufs.clear();
+        k.meta.clear();
+        k.on = false;
+        nr::logf("[nr] kernel capture written: %s", k.dir.c_str());
+    }
+
     ~Impl() {
         // Caller has already completed its submitted command buffers.
         auto& s = session;
@@ -1303,6 +1416,7 @@ struct Runtime::Impl {
             stage_write();
             stage_destroy();
         }
+        kcap_write();
         for (auto& d : direct_ring) {
             direct_slot_release(d);
             if (d.pool) vkDestroyDescriptorPool(s.ctx.device, d.pool, nullptr);
@@ -2895,6 +3009,8 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
     impl_->check_read();
     if (!impl_->stage.tried) impl_->stage_setup();
     impl_->stage_write();
+    if (!impl_->kcap.tried) impl_->kcap_setup();
+    impl_->kcap_write();
     if (engine && temporal)
         impl_->incheck.begin(s.ctx, cmd, frame, *engine, temporal->feature, impl_->recordings,
                              impl_->temporal.lw[0], impl_->temporal.lh[0], impl_->mw, impl_->mh);
@@ -3491,6 +3607,7 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
                 std::memcpy(pre_push + kPreNoiseFieldAt, &no_field, 4);
                 push = pre_push;
             }
+            if (impl_->kcap.on && pass == 0) impl_->kcap_take(cmd, i, *use, step, push, false);
             dispatch(cmd, *use, step.gx, step.gy, step.gz, push, step.push_bytes, set);
             // Execution-only between network steps when the arena is coherent,
             // invalidate-only when it is not; the barrier after the last step
@@ -3503,6 +3620,7 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
             compute_barrier(cmd, s.runner.exec_barrier && !last,
                             s.runner.inv_barrier && !last);
             if (impl_->stage.on && pass == 0) impl_->stage_take(cmd, i, last);
+            if (impl_->kcap.on && pass == 0) impl_->kcap_take(cmd, i, *use, step, push, true);
         }
         if (time_net) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, impl_->timing, net_query + 1);
         if (pass == 0 && passes > 1 && (c.anti_halo || estimate)) copy_general(s.surf0, impl_->first_answer);
