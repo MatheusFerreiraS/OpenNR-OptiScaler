@@ -1,7 +1,10 @@
 // pipecheck <folder or .spv> ...: compiles every compute shader given (a folder: its *.spv) on the first AMD Vulkan
 // device as the runtime does (wave32, robust access off, a descriptor layout read from the module, no pipeline
 // cache), each in a child process (pipecheck --one <file>) with a time limit, since a compiler crash ends the
-// process. One line a module: "PIPE <file> OK|FAIL|CRASH|TIMEOUT ...".
+// process. One line a module: "PIPE <file> OK|FAIL|CRASH|TIMEOUT|NOTRUN ...". Folders are walked recursively.
+// PIPECHECK_TIMEOUT_S: the limit a module (300); PIPECHECK_BUDGET_S: no module starts after this many seconds (none).
+// The matrix extension is enabled only when the device offers it and PIPECHECK_COOP is not 0 (the RDNA2 network:
+// the runtime leaves it out).
 #include "child.hpp"
 #include <vulkan/vulkan.h>
 #include <algorithm>
@@ -116,6 +119,8 @@ static int One(const std::wstring& path, const std::string& name)
     VkPhysicalDeviceVulkan13Features f13 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
     VkPhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR wml { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_FEATURES_KHR };
     VkPhysicalDevicePipelineRobustnessFeaturesEXT rob { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT };
+    const char* coopEnv = std::getenv("PIPECHECK_COOP");
+    const bool coopOn = HasExt(phys, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME) && !(coopEnv && !std::strcmp(coopEnv, "0"));
     coop.cooperativeMatrix = VK_TRUE;
     f11.storageBuffer16BitAccess = VK_TRUE;
     f12.storageBuffer8BitAccess = f12.shaderFloat16 = f12.shaderInt8 = f12.vulkanMemoryModel = VK_TRUE;
@@ -127,9 +132,10 @@ static int One(const std::wstring& path, const std::string& name)
     rob.pipelineRobustness = VK_TRUE;
     coop.pNext = &f11; f11.pNext = &f12; f12.pNext = &f13; f13.pNext = &wml;
     if (robust) wml.pNext = &rob;
-    VkPhysicalDeviceFeatures2 f2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &coop };
+    VkPhysicalDeviceFeatures2 f2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, coopOn ? static_cast<void*>(&coop) : &f11 };
     f2.features.shaderInt16 = VK_TRUE;
-    std::vector<const char*> ext = { VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME };
+    std::vector<const char*> ext = { VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME };
+    if (coopOn) ext.push_back(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
     if (robust) ext.push_back(VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
     float prio = 1.f;
     VkDeviceQueueCreateInfo qi { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
@@ -212,6 +218,9 @@ int wmain(int argc, wchar_t** argv)
     }
     DWORD limit = 300000;
     if (const char* e = std::getenv("PIPECHECK_TIMEOUT_S")) limit = DWORD(std::atoi(e)) * 1000;
+    ULONGLONG budget = 0;
+    if (const char* e = std::getenv("PIPECHECK_BUDGET_S")) budget = ULONGLONG(std::atoi(e)) * 1000;
+    const ULONGLONG start = GetTickCount64();
     std::vector<std::wstring> files;
     for (int a = 1; a < argc; ++a)
     {
@@ -219,7 +228,7 @@ int wmain(int argc, wchar_t** argv)
         if (std::filesystem::is_directory(argv[a], ec))
         {
             std::vector<std::wstring> here;
-            for (const auto& e : std::filesystem::directory_iterator(argv[a], ec))
+            for (const auto& e : std::filesystem::recursive_directory_iterator(argv[a], ec))
                 if (e.path().extension() == L".spv") here.push_back(e.path().wstring());
             std::sort(here.begin(), here.end());
             files.insert(files.end(), here.begin(), here.end());
@@ -227,9 +236,15 @@ int wmain(int argc, wchar_t** argv)
         else
             files.push_back(argv[a]);
     }
-    int ok = 0, bad = 0;
+    int ok = 0, bad = 0, skipped = 0;
     for (const auto& f : files)
     {
+        if (budget && GetTickCount64() - start > budget)
+        {
+            std::printf("PIPE %s NOTRUN the time budget of %llu s is used up\n", Narrow(f).c_str(), budget / 1000);
+            ++skipped;
+            continue;
+        }
         double ms = 0;
         const long code = RunChild(L"--one \"" + f + L"\"", limit, &ms);
         code == 0 ? ++ok : ++bad;
@@ -238,6 +253,6 @@ int wmain(int argc, wchar_t** argv)
         else if (Crashed(code) || code == -2)
             std::printf("PIPE %s CRASH exit 0x%08lx after %.0f ms\n", Narrow(f).c_str(), (unsigned long) code, ms);
     }
-    std::printf("pipelines: %d OK, %d not\n", ok, bad);
-    return bad ? 1 : 0;
+    std::printf("pipelines: %d OK, %d not, %d not run\n", ok, bad, skipped);
+    return bad || skipped ? 1 : 0;
 }
