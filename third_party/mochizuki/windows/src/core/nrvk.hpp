@@ -13,6 +13,7 @@
 #pragma once
 #include <vulkan/vulkan.h>
 #include "nr_pipeline_binary.hpp"
+#include "nr_arch.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -85,10 +86,12 @@ struct ImageHeap {
 struct SharedPipeline;   // below; Context::pin
 
 struct Context {
-    // RDNA3 (gfx11) has no FP8: the RDNA3 network (linux/shaders/rdna3) holds the e4m3 values as
-    // FP16 operands. Set before `adopt` (RuntimeConfig::rdna3).
-    bool rdna3 = false;
-    // RDNA3: an arena's FP16 twin, which holds its e4m3 values as FP16 elements at the same
+    // The network (nr_arch.hpp). RDNA3 (gfx11) and RDNA2 (gfx103x) have no FP8: their networks
+    // (linux/shaders/rdna3, rdna2) hold the e4m3 values as FP16 operands, and RDNA2 has no
+    // cooperative matrices at all. Set before `adopt` (RuntimeConfig::arch).
+    nr::Arch arch = nr::Arch::rdna4;
+    bool fp16() const { return nr::fp16_network(arch); }
+    // The FP16 networks: an arena's FP16 twin, which holds its e4m3 values as FP16 elements at the same
     // element index. Empty on RDNA4.
     std::map<VkBuffer, VkBuffer> fp16_twin;
     VkInstance instance{};
@@ -354,9 +357,9 @@ struct Context {
         // DXVK and vkd3d-proton create their devices with robustBufferAccess2 and without this feature; RADV
         // compiles a pipeline by its own VkPipelineRobustnessCreateInfo whether or not the device enabled it.
         pipeline_robustness = prf.pipelineRobustness;
-        if (!c.cooperativeMatrix)             return no("cooperativeMatrix");
-        if (!rdna3 && !f8.shaderFloat8)                 return no("shaderFloat8");
-        if (!rdna3 && !f8.shaderFloat8CooperativeMatrix) return no("shaderFloat8CooperativeMatrix");
+        if (arch != nr::Arch::rdna2 && !c.cooperativeMatrix) return no("cooperativeMatrix");
+        if (!fp16() && !f8.shaderFloat8)                 return no("shaderFloat8");
+        if (!fp16() && !f8.shaderFloat8CooperativeMatrix) return no("shaderFloat8CooperativeMatrix");
         if (!v11.storageBuffer16BitAccess)    return no("storageBuffer16BitAccess");
         if (!v12.storageBuffer8BitAccess)     return no("storageBuffer8BitAccess");
         if (!v12.shaderFloat16)               return no("shaderFloat16");
@@ -471,6 +474,7 @@ struct Context {
     // driver that quietly stops reporting it fails at startup with a name,
     // rather than in a kernel with wrong numbers.
     void require_matrix_config() const {
+        if (arch == nr::Arch::rdna2) return;   // no matrices: its fragments are plain arrays (rdna2/include/coopmm.glsl)
         auto query = reinterpret_cast<PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR>(
             vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR"));
         if (!query) throw std::runtime_error("vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR absent");
@@ -480,7 +484,7 @@ struct Context {
             n, {VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR});
         NRVK_CHECK(query(physical, &n, p.data()));
         // RDNA3 has no FP8: the e4m3 values travel as FP16 operands.
-        const VkComponentTypeKHR operand = rdna3 ? VK_COMPONENT_TYPE_FLOAT16_KHR : VK_COMPONENT_TYPE_FLOAT8_E4M3_EXT;
+        const VkComponentTypeKHR operand = fp16() ? VK_COMPONENT_TYPE_FLOAT16_KHR : VK_COMPONENT_TYPE_FLOAT8_E4M3_EXT;
         for (const auto& m : p)
             if (m.MSize == 16 && m.NSize == 16 && m.KSize == 16 &&
                 m.scope == VK_SCOPE_SUBGROUP_KHR &&
@@ -489,7 +493,7 @@ struct Context {
                 m.CType == VK_COMPONENT_TYPE_FLOAT32_KHR &&
                 m.ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR && !m.saturatingAccumulation)
                 return;
-        throw std::runtime_error(rdna3 ? "f16 x f16 -> fp32 16x16x16 subgroup config not reported"
+        throw std::runtime_error(fp16() ? "f16 x f16 -> fp32 16x16x16 subgroup config not reported"
                                        : "e4m3 x e4m3 -> fp32 16x16x16 subgroup config not reported");
     }
 
@@ -905,7 +909,7 @@ inline std::vector<uint32_t> read_spirv(const std::string& path) {
 }
 
 // The storage-buffer bindings of a module that hold e4m3 data, by the name of their
-// block: `*E4M3*`, `*Pair4`, and the small kernels' `Act` / `Act4`. On RDNA3 the e4m3
+// block: `*E4M3*`, `*Pair4`, and the small kernels' `Act` / `Act4`. On RDNA3 and RDNA2 the e4m3
 // values live in FP16 twins of the arenas (`Context::fp16_twin`), indexed exactly like
 // the byte arenas they shadow, and these are the bindings that read the twin.
 inline std::set<uint32_t> e4m3_view_bindings(const std::vector<uint32_t>& code,
@@ -978,12 +982,13 @@ struct Kernel {
     VkDescriptorPool pool{};
     VkDescriptorSet set{};
     uint32_t push_range{};   // the layout's push constant bytes
-    uint32_t aco_push_gap{}; // ACO INT4 and RDNA3 use Linux's push layout, omitting Windows's arena address.
-    // RDNA3: which bindings read the FP16 twin of their arena and which are raw alias views, and the
+    uint32_t aco_push_gap{}; // ACO INT4 and the FP16 networks use Linux's push layout, omitting Windows's arena address.
+    // FP16 networks: which bindings read the FP16 twin of their arena and which are raw alias views, and the
     // context's twin map. A second descriptor set over this layout (nr_runtime.cpp kernel_set) has to
     // bind the same way `create` does, or the kernel reads and writes an arena in the wrong format.
     std::vector<uint32_t> twin_bindings, alias_bindings;
     const std::map<VkBuffer, VkBuffer>* twin_map{};
+    std::string name;   // the SPIR-V file's stem (NR_STEP_TIMES)
     void push_constants(VkCommandBuffer cmd, uint32_t bytes, const void* data) const {
         if (!bytes) return;
         if (!aco_push_gap) {
@@ -1015,11 +1020,12 @@ struct Kernel {
                 const std::vector<Context::Image*>& images = {}) {
         device = ctx.device;
         push_range = push_bytes;
+        name = spirv_path.substr(spirv_path.find_last_of("/\\") + 1);
         std::vector<VkBuffer> bound(bindings);
-        // RDNA3: the e4m3 bindings get their arena's FP16 twin. Alias bindings (kAliasBase + k)
+        // FP16 networks: the e4m3 bindings get their arena's FP16 twin. Alias bindings (kAliasBase + k)
         // are raw-word views of the buffer at binding k and always get that buffer itself.
         std::vector<std::pair<uint32_t, VkBuffer>> aliases;
-        if (ctx.rdna3) {
+        if (ctx.fp16()) {
             std::set<uint32_t> declared;
             const std::set<uint32_t> e4m3 = e4m3_view_bindings(read_spirv(spirv_path), &declared);
             twin_map = &ctx.fp16_twin;
@@ -1401,7 +1407,7 @@ struct Runner {
     // one of them destroys a whole accumulator tile of the next MMA. Every layer
     // whose producer has no kernel yet reads such a slot.
     VkBuffer zero_buffer{};
-    VkBuffer zero_twin{};              // RDNA3: the FP16 twin of zero_buffer, zeroed with it
+    VkBuffer zero_twin{};              // FP16 networks: the FP16 twin of zero_buffer, zeroed with it
     VkDeviceSize zero_twin_bytes{};
     // Arena-reuse diagnostics (nr_graph.cpp, NR_ARENA_UNWRITTEN): ranges filled
     // after the zero fill, and with what.

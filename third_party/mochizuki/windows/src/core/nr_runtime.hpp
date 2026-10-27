@@ -4,6 +4,7 @@
 #include <vector>
 #include <vulkan/vulkan.h>
 #include "nr_native_plan.hpp"
+#include "nr_arch.hpp"
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -264,11 +265,12 @@ struct RuntimeConfig {
     // beyond this build's need, for other networks to fit.
     std::shared_ptr<ActArenaRef> act_arena;
     double act_slack = 1.0;
-    // The RDNA3 network (local patch, mauri870/DLSSNR-RDNA3): for a device without FP8 that has the
-    // FP16 x FP16 -> FP32 16x16x16 subgroup matrices. The e4m3 values are held as FP16 (twin
-    // arenas), its shaders are dlssnr-amd/shaders-rdna3 and its cache pipeline-rdna3.cache. No ACO,
-    // no int4 mixed.
-    bool rdna3 = false;
+    // The network (local patch, nr_arch.hpp). rdna3 (mauri870/DLSSNR-RDNA3): for a device without FP8 that
+    // has the FP16 x FP16 -> FP32 16x16x16 subgroup matrices. rdna2: for one with neither, the same network
+    // with its fragments emulated in ALU. Both hold the e4m3 values as FP16 (twin arenas), read
+    // dlssnr-amd/shaders-rdna3 or shaders-rdna2 and keep pipeline-rdna3.cache or pipeline-rdna2.cache. No
+    // ACO (RDNA3: but gfx11 records), no int4 mixed.
+    Arch arch = Arch::rdna4;
 };
 
 // A build on this thread stops before its next pipeline once *build_cancel is

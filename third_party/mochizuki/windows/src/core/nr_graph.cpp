@@ -171,18 +171,19 @@ static std::vector<uint8_t> g_tc_nobar;
 static std::vector<uint32_t> g_tc_words;
 static std::vector<size_t> g_tc_err;   // error words, as indices into g_tc_words
 static size_t g_tc_base = 0;
-static bool g_rdna3 = false;   // this build's Context::rdna3
-// RDNA3 keeps the barriers unless NR_TCHAIN=1: on an RX 7900 XT (Windows driver) the chained
+static bool g_fp16 = false;   // this build's Context::fp16(): the RDNA3 or the RDNA2 network
+static bool g_rdna2 = false;  // this build's network is RDNA2's
+// RDNA3 (and RDNA2, which runs its kernels) keeps the barriers unless NR_TCHAIN=1: on an RX 7900 XT (Windows driver) the chained
 // 720p runs gave a darker picture that changed from run to run; the 9070 XT, forced onto the
 // same network, is bit-identical with and without them, so it is gfx11's side.
 static bool tchain_active() {
     const char* e = std::getenv("NR_TCHAIN");
-    const bool on = e && *e ? std::atoi(e) != 0 : !g_rdna3;
+    const bool on = e && *e ? std::atoi(e) != 0 : !g_fp16;
     return NR_TCHAIN_TILES && on && g_chain_epoch_word != 0xFFFFFFFFu;
 }
-// The Linux network's kernel set (linux/shaders/<arch>/pipelines.json): ACO's, and RDNA3's, which the
-// driver compiles. Its tile counters, C=512 projections and frame tick differ from the Windows network's.
-static bool linux_network() { return g_rdna3 || !nr::binary::directory().empty(); }
+// The Linux network's kernel set (linux/shaders/<arch>/pipelines.json): ACO's, and RDNA3's and RDNA2's, which
+// the driver compiles. Its tile counters, C=512 projections and frame tick differ from the Windows network's.
+static bool linux_network() { return g_fp16 || !nr::binary::directory().empty(); }
 // Which barriers a tile counter replaces. C=512: attn -> its projection ->
 // ffwd3 -> FFN projection -> attn. ViT: expand -> contraction -> QKV, and
 // attention -> projection -> the next expand (QKV -> attention needs every
@@ -1562,7 +1563,8 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
     // A build lays out its own persistent sync words; an epoch word left from a
     // previous build (another extent) would point into the old layout.
     g_chain_epoch_word = 0xFFFFFFFFu;
-    g_rdna3 = ctx.rdna3;
+    g_fp16 = ctx.fp16();
+    g_rdna2 = ctx.arch == nr::Arch::rdna2;
     // Where the build's seconds go. Closed phase by phase and logged once at the
     // end through nr::logf, which is the only route that reaches a game's log.
     nr::PhaseTimer timer;
@@ -1993,7 +1995,7 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
     if (reuse) {
         NrSession probe;
         probe.arena_probe = true;
-        probe.ctx.rdna3 = ctx.rdna3;
+        probe.ctx.arch = ctx.arch;
         const nr::LogSink sink = nr::g_log_sink;
         const uint32_t epoch_word = g_chain_epoch_word;
         nr::set_log_sink([](const char*) {});
@@ -2177,11 +2179,12 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
         // `kswap` (RDNA3, NR_OP_KSWAP in linux/shaders/rdna3/fswin_t.comp): the fused Swin kernels build
         // operands from accumulators with every k pair swapped in the upper lane half, and the weight
         // tiles they multiply those operands by have to be stored the same way; see the repack below.
-        // Only the RDNA3 network has it, and the RDNA3 host runs nothing else.
+        // Only the FP16 networks have it (RDNA3, and RDNA2, whose emulated fragments keep gfx11's layout), and
+        // their host runs nothing else.
         if (!built.count("kswap")) built["kswap"] = 0;
-        if (built.at("kswap") != (ctx.rdna3 ? 1u : 0u)) {
-            std::fprintf(stderr, "%s: %s\n", path.c_str(), ctx.rdna3 ? "not the RDNA3 network (no kswap)"
-                                                                     : "the RDNA3 network needs the RDNA3 host");
+        if (built.at("kswap") != (ctx.fp16() ? 1u : 0u)) {
+            std::fprintf(stderr, "%s: %s\n", path.c_str(), ctx.fp16() ? "not an FP16 network (no kswap)"
+                                                                      : "an FP16 network needs the RDNA3/RDNA2 host");
             return 1;
         }
         kswap = built.at("kswap");
@@ -4066,9 +4069,9 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
                 PushFfwd3 p{};
                 if(pd.push.size()!=sizeof p) throw std::runtime_error("packed FFWD push mismatch");
                 std::memcpy(&p,pd.push.data(),sizeof p);
-                pack_matrix(p.a_off,FF_GROUPS*FF_R,FF_K,g_rdna3);
-                pack_matrix(p.q0_off,FF_GROUPS*FF_J,FF_R,g_rdna3);
-                pack_matrix(p.q2_off,FF_GROUPS*FF_OUT,FF_J,g_rdna3);
+                pack_matrix(p.a_off,FF_GROUPS*FF_R,FF_K,g_fp16);
+                pack_matrix(p.q0_off,FF_GROUPS*FF_J,FF_R,g_fp16);
+                pack_matrix(p.q2_off,FF_GROUPS*FF_OUT,FF_J,g_fp16);
                 continue;
             }
 #if NR_INT4
@@ -4096,7 +4099,7 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
             // swapped too. Which tiles those are is a property of each kernel: a tile against an
             // operand loaded from LDS or the arena stays plain. The swap is a permutation of the
             // tile's bytes; the products are the same products.
-            if(g_rdna3 && pd.kern.rfind("fswin",0)==0) {
+            if(g_fp16 && pd.kern.rfind("fswin",0)==0) {
                 if(!kswap) continue;
                 PushFSwin p{};
                 if(pd.push.size()<sizeof p) throw std::runtime_error("kswap: Swin push mismatch");
@@ -4185,8 +4188,13 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
     // Off for every flag that reasons per step: they dispatch, seed or time
     // individual layers and a merged run has no individual layers left.
     {
+        // Never on RDNA2 (local patch): the persistent runs' waits are poll budgets sized for RDNA4's kernels
+        // ("enough polls that a producer's whole dispatch fits inside one", below), and the emulated kernels are
+        // tens of times slower, so waits ran out: the picture changed run to run (the 310.8 model at 720p, RX 9070
+        // XT forced: 43.8 to 53.7 dB) or went wrong (at 1080p, its C=128 run claiming off the counter: 24 dB and
+        // 1.2 s). Per layer, with the barriers, every run repeats byte for byte (42.5 to 56.4 dB).
         const bool asked_off = flag(argc, argv, "--no-persist") ||
-            (std::getenv("NR_NO_PERSIST") && *std::getenv("NR_NO_PERSIST"));
+            (std::getenv("NR_NO_PERSIST") && *std::getenv("NR_NO_PERSIST")) || g_rdna2;
         const char* per_step_flags[] = {"--only", "--seed-dir", "--no-barrier-after",
                                         "--barrier-stride"};
         bool per_step = flag(argc, argv, "--oracle") || flag(argc, argv, "--no-barrier") ||
@@ -4948,7 +4956,7 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
         put_act_address(disp, act.address);
         arenas->device = ctx.device; arenas->wgt = wgt;
         arenas->wgt_cap = std::max(wgt_bytes, wblob.size()); arenas->weights_end = weights_end;
-        if (ctx.rdna3) {
+        if (ctx.fp16()) {
             // A taken arena keeps its twin; one without (never on one device) gets its own.
             if (!arenas->act->twin.handle) arenas->act->twin = ctx.buffer(VkDeviceSize(arenas->act->cap) * 2);
             arenas->wgt_twin = ctx.buffer(VkDeviceSize(arenas->wgt_cap) * 2);
@@ -5015,7 +5023,7 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
         ctx.upload_with(wgt, 0, wblob.size(), [&](VkDeviceSize off, VkDeviceSize n, uint8_t* dst) {
             wblob.read(size_t(off), dst, size_t(n));
         });
-        if (ctx.rdna3) {
+        if (ctx.fp16()) {
             std::vector<uint8_t> codes(size_t(nrvk::Context::kStageBytes / 2));
             ctx.upload_with(arenas->wgt_twin, 0, VkDeviceSize(wblob.size()) * 2, [&](VkDeviceSize off, VkDeviceSize n, uint8_t* dst) {
                 wblob.read(size_t(off / 2), codes.data(), size_t(n / 2));
@@ -5323,7 +5331,7 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
     // seeder put there.
     runner.zero_buffer = act.handle;
     runner.zero_bytes = VkDeviceSize(act_total);
-    if (ctx.rdna3) { runner.zero_twin = arenas->act->twin.handle; runner.zero_twin_bytes = VkDeviceSize(act_total) * 2; }
+    if (ctx.fp16()) { runner.zero_twin = arenas->act->twin.handle; runner.zero_twin_bytes = VkDeviceSize(act_total) * 2; }
     // **What arena reuse has to keep zero** (diagnostics, off unless asked for,
     // one-value-one-slot layout). NR_ARENA_UNWRITTEN=1 fills the values with a
     // pattern, runs one frame and lists every slot's bytes that were never
@@ -5468,7 +5476,7 @@ std::shared_ptr<const GraphCore> NrSession::make_core(int argc, char** argv, con
         st->buf = ctx.buffer(bytes, true);
         for (const VkBufferCopy& r : st->ranges)
             std::memcpy(static_cast<uint8_t*>(st->buf.mapped) + r.dstOffset, tail.data() + r.srcOffset, r.size);
-        if (ctx.rdna3) {
+        if (ctx.fp16()) {
             st->twin = ctx.buffer(VkDeviceSize(bytes) * 2, true);
             for (const VkBufferCopy& r : st->ranges)
                 e4m3_to_f16(tail.data() + r.srcOffset,
@@ -5678,7 +5686,7 @@ int NrSession::build_shared(int argc, char** argv) {
     persist_err = c.persist_err;
     tc_base = c.tc_base; tc_words = c.tc_words; tc_err = c.tc_err; tc_expect = c.tc_expect; tc_pair = c.tc_pair;
     arenas = slot; act = arenas->act->buf; wgt = arenas->wgt;
-    if (ctx.rdna3) {
+    if (ctx.fp16()) {
         if (!arenas->act->twin.handle || !arenas->wgt_twin.handle)
             throw std::runtime_error("shared network: the network memory has no FP16 twins");
         ctx.fp16_twin[act.handle] = arenas->act->twin.handle; ctx.fp16_twin[wgt.handle] = arenas->wgt_twin.handle;
