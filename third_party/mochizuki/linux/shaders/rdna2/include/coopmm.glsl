@@ -93,39 +93,45 @@ float[8] nr_widen(const float a[8]) { return a; }
 // `arr` is indexed in its own elements, which are the fragment's component type at every site of
 // this network (a cooperative matrix load would reinterpret another type). Lanes l and l ^ 16 read
 // the same A row / B column; an accumulator element is written by one lane.
+// A cooperative matrix load or store is one operation of the whole subgroup; here it is each lane's own loads
+// and stores, and a lane reads elements other lanes wrote (an accumulator stored to LDS and read back as an
+// operand by the same wave, with nothing in between). NR_FRAG_SYNC orders them as the collective operation did:
+// the stores before it are visible to the subgroup's loads after it, and the compiler cannot move a lane's load
+// above another lane's store.
+#define NR_FRAG_SYNC() subgroupMemoryBarrier()
 #define NR_LANE16 (gl_SubgroupInvocationID & 15u)
 #define NR_HALF   (gl_SubgroupInvocationID >> 4)
 
 // A [M][K] row major: lane row l % 16, components along K.
-#define NR_LOAD_A(frag, arr, off, stride) do { \
+#define NR_LOAD_A(frag, arr, off, stride) do { NR_FRAG_SYNC(); \
     const uint nr_b = uint(off) + NR_LANE16 * uint(stride); \
     for (uint nr_c = 0u; nr_c < 16u; ++nr_c) (frag)[nr_c] = (arr)[nr_b + nr_c]; } while (false)
 // A read from a [K][M] array.
-#define NR_LOAD_A_COL(frag, arr, off, stride) do { \
+#define NR_LOAD_A_COL(frag, arr, off, stride) do { NR_FRAG_SYNC(); \
     const uint nr_b = uint(off) + NR_LANE16; \
     for (uint nr_c = 0u; nr_c < 16u; ++nr_c) (frag)[nr_c] = (arr)[nr_b + nr_c * uint(stride)]; } while (false)
 // B held [N][K] (column major): lane column l % 16, components along K.
-#define NR_LOAD_B(frag, arr, off, stride) do { \
+#define NR_LOAD_B(frag, arr, off, stride) do { NR_FRAG_SYNC(); \
     const uint nr_b = uint(off) + NR_LANE16 * uint(stride); \
     for (uint nr_c = 0u; nr_c < 16u; ++nr_c) (frag)[nr_c] = (arr)[nr_b + nr_c]; } while (false)
 // B held [K][N] (row major).
-#define NR_LOAD_B_ROW(frag, arr, off, stride) do { \
+#define NR_LOAD_B_ROW(frag, arr, off, stride) do { NR_FRAG_SYNC(); \
     const uint nr_b = uint(off) + NR_LANE16; \
     for (uint nr_c = 0u; nr_c < 16u; ++nr_c) (frag)[nr_c] = (arr)[nr_b + nr_c * uint(stride)]; } while (false)
 // Accumulator [M][N] row major: component c is row 2c + l / 16, column l % 16.
-#define NR_LOAD_ACC(frag, arr, off, stride) do { \
+#define NR_LOAD_ACC(frag, arr, off, stride) do { NR_FRAG_SYNC(); \
     const uint nr_b = uint(off) + NR_HALF * uint(stride) + NR_LANE16; \
     for (uint nr_c = 0u; nr_c < 8u; ++nr_c) (frag)[nr_c] = (arr)[nr_b + 2u * nr_c * uint(stride)]; } while (false)
 #define NR_STORE_ACC(frag, arr, off, stride) do { \
     const uint nr_b = uint(off) + NR_HALF * uint(stride) + NR_LANE16; \
-    for (uint nr_c = 0u; nr_c < 8u; ++nr_c) (arr)[nr_b + 2u * nr_c * uint(stride)] = (frag)[nr_c]; } while (false)
+    for (uint nr_c = 0u; nr_c < 8u; ++nr_c) (arr)[nr_b + 2u * nr_c * uint(stride)] = (frag)[nr_c]; NR_FRAG_SYNC(); } while (false)
 // Accumulator held [N][M] (column major).
-#define NR_LOAD_ACC_COL(frag, arr, off, stride) do { \
+#define NR_LOAD_ACC_COL(frag, arr, off, stride) do { NR_FRAG_SYNC(); \
     const uint nr_b = uint(off) + NR_LANE16 * uint(stride) + NR_HALF; \
     for (uint nr_c = 0u; nr_c < 8u; ++nr_c) (frag)[nr_c] = (arr)[nr_b + 2u * nr_c]; } while (false)
 #define NR_STORE_ACC_COL(frag, arr, off, stride) do { \
     const uint nr_b = uint(off) + NR_LANE16 * uint(stride) + NR_HALF; \
-    for (uint nr_c = 0u; nr_c < 8u; ++nr_c) (arr)[nr_b + 2u * nr_c] = (frag)[nr_c]; } while (false)
+    for (uint nr_c = 0u; nr_c < 8u; ++nr_c) (arr)[nr_b + 2u * nr_c] = (frag)[nr_c]; NR_FRAG_SYNC(); } while (false)
 
 // The e4m3 vector element types of the RDNA4 shaders are FP16 vectors here.
 #define fe4m3vec2 f16vec2

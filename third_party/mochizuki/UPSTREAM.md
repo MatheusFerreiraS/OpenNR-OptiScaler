@@ -24,6 +24,7 @@ Only what the runtime build reads, at the upstream paths:
 | `windows/build/arch/rdna4.sh` | the constants host and shaders share; `tools/build-mochizuki-runtime.cmd` repeats them |
 | `linux/package/model-tools/` | makes `dlssnr.bin` from a user's `nvngx_dlssnr.dll` 310.8.0 |
 | `linux/shaders/rdna3/`, `linux/build/arch/rdna3.sh`, `LICENSE-rdna3` | the RDNA3 network, from mauri870/DLSSNR-RDNA3 (see RDNA3) |
+| `linux/shaders/rdna2/`, `linux/build/arch/rdna2.sh` | the RDNA2 network: RDNA3's with its matrices emulated (local, see RDNA2) |
 
 Since v0.0.5 `windows/src/core/` also holds upstream's RenoDX stage (`nr_renodx.*`, `renodx/`), int4 mixed
 (`nr_ini_int4.hpp`, `NR_INT4`) and ACO pipeline binaries (`nr_pipeline_binary.hpp`, `nr_pal_binary.hpp`). All three
@@ -351,13 +352,60 @@ Nothing has run on an RX 7000 yet. After the v0.0.7 merge (2026-10-19): the RDNA
 to the main branch's build and so is its output (harness, 1080p, both models, Standard and Natural); forced RDNA3
 builds in 16.2 s cold at 1080p and runs both models.
 
+## RDNA2 (RX 6000, no FP8, no matrices)
+
+Local work (OpenNR, `RDNA2-MOCHIZUKI-PORT.md`), not from upstream or a fork. gfx103x has neither FP8 nor WMMA, so
+`linux/shaders/rdna2/` is a copy of `linux/shaders/rdna3/` whose `include/coopmm.glsl` implements the same macro
+interface without cooperative matrices (layer A of the plan):
+
+- a 16x16 fragment is a plain array in each lane of the 32-lane subgroup, in the layout the RDNA3 kernels already
+  assume (A: component c of lane l is (l % 16, c); B: (c, l % 16); accumulator: (2c + l / 16, l % 16)), with row m of
+  a product formed from lane half m % 2, as on gfx11, so `kswap` and the kernels' register-built operands hold;
+- `NR_MMA` takes the A rows a lane needs from its half by `subgroupShuffle` (packed FP16 pairs) and sums FP16 pair
+  products into FP32 (`NR_DOT2`: `fma(float(a.x), float(b.x), fma(float(a.y), float(b.y), s))`, which the AMD driver
+  turns into `v_dot2_f32_f16` on gfx103x and gfx1201: phase 0, `wt-rdna2/handoff/PHASE0-probe.md`);
+- loads and stores are per-element loops (every site loads and stores its own element type; checked at build time
+  once with decoy overloads), with a `subgroupMemoryBarrier()` after each store and before each load, as the
+  collective operation ordered them (a wave stores an accumulator to LDS and reads it back as an operand);
+  `NR_NARROW_ACC`/`NR_WIDEN_ACC` are element-wise; no int4;
+- every RDNA2 kernel declares RoundingModeRTE for 16-bit (gfx103x narrows toward zero otherwise).
+
+Changes to the other RDNA2 shaders, all because an array has no one-argument constructor: the fragment fills
+`NR_FRAG_X(0.0)` became `NR_FILL_X(0.0)` and the conversions `NR_FRAG_ACC(h)` became `NR_WIDEN_ACC(h)` (13 sites in
+`fswin_t.comp`, `vit_attn.comp`, `fswin_body.glsl`, `fswin_hw_attn.glsl`, `vit_attn_vt_chunk.glsl`), and
+`noise_field.comp` (no `coopmm.glsl`) declares RoundingModeRTE itself. `pipelines.json` is RDNA3's (no int4) without
+the persistent runs' pipelines (`fswinp*`, `fswinpds*`, `fswinpup*`: the RDNA2 host builds none, below); the markers
+are the same, `kswap 1` included. Built by `windows/build/build_network.py rdna2 --tree linux --no-quad` into
+`dlssnr-amd/shaders-rdna2` (`tools/build-mochizuki-runtime.cmd`).
+
+Host (local patch 18): `bool rdna3` became `nr::Arch` (`nr_arch.hpp`: rdna4, rdna3, rdna2) in `RuntimeConfig` and
+`nrvk::Context`; `Context::fp16()` is what `rdna3` meant everywhere (twins, Linux kernel set, `kswap`, NR_TCHAIN off).
+RDNA2 reads `shaders-rdna2` and `pipeline-rdna2.cache`, runs no ACO, and `adopt` requires neither the cooperative
+matrix feature nor a matrix configuration, and builds no persistent runs (`nr_graph.cpp`, as `NR_NO_PERSIST=1`): their
+waits are poll budgets sized for RDNA4's kernels, the emulated ones are tens of times slower, and the waits ran out
+(the 310.8 model on the forced RX 9070 XT: 720p changed run to run, 1080p 24 dB and 1.2 s in one C=128 run). RDNA4
+and RDNA3 take the same branches as before: their output is byte-identical to 0.5.8's (harness, 720p and 1080p,
+both models; RDNA3 forced). `NR_STEP_TIMES=n` (diagnostic, any network) logs every network dispatch's time over n
+frames, by pipeline.
+
+`MochizukiNrRuntime.cpp` takes the RDNA2 network for an RDNA2 device id (Navi 21/22/23 0x73A0-0x73FF, Navi 24
+0x7420-0x743F, the APUs 0x163F, 0x1681, 0x164E, 0x1506) whatever the driver reports (its branch reports and emulates
+the FP16 matrices itself: phase 0), and for any other AMD device with neither FP8 nor those matrices;
+`MZ_FORCE_RDNA2=1` takes it on any card. It needs subgroup shuffles and `shaderRoundingModeRTEFloat16`, enables no
+FP8 and no matrix extension, keeps the pipeline check (`rdna2-check.txt`, `MZ_RDNA2_CHECK=0` skips it; 30 min
+without progress before a compile counts as hung, its kernels take minutes each) and has no layout probes. The log says `[mochizuki] the RDNA2 network, its matrices emulated in ALU ...`; the menu's mochizuki
+page `RX 6000 (experimental, FP16 network)`, or `RX 6000 network off: ...`. `MochizukiNrInfo::network` is 3.
+
+The RDNA2 techniques (FP16 dot products with FP32 sums, emulated e4m3 rounding) were inspired by the public README and
+CHANGELOG of a GPL-3.0 RDNA2 port of the DLSS network; none of its code was read or used (the plan's clean-room rules).
+
 ## Build
 
 `tools\build-mochizuki-runtime.cmd [out]` from an MSVC developer prompt, with the Vulkan SDK 1.4.357 or newer
 (`VULKAN_SDK`) and Python. It downloads glslang 16.5.0, the version the upstream SPIR-V is pinned to, and Slang
 2026.19 (SHA-256 checked, for the RenoDX shaders) into `toolchain\` here, and writes `MochizukiNrRuntime.dll` and
-`dlssnr-amd\shaders\` (with `renodx\`) and `dlssnr-amd\shaders-rdna3\` (53 network, 11 temporal, 15 runtime) to
-`out` (default `exports\mochizuki-runtime`).
+`dlssnr-amd\shaders\` (with `renodx\`), `dlssnr-amd\shaders-rdna3\` (53 network, 11 temporal, 15 runtime) and
+`shaders-rdna2\` (44 network) to `out` (default `exports\mochizuki-runtime`).
 
 The shader folder has 55 network, 6 temporal and 15 runtime pipelines (v0.0.7 and the local passes;
 `runtime\FidelityFX-FSR1-LICENSE.txt` beside the FSR 1 EASU in `runtime_upscale`), 103 files. The prewarm list
