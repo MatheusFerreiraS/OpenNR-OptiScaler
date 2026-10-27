@@ -423,7 +423,11 @@
 #endif
 #endif
 
+#ifdef NR_NG_WAVES
+layout(local_size_x = NR_NG_WAVES * 32) in;   // NR_NATIVE: its own wave count over the same tile
+#else
 layout(local_size_x = NR_THREADS) in;
+#endif
 
 // Two arenas, five views. Aliasing one VkBuffer under several element types is
 // what keeps decision 6's binding model expressible without pointers.
@@ -1878,6 +1882,13 @@ shared fe4m3vec4 lds_bv[2 * NR_BLDSV_V4];
 #define NR_I4PMMA1 NR_FOR_I(NR_MFRAG, NR_I4P10_I) NR_FOR_I(NR_MFRAG, NR_I4P11_I)
 #endif
 
+#ifndef NR_NATIVE
+#define NR_NATIVE 0
+#endif
+#if NR_NATIVE
+// NR_NATIVE: the RDNA2 body of include/gemm_native.glsl (its own main).
+#include "gemm_native.glsl"
+#else
 void main() {
     NR_PROF_BEGIN()
     nr_chain_wait()
@@ -2142,3 +2153,4 @@ void main() {
     NR_PROF_ITEM_END(pc.o_off | 0x80000000u, 0u)
     NR_PROF_END(pc.o_off)
 }
+#endif  // NR_NATIVE
