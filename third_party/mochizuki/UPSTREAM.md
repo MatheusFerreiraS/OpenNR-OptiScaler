@@ -378,6 +378,14 @@ the persistent runs' pipelines (`fswinp*`, `fswinpds*`, `fswinpup*`: the RDNA2 h
 are the same, `kswap 1` included. Built by `windows/build/build_network.py rdna2 --tree linux --no-quad` into
 `dlssnr-amd/shaders-rdna2` (`tools/build-mochizuki-runtime.cmd`).
 
+Native kernels (layer B): every fused Swin pipeline (`fswin*`, `fswinfusedup*`, `fswindsp*`, the pre and post blocks
+and their temporal variants) has `NR_NATIVE=1` in `pipelines.json`, which makes `fswin_t.comp` take
+`include/fswin_native.glsl` instead of `fswin_body.glsl`: one lane per token, weights as uniform `uvec4` reads (scalar
+loads into `v_dot2_f32_f16`), no cross-lane traffic in the projections, the window attention through LDS. Same
+bindings, push block, weights and rounding; the network output is byte-identical to the emulated body's. The post
+block's pixel composition moved to `include/fswin_imgout.glsl`, which both bodies include (the emulated SPIR-V is
+unchanged). Removing `NR_NATIVE=1` from a pipeline gives back its emulated kernel.
+
 Host (local patch 18): `bool rdna3` became `nr::Arch` (`nr_arch.hpp`: rdna4, rdna3, rdna2) in `RuntimeConfig` and
 `nrvk::Context`; `Context::fp16()` is what `rdna3` meant everywhere (twins, Linux kernel set, `kswap`, NR_TCHAIN off).
 RDNA2 reads `shaders-rdna2` and `pipeline-rdna2.cache`, runs no ACO, and `adopt` requires neither the cooperative
