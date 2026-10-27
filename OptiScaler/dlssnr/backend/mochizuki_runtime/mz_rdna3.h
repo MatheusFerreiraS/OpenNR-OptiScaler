@@ -1,4 +1,5 @@
 // The checks the RDNA3 network (RX 7000, FP16 matrices) passes before it runs on a device (MochizukiNrRuntime.cpp).
+// The RDNA2 network (RX 6000, matrices emulated in ALU) takes the pipeline check only, kept in rdna2-check.txt.
 //
 // Layout: its kernels assume the gfx11 fragment layout mauri870's fork measured on RADV (an accumulator component c
 // of lane l is element (2c + l/16, l%16), an A or B fragment holds 16 components a lane, row m of a product comes from
