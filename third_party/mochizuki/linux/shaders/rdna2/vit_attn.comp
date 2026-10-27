@@ -370,6 +370,13 @@ shared float   lds_qs[NR_QT];          // per-query sqrt(32)*scale/||q||
 shared float   lds_ki[NR_KC];          // per-key 1/||k||
 
 #include "nr_prof.glsl"
+#ifndef NR_NATIVE
+#define NR_NATIVE 0
+#endif
+#if NR_NATIVE
+// NR_NATIVE: the RDNA2 body of include/vit_native.glsl (its own main).
+#include "vit_native.glsl"
+#else
 void main() {
     NR_PROF_BEGIN()
     nr_chain_wait()
@@ -872,3 +879,4 @@ void main() {
     nr_tchain_signal_wave(q0 / 16u, min(uint(NR_QT) / 16u, (pc.tokens + 15u) / 16u - q0 / 16u))
     NR_PROF_END(pc.o_off)
 }
+#endif  // NR_NATIVE
