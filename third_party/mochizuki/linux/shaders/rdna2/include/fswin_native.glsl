@@ -47,14 +47,20 @@
 #else
 #define NV_POST_IO 0
 #endif
-#if NR_PERSIST || NR_HEADS != NR_C / 32 || defined(NR_FUSED_UPS_BLEND) || \
-    defined(NR_DS_PROJECT) || defined(NR_FUSED_UPS_PROJECT) || defined(NR_WIDE_UPS_PROJECT) || \
+#if defined(NR_FUSED_UPS_BLEND) && NR_HWAVES && defined(NR_WIDE_UPS_PROJECT) && NR_UPS_BLEND_PK == 2 && \
+    !defined(NR_FUSED_UPS_PROJECT) && !defined(NR_WIDE_UPS_VIEW) && !NR_UPS_KOUTER && !NR_UPS_SPF
+#define NV_UPS 1                 // the wide fused upsample: x blended from the projected level below and the skip
+#else
+#define NV_UPS 0
+#endif
+#if NR_PERSIST || NR_HEADS != NR_C / 32 || (defined(NR_FUSED_UPS_BLEND) && !NV_UPS) || \
+    defined(NR_DS_PROJECT) || defined(NR_FUSED_UPS_PROJECT) || (defined(NR_WIDE_UPS_PROJECT) && !NV_UPS) || \
     (NV_PRE && !NV_PRE_IO) || (NV_POST && !NV_POST_IO) || (NV_PRE && NV_POST) || \
     (!NV_PRE && !NV_POST && (defined(NR_INPUT_F16) || defined(NR_POOL_F16))) || ((NV_PRE || NV_POST) && NR_HWAVES) || \
     NR_EDGE_BODIES || !NR_BAKED_EXP_BIAS || NR_ACC_F16 != 0 || \
     !NR_RESIDUAL_F32 || NR_QK_SCALE_FAST != 5 || NR_SWIN_BIAS_F16 || NR_WIN != 64 || \
     (NR_HWAVES && NR_TCHAIN) || (!NR_HWAVES && (NR_C != 32 || NR_FWAVES != 2))
-#error "NR_NATIVE: the plain fused Swin bodies (fswin32/32nh/64/128/256) and the pre and post blocks only"
+#error "NR_NATIVE: the plain fused Swin bodies (fswin32/32nh/64/128/256), fswinfusedup64/128/256 and the pre and post blocks only"
 #endif
 
 #define NV_CF (NR_C / 16)        // 16-channel fragments across C
@@ -249,6 +255,59 @@ void main() {
     // The wave index through readfirstlane: gl_SubgroupID alone stays a VGPR on gfx103x, and so would every weight
     // address derived from it (vector loads of one address instead of scalar loads).
     const uint tid = gl_LocalInvocationID.x, lane = gl_SubgroupInvocationID, w = subgroupBroadcastFirst(gl_SubgroupID);
+#if NV_UPS
+    // ---- stage 0, fused upsample: the level below (2C channels at half resolution, the 4x4 pixels under this
+    //      window) projected to C channels in FP16, then x = q(g * skip + up) at each token's half-resolution
+    //      pixel (the emulated body's NR_WIDE_UPS_PROJECT and NR_UPS_BLEND_PK=2 prologue) ----------------------
+    {
+        // the 16 source pixels into nv_y4[(2kf + hx) * 16 + t], kf < 2C/16, clamped to the level below
+        for (uint i = tid; i < uint(2 * NV_CF * 32); i += uint(NR_THREADS)) {
+            const uint hx = i & 1u, t = (i >> 1u) & 15u, kf = i >> 5u;
+            const uint px = uint(clamp(4 * int(gl_WorkGroupID.x) + 2 * pc.shift + int(t % 4u), 0, int(pc.blend_itiles_x * 4u) - 1));
+            const uint py = uint(clamp(4 * int(gl_WorkGroupID.y) + 2 * pc.shift_y + int(t / 4u), 0, int(pc.blend_itiles_y * 4u) - 1));
+            const uint tile = (py / 4u) * pc.blend_itiles_x + px / 4u, islot = (py % 4u) * 4u + px % 4u;
+            nv_y4[(2u * kf + hx) * 16u + t] =
+                nv_a4[(pc.blend_p_off + (tile * uint(2 * NV_CF) + kf) * 256u + islot * 16u + hx * 8u) / 8u];
+        }
+        barrier();
+        // the projection, channels 32w.. of this wave, one lane a pixel (lanes 16-31 repeat 0-15), into
+        // nv_y4[NV_UPB + (c / 8) * 16 + t] in FP16
+        const uint NV_UPB = uint(2 * NV_CF * 32), t = lane & 15u;
+        for (int b = 0; b < 4; ++b) {
+            float acc[8];
+            for (int j = 0; j < 8; ++j) acc[j] = 0.0;
+            for (int kf = 0; kf < 2 * NV_CF + nv_opaque; kf = kf + 1) {
+                const uvec4 x0 = nv_y4[uint(kf) * 32u + t], x1 = nv_y4[uint(kf) * 32u + 16u + t];
+                const uint wb = NV_WROW(pc.ups_weight_off, 2 * NV_CF, 32u * w + 8u * uint(b), kf);
+                for (int j = 0; j < 8; ++j) acc[j] = nv_dot8(acc[j], nv_w4[wb + 2u * uint(j)], nv_w4[wb + 2u * uint(j) + 1u], x0, x1);
+            }
+            if (lane < 16u)
+                nv_y4[NV_UPB + (4u * w + uint(b)) * 16u + t] = uvec4(nv_p(float16_t(acc[0]), float16_t(acc[1])),
+                    nv_p(float16_t(acc[2]), float16_t(acc[3])), nv_p(float16_t(acc[4]), float16_t(acc[5])),
+                    nv_p(float16_t(acc[6]), float16_t(acc[7])));
+        }
+        barrier();
+        for (uint i = tid; i < uint(NV_CF * 128); i += uint(NR_THREADS)) {
+            const uint hx = i & 1u, T = (i >> 1u) & 63u, kf = i >> 7u, q = T >> 4u, slot = T & 15u;
+            const uint dx = slot % 4u, dy = slot / 4u;
+            const uint tx = uint(clamp(2 * int(gl_WorkGroupID.x) + pc.shift + int(q & 1u), 0, int(pc.tiles_x) - 1));
+            const uint ty = uint(clamp(2 * int(gl_WorkGroupID.y) + pc.shift_y + int(q >> 1u), 0, int(pc.tiles_y) - 1));
+            const uint local = ((q >> 1u) * 2u + dy / 2u) * 4u + (q & 1u) * 2u + dx / 2u;
+            const uint stile = ty * (pc.blend_stiles_x != 0u ? pc.blend_stiles_x : pc.blend_tiles_x) + tx;
+            const uvec4 pv = nv_y4[NV_UPB + (2u * kf + hx) * 16u + local];
+            const uvec4 sv = nv_a4[(pc.blend_s_off + (stile * uint(NV_CF) + kf) * 256u + slot * 16u + hx * 8u) / 8u];
+            uvec4 v;
+            for (int p = 0; p < 4; ++p) {
+                const uint ch = kf * 16u + hx * 8u + uint(2 * p);
+                const f16vec2 g2 = f16vec2(wgt_f16[pc.blend_g_off + ch], wgt_f16[pc.blend_g_off + ch + 1u]);
+                v[p] = packFloat2x16(nr_quant_pair(fma(nv_h(sv[p]), g2, nv_h(pv[p]))));
+            }
+            if (nr_tile_oob(q)) v = uvec4(0u);
+            nv_x4[kf * 128u + hx * 64u + T] = v;
+        }
+    }
+    barrier();
+#else
     // ---- stage 0: the window's x into nv_x4; tiles outside the image are zero -------------------------
     for (uint i = tid; i < uint(NV_CF * 128); i += uint(NR_THREADS)) {
         const uint hx = i & 1u, T = (i >> 1u) & 63u, kf = i >> 7u, m = T >> 4u;
@@ -257,6 +316,7 @@ void main() {
         nv_x4[kf * 128u + hx * 64u + T] = v;
     }
     barrier();
+#endif
 
     // ---- stage 1: e = q(act(E . x)) for hidden group w (128 rows), streamed into the group's middle
     //      projection m = Wmid . e (32 rows, channels 32w..32w+31), which goes to nv_y4 ------------------
