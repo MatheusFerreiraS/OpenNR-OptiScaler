@@ -357,6 +357,17 @@ Local patches:
     310.8 model, 1280x720 and 1920x1080, driver compiler and ACO). On the forced RX 9070 XT every mode gives the same
     picture; released / full / global / twinbuf cost the same (1152x648 5.7 ms, 1080p 11.0-11.4 ms), zero about
     twice that (10.0 / 21.0 ms).
+22. The RDNA3 window attention as the RDNA2 tree's native body (RX 7000 kit 5): `linux/shaders/rdna3/include/
+    attn_native.glsl` is `mochizuki-rdna2`'s (6bafaac91) with `NR_DOT2` and its round-to-nearest-even FP16 mode added,
+    `attn.comp` takes it under `NR_NATIVE=1` as the RDNA2 tree does, and `pipelines.json` builds it as `attnnat` (the
+    `attn` defines plus `NR_NATIVE=1`): no cooperative matrices, so no gfx11 fragment layout. `nr_graph.cpp`
+    `create_kernels` loads `g_attnnat.spv` for the RDNA3 network's `attn` dispatches when it exists, unless
+    `NR_RDNA3_ATTN=released`; `NR_RDNA3_ATTN=<file>.spv` loads that one (a diagnostic, same bindings and push block).
+    The log says which: `[nr] RDNA3 window attention: ...`. Same bindings, push block and grid as `attn`. On the RX
+    9070 XT, dispatch 11 alone on the FP8 network's own inputs (kreplay, 1152x648) gives key 74 99.35% equal to the
+    FP8 network's (rel 0.0004), deterministic with any fill and scrub; the released `attn` is wrong there by design.
+    RDNA4 never reads it: byte-identical to the 0.5.8 DLL (harness, 40 frames, small and 310.8 model, 1280x720 and
+    1920x1080, driver compiler and ACO); `shaders` and `shaders-rdna3` byte-identical to 0.5.8's but for the new file.
 
 The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
 OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;
