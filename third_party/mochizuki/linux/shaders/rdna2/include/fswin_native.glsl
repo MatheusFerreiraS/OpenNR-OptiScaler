@@ -53,14 +53,19 @@
 #else
 #define NV_UPS 0
 #endif
+#if defined(NR_DS_PROJECT) && defined(NR_POOL_F16) && NR_DS_QPAIR
+#define NV_DS 1                  // the fused downsample: a pooled copy of the output, projected to the level below
+#else
+#define NV_DS 0
+#endif
 #if NR_PERSIST || NR_HEADS != NR_C / 32 || (defined(NR_FUSED_UPS_BLEND) && !NV_UPS) || \
-    defined(NR_DS_PROJECT) || defined(NR_FUSED_UPS_PROJECT) || (defined(NR_WIDE_UPS_PROJECT) && !NV_UPS) || \
+    (defined(NR_DS_PROJECT) && !NV_DS) || (NV_DS && (!NR_HWAVES || NV_UPS)) || defined(NR_FUSED_UPS_PROJECT) || (defined(NR_WIDE_UPS_PROJECT) && !NV_UPS) || \
     (NV_PRE && !NV_PRE_IO) || (NV_POST && !NV_POST_IO) || (NV_PRE && NV_POST) || \
-    (!NV_PRE && !NV_POST && (defined(NR_INPUT_F16) || defined(NR_POOL_F16))) || ((NV_PRE || NV_POST) && NR_HWAVES) || \
+    (!NV_PRE && !NV_POST && (defined(NR_INPUT_F16) || (defined(NR_POOL_F16) && !NV_DS))) || ((NV_PRE || NV_POST) && NR_HWAVES) || \
     NR_EDGE_BODIES || !NR_BAKED_EXP_BIAS || NR_ACC_F16 != 0 || \
     !NR_RESIDUAL_F32 || NR_QK_SCALE_FAST != 5 || NR_SWIN_BIAS_F16 || NR_WIN != 64 || \
     (NR_HWAVES && NR_TCHAIN) || (!NR_HWAVES && (NR_C != 32 || NR_FWAVES != 2))
-#error "NR_NATIVE: the plain fused Swin bodies (fswin32/32nh/64/128/256), fswinfusedup64/128/256 and the pre and post blocks only"
+#error "NR_NATIVE: the plain fused Swin bodies (fswin32/32nh/64/128/256), fswinfusedup64/128/256, fswindsp64/128/256 and the pre and post blocks only"
 #endif
 
 #define NV_CF (NR_C / 16)        // 16-channel fragments across C
@@ -231,6 +236,23 @@ void nv_qk(const float a[32], int part, float16_t hscale, out uint o[16]) {
     const float f = part == 0 ? float(n) * float(hscale) : float(n);
     for (int p = 0; p < 16; ++p) o[p] = packFloat2x16(nr_quant_pair32(vec2(a[2 * p], a[2 * p + 1]) * f));
 }
+
+#if NV_PRE || NV_DS
+// The 2x2 mean of 8 FP32 values across lanes l, l^1, l^4, l^5 (one 2x2 group of a tile's 4x4 pixels), as the emulated
+// body pools: the pairs along x summed in FP32 and rounded to FP16, the two rows added in FP16, a quarter of that on
+// the e4m3 grid (nr_quant_pair32). Every lane of the group gets the group's values.
+uvec4 nv_pool8(const float v[8]) {
+    float16_t sm[8];
+    for (int j = 0; j < 8; ++j) {
+        const float xs = v[j] + subgroupShuffleXor(v[j], 1u);
+        sm[j] = float16_t(xs) + float16_t(subgroupShuffleXor(xs, 4u));
+    }
+    uvec4 r;
+    for (int p = 0; p < 4; ++p)
+        r[p] = packFloat2x16(nr_quant_pair32(vec2(float(sm[2 * p]) * 0.25, float(sm[2 * p + 1]) * 0.25)));
+    return r;
+}
+#endif
 
 #if NR_HWAVES
 // acc[8s + j] += sum_k W[row0 + j][k] X[k][T_s] over KF fragments of k, rows row0..row0+7 (8-aligned, uniform),
@@ -418,8 +440,69 @@ void main() {
             if (!nr_tile_oob(m))
                 nv_a4[(pc.o_off + nr_tile_base(m) + (ch >> 4u) * 256u + (lane & 15u) * 16u + (ch & 15u)) / 8u] =
                     nv_pack_q16(acc, 8 * s);
+#if NV_DS
+            // The pooled copy of these 8 channels (nv_pool8) into nv_x4[(c / 8) * 16 + p], p the pooled pixel of
+            // the window's 4x4; nothing reads nv_x4 in this stage.
+            float v8[8];
+            for (int j = 0; j < 8; ++j) v8[j] = acc[8 * s + j];
+            const uvec4 pq = nv_pool8(v8);
+            const uint t16 = lane & 15u;
+            if ((t16 & 5u) == 0u)
+                nv_x4[(ch >> 3u) * 16u + (2u * (m >> 1u) + t16 / 8u) * 4u + 2u * (m & 1u) + (t16 % 4u) / 2u] = pq;
+#endif
         }
     }
+#if NV_DS
+    barrier();
+    // ---- the downsample projection: 2C channels at each of the 16 pooled pixels, 64 rows a wave, one lane a
+    //      pixel (lanes 16-31 repeat 0-15); its addressing and clearing are the emulated body's ------------------
+    {
+        const uint t = lane & 15u;
+        const int px0 = (2 * int(gl_WorkGroupID.x) + pc.shift) * 2, py0 = (2 * int(gl_WorkGroupID.y) + pc.shift_y) * 2;
+        const int spx_i = px0 + int(t % 4u), spy_i = py0 + int(t / 4u);
+        const bool in_grid = spx_i >= 0 && spy_i >= 0 &&
+            spx_i < int(pc.pool_tiles_x * 4u) && spy_i < int(pc.pool_tiles_y * 4u);
+        const uint spx = uint(max(spx_i, 0)), spy = uint(max(spy_i, 0));
+        const uint writer_rows = pc.ds_writer_rows == 0u ? pc.ds_rows : pc.ds_writer_rows;
+        const bool ds_identity = pc.ds_mode != 2u && pc.ds_raster == pc.ds_crow && writer_rows == pc.ds_rows;
+        for (int b = 0; b < 8; ++b) {
+            const uint row = 64u * w + 8u * uint(b);
+            float acc[8];
+            for (int j = 0; j < 8; ++j) acc[j] = 0.0;
+            for (int kf = 0; kf < NV_CF + nv_opaque; kf = kf + 1) {
+                const uvec4 x0 = nv_x4[uint(kf) * 32u + t], x1 = nv_x4[uint(kf) * 32u + 16u + t];
+                const uint wb = NV_WROW(pc.ds_w_off, NV_CF, row, kf);
+                for (int j = 0; j < 8; ++j) acc[j] = nv_dot8(acc[j], nv_w4[wb + 2u * uint(j)], nv_w4[wb + 2u * uint(j) + 1u], x0, x1);
+            }
+            float16_t outv[8];
+            for (int j = 0; j < 8; ++j) outv[j] = float16_t(acc[j]);
+            const uint sg = row >> 4u;
+            uint dst_group, sdx, sdy;
+            if (ds_identity) {
+                dst_group = sg; sdx = spx; sdy = spy;
+            } else {
+                const uint linear = pc.ds_mode == 2u ? (sg * pc.ds_rows + spy) * pc.ds_crow + spx
+                    : (sg * writer_rows + spy) * pc.ds_raster + spx;
+                dst_group = linear / (pc.ds_crow * pc.ds_rows);
+                const uint pixel = linear % (pc.ds_crow * pc.ds_rows);
+                sdx = pixel % pc.ds_crow; sdy = pixel / pc.ds_crow;
+            }
+            const bool s_oob = (pc.ds_mode != 2u && (spy >= writer_rows || spx >= pc.ds_raster)) ||
+                sdx >= pc.ds_otx * 4u || dst_group >= pc.ds_n / 16u;
+            if (pc.ds_writer_rows != 0u && (sdy >= pc.ds_writer_rows || sdx >= pc.ds_raster))
+                for (int j = 0; j < 8; ++j) outv[j] = float16_t(0.0);
+            if (pc.ds_clear_x != 0u && (sdx >= pc.ds_clear_x || sdy >= pc.ds_clear_y))
+                for (int j = 0; j < 8; ++j) outv[j] = float16_t(0.0);
+            const uint ob = pc.ds_o_off + (((sdy / 4u) * pc.ds_otx + sdx / 4u) * (pc.ds_n / 16u) + dst_group) * 256u
+                            + (4u * (sdy % 4u) + sdx % 4u) * 16u + (row & 15u);
+            if (lane < 16u && in_grid && !s_oob) {
+                uvec4 v;
+                for (int p = 0; p < 4; ++p) v[p] = packFloat2x16(nr_quant_pair(f16vec2(outv[2 * p], outv[2 * p + 1])));
+                nv_a4[ob / 8u] = v;
+            }
+        }
+    }
+#endif
 }
 
 #else   // C = 32, one head, two waves
