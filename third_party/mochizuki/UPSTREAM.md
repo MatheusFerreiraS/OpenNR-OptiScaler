@@ -386,6 +386,16 @@ bindings, push block, weights and rounding; the network output is byte-identical
 block's pixel composition moved to `include/fswin_imgout.glsl`, which both bodies include (the emulated SPIR-V is
 unchanged). Removing `NR_NATIVE=1` from a pipeline gives back its emulated kernel.
 
+The other hot pipelines have native bodies the same way, each in its own include with its own `main`, byte-identical
+to the emulated kernel: `gemm1x1.comp` -> `include/gemm_native.glsl` (`gemmproj`, `gemmprojc`, `gemmvact`,
+`gemmvqkvnorms`: a wave owns `NR_NG_TW` tokens read as uniform `uvec4` rows and 32 x `NR_NG_CL` channels, the
+workgroup `NR_NG_WAVES` waves over the emulated tile), `attn.comp` -> `include/attn_native.glsl` (the C=512 window
+attention: the QKV projection with scalar weights, then one query a lane against K and V broadcast from LDS),
+`ffwd3_t.comp` -> `include/ffwd_native.glsl` (`ffwd3`, `ffwd3w`: one lane a token, the group's matrices as scalar
+weights, the hidden units streamed) and `vit_attn.comp` -> `include/vit_native.glsl` (one lane a query, each key's K and
+V rows as scalar reads). The GEMM and ViT attention bodies read activations through the scalar cache, so the RDNA2
+host never runs tile counters (`tchain_active()`, even with `NR_TCHAIN=1`).
+
 Host (local patch 18): `bool rdna3` became `nr::Arch` (`nr_arch.hpp`: rdna4, rdna3, rdna2) in `RuntimeConfig` and
 `nrvk::Context`; `Context::fp16()` is what `rdna3` meant everywhere (twins, Linux kernel set, `kswap`, NR_TCHAIN off).
 RDNA2 reads `shaders-rdna2` and `pipeline-rdna2.cache`, runs no ACO, and `adopt` requires neither the cooperative

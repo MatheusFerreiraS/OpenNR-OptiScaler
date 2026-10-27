@@ -176,7 +176,10 @@ static bool g_rdna2 = false;  // this build's network is RDNA2's
 // RDNA3 (and RDNA2, which runs its kernels) keeps the barriers unless NR_TCHAIN=1: on an RX 7900 XT (Windows driver) the chained
 // 720p runs gave a darker picture that changed from run to run; the 9070 XT, forced onto the
 // same network, is bit-identical with and without them, so it is gfx11's side.
+// RDNA2 never: its native GEMM and ViT attention kernels read activations through the scalar cache, which the
+// barrier between dispatches invalidates and a tile-counter wait does not (linux/shaders/rdna2/include/gemm_native.glsl).
 static bool tchain_active() {
+    if (g_rdna2) return false;
     const char* e = std::getenv("NR_TCHAIN");
     const bool on = e && *e ? std::atoi(e) != 0 : !g_fp16;
     return NR_TCHAIN_TILES && on && g_chain_epoch_word != 0xFFFFFFFFu;
