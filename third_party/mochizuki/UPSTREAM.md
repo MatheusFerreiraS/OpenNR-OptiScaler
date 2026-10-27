@@ -334,6 +334,29 @@ Local patches:
     buffer network dispatch n binds is copied whole right before it (`MZ_KCAP_AFTER=1`: after it), with its SPIR-V
     name, grid, push constants as pushed and bindings (`capture.txt`, `buf<k>.bin`), so `tools\rx7000-diag3\kreplay`
     can run that one dispatch again. Without `MZ_KCAP` nothing is created or recorded.
+21. The sequence check and the RDNA3 barrier choice (RX 7000 kit 4): `nr_runtime.cpp` `Impl::SeqDiag`,
+    `Impl::sync_barrier`, `windows/src/core/seq_scrub.comp` (embedded by `toolsuild-mochizuki-runtime.cmd`), and in
+    the host `MZ_ONE_QUEUE=1` (no second queue for the builds). With `MZ_SEQ=<dir>` the buffers the network writes are
+    copied before dispatch `MZ_SEQ_FROM` (1) of recording `MZ_SEQ_FRAME` (3), what each dispatch ran (pipeline, set,
+    push, grid) is kept, and at the next recording, the device idle, every dispatch i up to the one before the post
+    block is replayed: dispatches from..i in one submit with the frame's own barriers, `MZ_SEQ_RUNS` (3) times, the
+    values i makes (plan keys; arena and FP16 twin) read back and hashed; i alone in its own submit after
+    `vkQueueWaitIdle`, on the bytes the from..i-1 prefix left, `MZ_SEQ_ISO` (3) times; and the prefix with the
+    variants of `MZ_SEQ_VARIANTS` (full: srcAccess SHADER_WRITE; global: memory write -> memory read/write over all
+    commands; twinbuf: global plus whole buffer barriers on the arena and its twin; submit: one submit per dispatch;
+    scrub / zero: before each dispatch a dispatch that leaves its 64 KB of LDS and ~96 VGPRs a lane with a random
+    pattern / zeros). `MZ_SEQ_REF=1` writes each value's every `MZ_SEQ_SAMPLE`-th 256-byte block (the FP8 network's,
+    the reference), `MZ_SEQ_REFS=<dir>` measures against one. With persistent runs the weights are copied too
+    (`MZ_SEQ_ALL=1` always); a persistent run's replay is not faithful (fswinpup256 changes between replays on the forced
+    RX 9070 XT while the frame itself does not), so the kit replays the one-dispatch-a-layer network only.
+    `<dir>/seq.txt`: a RESULT line per check (the first dispatch that changes, that differs from itself alone, per
+    variant), then every dispatch. Nothing is created or recorded without `MZ_SEQ`.
+    `NR_RDNA3_SYNC` = `released` | `full` | `global` | `twinbuf` (default) | `zero` picks the barrier between two
+    RDNA3 network dispatches (the same as the variants above; `zero` the released barrier plus the zero scrub before
+    every network dispatch). RDNA4 never reads it: byte-identical to the 0.5.8 DLL (harness, 40 frames, small and
+    310.8 model, 1280x720 and 1920x1080, driver compiler and ACO). On the forced RX 9070 XT every mode gives the same
+    picture; released / full / global / twinbuf cost the same (1152x648 5.7 ms, 1080p 11.0-11.4 ms), zero about
+    twice that (10.0 / 21.0 ms).
 
 The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
 OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;

@@ -1071,6 +1071,8 @@ struct Vulkan
         VkDeviceQueueCreateInfo qi { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
         qi.queueFamilyIndex = family;
         qi.queueCount = std::min<uint32_t>(families[family].queueCount, uint32_t(std::size(priorities)));
+        // MZ_ONE_QUEUE=1 (diagnostic, the RX 7000 kit 4): no second queue, the builds share the frames' one.
+        if (const char* one = std::getenv("MZ_ONE_QUEUE"); one && std::atoi(one)) qi.queueCount = 1;
         qi.pQueuePriorities = priorities;
         VkDeviceCreateInfo di { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &coop };
         di.queueCreateInfoCount = 1;

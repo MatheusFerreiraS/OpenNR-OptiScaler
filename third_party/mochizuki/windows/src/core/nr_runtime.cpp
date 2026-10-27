@@ -5,12 +5,14 @@
 #include "nr_graph.cpp"
 #include "nr_input_check.hpp"
 #include <chrono>
+#include <cstdarg>
 #include <cstddef>
 #include <filesystem>
 #include <string>
 #include <mutex>
 #include "nr_ini_network.hpp"
 #include "stage_stats.h"   // MZ_STAGE_DUMP's shader (stage_stats.comp), built by the runtime's build
+#include "seq_scrub.h"     // MZ_SEQ's and NR_RDNA3_SYNC=zero's scrub (seq_scrub.comp), built likewise
 #if NR_INT4
 #include "nr_ini_int4.hpp"
 #endif
@@ -1408,6 +1410,225 @@ struct Runtime::Impl {
         nr::logf("[nr] kernel capture written: %s", k.dir.c_str());
     }
 
+    // ---- the scrub (seq_scrub.comp): MZ_SEQ's dirty/zero variants and NR_RDNA3_SYNC=zero -------------------------
+    struct Scrub {
+        VkShaderModule module{};
+        VkDescriptorSetLayout dsl{};
+        VkPipelineLayout layout{};
+        VkPipeline pipeline{};
+        VkDescriptorPool pool{};
+        VkDescriptorSet set{};
+        nrvk::Buffer sink{};
+    };
+    Scrub scrub;
+    void scrub_setup() {
+        auto& c = scrub;
+        if (c.pipeline) return;
+        const VkDevice dev = session.ctx.device;
+        c.sink = session.ctx.buffer(256);
+        const VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0, sizeof mz_seq_scrub,
+                                          mz_seq_scrub};
+        NRVK_CHECK(vkCreateShaderModule(dev, &mi, nullptr, &c.module));
+        const VkDescriptorSetLayoutBinding lb{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        li.bindingCount = 1; li.pBindings = &lb;
+        NRVK_CHECK(vkCreateDescriptorSetLayout(dev, &li, nullptr, &c.dsl));
+        const VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 8};
+        VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pli.setLayoutCount = 1; pli.pSetLayouts = &c.dsl; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pr;
+        NRVK_CHECK(vkCreatePipelineLayout(dev, &pli, nullptr, &c.layout));
+        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT,
+                    c.module, "main", nullptr};
+        ci.layout = c.layout;
+        NRVK_CHECK(vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, nullptr, &c.pipeline));
+        const VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+        VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pi.maxSets = 1; pi.poolSizeCount = 1; pi.pPoolSizes = &ps;
+        NRVK_CHECK(vkCreateDescriptorPool(dev, &pi, nullptr, &c.pool));
+        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ai.descriptorPool = c.pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &c.dsl;
+        NRVK_CHECK(vkAllocateDescriptorSets(dev, &ai, &c.set));
+        const VkDescriptorBufferInfo bi{c.sink.handle, 0, VK_WHOLE_SIZE};
+        const VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, c.set, 0, 0, 1,
+                                     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bi, nullptr};
+        vkUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
+    }
+    // Every workgroup slot of the GPU, several times over, then an execution dependency into the next dispatch.
+    void scrub_record(VkCommandBuffer cmd, uint32_t seed, bool zero) {
+        const uint32_t push[2] = {seed, zero ? 1u : 0u};
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, scrub.pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, scrub.layout, 0, 1, &scrub.set, 0, nullptr);
+        vkCmdPushConstants(cmd, scrub.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+        vkCmdDispatch(cmd, 1024, 1, 1);
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+                             nullptr, 0, nullptr, 0, nullptr);
+    }
+    void scrub_destroy() {
+        auto& c = scrub;
+        const VkDevice dev = session.ctx.device;
+        if (c.pipeline) vkDestroyPipeline(dev, c.pipeline, nullptr);
+        if (c.layout) vkDestroyPipelineLayout(dev, c.layout, nullptr);
+        if (c.dsl) vkDestroyDescriptorSetLayout(dev, c.dsl, nullptr);
+        if (c.module) vkDestroyShaderModule(dev, c.module, nullptr);
+        if (c.pool) vkDestroyDescriptorPool(dev, c.pool, nullptr);
+        if (c.sink.handle) session.ctx.destroy(c.sink);
+        c = {};
+    }
+
+    // ---- the barrier between two RDNA3 network dispatches (NR_RDNA3_SYNC, local patch 21) ------------------------
+    // 0 released: compute_barrier as the RDNA4 network has it (invalidate only). 1 full: the availability half back
+    // (NR_INV_BARRIERS=0). 2 global: memory write -> memory read/write over all commands. 3 twinbuf: global plus a
+    // buffer barrier on the activation arena and its FP16 twin, whole. 4 zero: released, and before every network
+    // dispatch the scrub with zeros (LDS and registers as a fresh dispatch should not depend on).
+    enum : int { kSyncReleased, kSyncFull, kSyncGlobal, kSyncTwinBuf, kSyncZero };
+    int rdna3_sync = -1;
+    int rdna3_sync_mode() {
+        if (rdna3_sync >= 0) return rdna3_sync;
+        rdna3_sync = kSyncTwinBuf;
+        if (const char* e = std::getenv("NR_RDNA3_SYNC"); e && *e) {
+            static const char* names[] = {"released", "full", "global", "twinbuf", "zero"};
+            for (int i = 0; i < 5; ++i)
+                if (!std::strcmp(e, names[i]) || (e[0] == char('0' + i) && !e[1])) rdna3_sync = i;
+        }
+        return rdna3_sync;
+    }
+    void sync_barrier(VkCommandBuffer cmd, int mode, bool exec_only, bool inv_only) {
+        auto& s = session;
+        if (mode == kSyncReleased || mode == kSyncZero) { compute_barrier(cmd, exec_only, inv_only); return; }
+        if (mode == kSyncFull) { compute_barrier(cmd, false, false); return; }
+        VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT |
+                           VK_ACCESS_SHADER_WRITE_BIT;
+        VkBufferMemoryBarrier bb[4]{};
+        uint32_t nb = 0;
+        if (mode == kSyncTwinBuf) {
+            auto add = [&](VkBuffer b) {
+                if (!b) return;
+                bb[nb] = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+                bb[nb].srcAccessMask = mb.srcAccessMask; bb[nb].dstAccessMask = mb.dstAccessMask;
+                bb[nb].srcQueueFamilyIndex = bb[nb].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                bb[nb].buffer = b; bb[nb].offset = 0; bb[nb].size = VK_WHOLE_SIZE;
+                ++nb;
+            };
+            add(s.act.handle);
+            const auto t = s.ctx.fp16_twin.find(s.act.handle);
+            if (t != s.ctx.fp16_twin.end()) add(t->second);
+        }
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, nb,
+                             bb, 0, nullptr);
+    }
+
+    // MZ_SEQ=<dir> (diagnostic, off unless set; the RX 7000 kit 4): the network's dispatches as recording MZ_SEQ_FRAME
+    // (default 3) made them, run again once that frame is done, on its own bytes: the buffers its dispatches write are
+    // copied right before dispatch MZ_SEQ_FROM (default 1), and then, for every dispatch i from there to MZ_SEQ_TO
+    // (default the last one before the post block), the dispatches from..i run in one submit (MZ_SEQ_RUNS times, 3)
+    // and the values dispatch i makes (plan keys, arena and RDNA3 twin) are read back and hashed; dispatch i also runs
+    // alone (MZ_SEQ_ISO times, 3) in a submit of its own after the queue went idle, on the bytes the first..i-1 prefix
+    // left. MZ_SEQ_VARIANTS (default all) runs the prefix again with other barriers or submits between the
+    // dispatches. MZ_SEQ_REF=1 writes the values (every MZ_SEQ_SAMPLE-th 256-byte block, default 8) as the reference
+    // another network is measured against; MZ_SEQ_REFS=<dir> reads such a reference. The answers go to <dir>/seq.txt
+    // at the next recording; nothing is created or recorded without MZ_SEQ.
+    struct SeqDiag {
+        bool tried{}, on{}, ref{};
+        std::string dir, refs, variants{"full,global,twinbuf,submit,scrub,zero"};
+        uint64_t frame{3};
+        size_t from{1}, to{~size_t(0)};
+        uint32_t runs{3}, iso{3}, sample{8};
+        struct Rec { const nrvk::Kernel* k{}; VkDescriptorSet set{}; std::vector<uint8_t> push; uint32_t gx{}, gy{}, gz{}; bool nobar{}; };
+        std::vector<Rec> rec;
+        std::vector<std::pair<VkBuffer, nrvk::Buffer>> snap;   // a buffer the network writes, its bytes before `from`
+        uint64_t taken_at{~0ull};
+        bool exec{}, inv{};
+    };
+    SeqDiag seq;
+    void seq_setup() {
+        auto& q = seq;
+        q.tried = true;
+        const char* e = std::getenv("MZ_SEQ");
+        if (!e || !*e) return;
+        q.dir = e;
+        if (const char* v = std::getenv("MZ_SEQ_FRAME")) q.frame = std::strtoull(v, nullptr, 0);
+        if (const char* v = std::getenv("MZ_SEQ_FROM")) q.from = size_t(std::strtoull(v, nullptr, 0));
+        if (const char* v = std::getenv("MZ_SEQ_TO")) q.to = size_t(std::strtoull(v, nullptr, 0));
+        if (const char* v = std::getenv("MZ_SEQ_RUNS")) q.runs = std::clamp(uint32_t(std::atoi(v)), 1u, 50u);
+        if (const char* v = std::getenv("MZ_SEQ_ISO")) q.iso = std::clamp(uint32_t(std::atoi(v)), 1u, 50u);
+        if (const char* v = std::getenv("MZ_SEQ_SAMPLE")) q.sample = std::clamp(uint32_t(std::atoi(v)), 1u, 4096u);
+        if (const char* v = std::getenv("MZ_SEQ_VARIANTS")) q.variants = v;
+        if (const char* v = std::getenv("MZ_SEQ_REF")) q.ref = std::atoi(v) != 0;
+        if (const char* v = std::getenv("MZ_SEQ_REFS")) q.refs = v;
+        if (session.disp.empty() || session.voff.used.empty()) {
+            nr::logf("[nr] sequence check: this runtime has no lowered plan of its own (a shared build), off");
+            return;
+        }
+        q.on = true;
+        nr::logf("[nr] sequence check on: recording %llu, dispatches %zu.., %u runs, %u alone, variants %s, into %s",
+                 (unsigned long long)q.frame, q.from, q.runs, q.iso, q.variants.c_str(), q.dir.c_str());
+    }
+    bool seq_frame() const { return seq.on && seq.taken_at == ~0ull && recordings == seq.frame; }
+    // In the recording MZ_SEQ_FRAME, before network dispatch i: what it runs, and before `from` the copies.
+    void seq_take(VkCommandBuffer cmd, size_t i, const nrvk::Kernel& kern, VkDescriptorSet set, const nrvk::Runner::Step& step,
+                  const void* push, bool nobar) {
+        auto& q = seq;
+        auto& s = session;
+        if (!seq_frame()) return;
+        if (q.rec.size() <= i) q.rec.resize(i + 1);
+        auto& r = q.rec[i];
+        r.k = &kern; r.set = set ? set : kern.set;
+        r.push.assign(static_cast<const uint8_t*>(push), static_cast<const uint8_t*>(push) + step.push_bytes);
+        r.gx = step.gx; r.gy = step.gy; r.gz = step.gz; r.nobar = nobar;
+        if (i != q.from) return;
+        try {
+            // Every buffer a network dispatch binds; the weights and their twin only with persistent runs or
+            // MZ_SEQ_ALL=1 (nothing else writes them).
+            const auto wt = s.ctx.fp16_twin.find(s.wgt.handle);
+            const VkBuffer wtwin = wt != s.ctx.fp16_twin.end() ? wt->second : VK_NULL_HANDLE;
+            const char* all = std::getenv("MZ_SEQ_ALL");
+            const bool weights = !s.persist_err.empty() || (all && std::atoi(all));
+            std::vector<VkBuffer> bufs;
+            for (const auto& st : s.steps)
+                for (const auto& b : st.k->bound_buffers)
+                    if ((weights || (b.second != s.wgt.handle && b.second != wtwin)) &&
+                        std::find(bufs.begin(), bufs.end(), b.second) == bufs.end())
+                        bufs.push_back(b.second);
+            VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+            mb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0,
+                                 nullptr, 0, nullptr);
+            for (VkBuffer b : bufs) {
+                VkDeviceSize bytes = 0;
+                {
+                    std::lock_guard<std::mutex> guard(nrvk::buffer_sizes_lock());
+                    const auto it = nrvk::buffer_sizes().find(b);
+                    if (it != nrvk::buffer_sizes().end()) bytes = it->second;
+                }
+                if (!bytes) throw std::runtime_error("a network buffer of unknown size");
+                q.snap.push_back({b, s.ctx.buffer(bytes)});
+                const VkBufferCopy c{0, 0, bytes};
+                vkCmdCopyBuffer(cmd, b, q.snap.back().second.handle, 1, &c);
+            }
+            mb.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0,
+                                 nullptr, 0, nullptr);
+            q.exec = s.runner.exec_barrier; q.inv = s.runner.inv_barrier;
+        } catch (const std::exception& x) {
+            nr::logf("[nr] sequence check: copy failed (%s), off", x.what());
+            for (auto& b : q.snap) s.ctx.destroy(b.second);
+            q.snap.clear();
+            q.on = false;
+        }
+    }
+    void seq_end_frame() { if (seq_frame() && !seq.snap.empty()) seq.taken_at = recordings; }
+    void seq_destroy() {
+        for (auto& b : seq.snap) session.ctx.destroy(b.second);
+        seq.snap.clear();
+        seq.rec.clear();
+    }
+    void seq_run();
+
     ~Impl() {
         // Caller has already completed its submitted command buffers.
         auto& s = session;
@@ -1417,6 +1638,8 @@ struct Runtime::Impl {
             stage_destroy();
         }
         kcap_write();
+        seq_destroy();
+        scrub_destroy();
         for (auto& d : direct_ring) {
             direct_slot_release(d);
             if (d.pool) vkDestroyDescriptorPool(s.ctx.device, d.pool, nullptr);
@@ -1587,6 +1810,418 @@ struct Runtime::Impl {
         }
     }
 };
+
+namespace {
+std::string seq_fmt(const char* f, ...) {
+    char b[1024];
+    va_list a;
+    va_start(a, f);
+    std::vsnprintf(b, sizeof b, f, a);
+    va_end(a);
+    return b;
+}
+uint64_t seq_hash(const uint8_t* p, size_t n) {
+    uint64_t h = 0xcbf29ce484222325ull;
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        uint64_t w;
+        std::memcpy(&w, p + i, 8);
+        h = (h ^ w) * 0x100000001b3ull;
+        h ^= h >> 29;
+    }
+    for (; i < n; ++i) h = (h ^ p[i]) * 0x100000001b3ull;
+    return h;
+}
+float seq_f16(uint16_t h) {
+    const uint32_t sg = uint32_t(h >> 15) << 31, e = (h >> 10) & 31, m = h & 1023;
+    if (e == 0) { const float f = std::ldexp(float(m), -24); return sg ? -f : f; }
+    uint32_t b = e == 31 ? (sg | 0x7f800000u | (m << 13)) : (sg | ((e + 112) << 23) | (m << 13));
+    float f;
+    std::memcpy(&f, &b, 4);
+    return f;
+}
+float seq_e4m3(uint8_t v) {
+    const int e = (v >> 3) & 15, m = v & 7;
+    if (e == 15 && m == 7) return NAN;
+    const float f = e ? std::ldexp(1.0f + m / 8.0f, e - 7) : std::ldexp(m / 8.0f, -6);
+    return (v & 128) ? -f : f;
+}
+}
+
+void Runtime::Impl::seq_run() {
+    auto& q = seq;
+    auto& s = session;
+    if (!q.on || q.taken_at == ~0ull || recordings <= q.taken_at) return;
+    q.on = false;
+    const VkDevice dev = s.ctx.device;
+    vkDeviceWaitIdle(dev);
+    const auto t0 = std::chrono::steady_clock::now();
+    const size_t n = q.rec.size();
+    const size_t last = std::min(q.to, n >= 2 ? n - 2 : size_t(0));   // the post block (an image out) is left out
+    bool complete = q.from <= last && last < n;
+    for (size_t i = q.from; complete && i <= last; ++i) complete = q.rec[i].k != nullptr;
+    if (!complete || q.snap.empty()) {
+        nr::logf("[nr] sequence check: nothing recorded for dispatches %zu..%zu, off", q.from, last);
+        seq_destroy();
+        return;
+    }
+    const VkBuffer act = s.act.handle;
+    const auto twin_it = s.ctx.fp16_twin.find(act);
+    const VkBuffer twin = twin_it != s.ctx.fp16_twin.end() ? twin_it->second : VK_NULL_HANDLE;
+    VkDeviceSize twin_bytes = 0;
+    if (twin) {
+        std::lock_guard<std::mutex> guard(nrvk::buffer_sizes_lock());
+        const auto it = nrvk::buffer_sizes().find(twin);
+        if (it != nrvk::buffer_sizes().end()) twin_bytes = it->second;
+    }
+    // What each dispatch makes: plan keys first used by it and read by a later one, as the stage dump takes them.
+    struct Region { int key; bool twin; VkDeviceSize off, bytes, at; };
+    std::vector<std::vector<Region>> made(n);
+    std::vector<VkDeviceSize> total(n, 0);
+    for (const auto& u : s.voff.used) {
+        const auto sz = s.vsize.find(u.first);
+        const auto at = s.voff.m.find(u.first);
+        if (sz == s.vsize.end() || !sz->second || at == s.voff.m.end()) continue;
+        size_t d = n;
+        for (size_t i = 0; i < s.disp.size() && i < n && d == n; ++i)
+            if (s.disp[i].lo <= u.second.first && u.second.first <= s.disp[i].hi) d = i;
+        if (d < q.from || d > last || u.second.second <= s.disp[d].hi) continue;
+        if (at->second + sz->second > s.act.bytes) continue;
+        made[d].push_back({u.first, false, at->second, sz->second, total[d]});
+        total[d] += (sz->second + 255) & ~VkDeviceSize(255);
+        if (twin && 2 * (at->second + sz->second) <= twin_bytes) {
+            made[d].push_back({u.first, true, 2 * at->second, 2 * sz->second, total[d]});
+            total[d] += 2 * sz->second;
+        }
+    }
+    VkDeviceSize most = 256;
+    for (size_t i = q.from; i <= last; ++i) most = std::max(most, total[i]);
+
+    // Host memory the processor reads quickly (cached), the copies' second set, a command buffer of our own.
+    VkBuffer hb{}; VkDeviceMemory hm{}; uint8_t* host = nullptr;
+    VkCommandPool pool{}; VkCommandBuffer cmd{}; VkFence fence{};
+    std::vector<nrvk::Buffer> mid;
+    std::string out, head;
+    auto put = [&](const std::string& l) { out += l; out += '\n'; };
+    try {
+        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bi.size = most; bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        NRVK_CHECK(vkCreateBuffer(dev, &bi, nullptr, &hb));
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(dev, hb, &req);
+        const VkMemoryPropertyFlags hv = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        uint32_t type = ~0u;
+        for (int pass = 0; pass < 2 && type == ~0u; ++pass)
+            for (uint32_t i = 0; i < s.ctx.mem.memoryTypeCount && type == ~0u; ++i) {
+                const auto f = s.ctx.mem.memoryTypes[i].propertyFlags;
+                if (!(req.memoryTypeBits & (1u << i)) || (f & hv) != hv) continue;
+                if (pass == 0 && (!(f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) || (f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)))
+                    continue;
+                type = i;
+            }
+        if (type == ~0u) throw std::runtime_error("no host memory for the read-back");
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        ai.allocationSize = req.size; ai.memoryTypeIndex = type;
+        NRVK_CHECK(vkAllocateMemory(dev, &ai, nullptr, &hm));
+        NRVK_CHECK(vkBindBufferMemory(dev, hb, hm, 0));
+        void* mp = nullptr;
+        NRVK_CHECK(vkMapMemory(dev, hm, 0, VK_WHOLE_SIZE, 0, &mp));
+        host = static_cast<uint8_t*>(mp);
+        VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        cpi.queueFamilyIndex = s.ctx.family; cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        NRVK_CHECK(vkCreateCommandPool(dev, &cpi, nullptr, &pool));
+        VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        cai.commandPool = pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 1;
+        NRVK_CHECK(vkAllocateCommandBuffers(dev, &cai, &cmd));
+        VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        NRVK_CHECK(vkCreateFence(dev, &fi, nullptr, &fence));
+        for (const auto& b : q.snap) mid.push_back(s.ctx.buffer(b.second.bytes));
+        scrub_setup();
+
+        auto begin = [&] {
+            NRVK_CHECK(vkResetCommandBuffer(cmd, 0));
+            VkCommandBufferBeginInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+            cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            NRVK_CHECK(vkBeginCommandBuffer(cmd, &cbi));
+        };
+        auto submit = [&] {
+            NRVK_CHECK(vkEndCommandBuffer(cmd));
+            NRVK_CHECK(vkResetFences(dev, 1, &fence));
+            VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
+            s.ctx.submit(si, fence);
+            const VkResult r = vkWaitForFences(dev, 1, &fence, VK_TRUE, 60000000000ull);
+            if (r != VK_SUCCESS) throw std::runtime_error("a sequence submit did not finish (" + std::to_string(r) + ")");
+        };
+        auto full = [&](VkPipelineStageFlags dst) {
+            VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+            mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT |
+                               VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT |
+                               (dst == VK_PIPELINE_STAGE_HOST_BIT ? VK_ACCESS_HOST_READ_BIT : 0u);
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, dst, 0, 1, &mb, 0, nullptr, 0, nullptr);
+        };
+        // The network's buffers as `src` holds them (the copies before `from`, or `mid`).
+        auto restore = [&](bool from_mid) {
+            full(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+            for (size_t b = 0; b < q.snap.size(); ++b) {
+                const VkBufferCopy c{0, 0, q.snap[b].second.bytes};
+                vkCmdCopyBuffer(cmd, from_mid ? mid[b].handle : q.snap[b].second.handle, q.snap[b].first, 1, &c);
+            }
+            full(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        };
+        auto step = [&](size_t i) {
+            const auto& r = q.rec[i];
+            dispatch(cmd, *r.k, r.gx, r.gy, r.gz, r.push.data(), uint32_t(r.push.size()), r.set);
+        };
+        auto readback = [&](size_t i) {
+            full(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+            for (const auto& g : made[i]) {
+                const VkBufferCopy c{g.off, g.at, g.bytes};
+                vkCmdCopyBuffer(cmd, g.twin ? twin : act, hb, 1, &c);
+            }
+            full(VK_PIPELINE_STAGE_HOST_BIT);
+        };
+        enum Mode { kBase, kFull, kGlobal, kTwinBuf, kSubmit, kScrub, kZero };
+        auto between = [&](Mode m, size_t j) {
+            switch (m) {
+            case kBase: case kScrub: case kZero:
+                if (!q.rec[j].nobar) compute_barrier(cmd, q.exec, q.inv);
+                break;
+            case kFull: compute_barrier(cmd, false, false); break;
+            case kGlobal: sync_barrier(cmd, kSyncGlobal, false, false); break;
+            case kTwinBuf: sync_barrier(cmd, kSyncTwinBuf, false, false); break;
+            case kSubmit: full(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT); submit(); begin(); break;
+            }
+        };
+        struct Run { std::vector<uint64_t> h; uint64_t all{}; };
+        auto hashes = [&](size_t i) {
+            Run r;
+            for (const auto& g : made[i]) r.h.push_back(seq_hash(host + g.at, size_t(g.bytes)));
+            r.all = seq_hash(reinterpret_cast<const uint8_t*>(r.h.data()), r.h.size() * 8);
+            return r;
+        };
+        auto prefix = [&](size_t i, Mode m, uint32_t run) {
+            begin();
+            restore(false);
+            for (size_t j = q.from; j <= i; ++j) {
+                if (m == kScrub || m == kZero) scrub_record(cmd, run * 7919u + uint32_t(j) * 31u + 1u, m == kZero);
+                step(j);
+                if (j < i) between(m, j);
+            }
+            readback(i);
+            submit();
+            return hashes(i);
+        };
+        // How far a run's values are from base's first: bytes that differ, and the largest |d| of the twins.
+        std::vector<uint8_t> base1;
+        auto diff = [&](size_t i) {
+            uint64_t bytes = 0;
+            double worst = 0;
+            std::string where;
+            for (const auto& g : made[i]) {
+                uint64_t n = 0;
+                VkDeviceSize lo = g.bytes, hi = 0;
+                for (VkDeviceSize k = 0; k < g.bytes; ++k) {
+                    if (host[g.at + k] == base1[size_t(g.at + k)]) continue;
+                    ++n; lo = std::min(lo, k); hi = k;
+                    if (g.twin && k % 2 == 1) {
+                        uint16_t a, b;
+                        std::memcpy(&a, host + g.at + k - 1, 2);
+                        std::memcpy(&b, base1.data() + g.at + k - 1, 2);
+                        const double d = std::fabs(double(seq_f16(a)) - double(seq_f16(b)));
+                        worst = std::isnan(d) ? INFINITY : std::max(worst, d);
+                    }
+                }
+                bytes += n;
+                // Where in the value: the first and last differing byte as a fraction of its size (1.0 = its end).
+                if (n) where += seq_fmt("; key %d %s %llu bytes at %.3f..%.3f", g.key, g.twin ? "twin" : "arena",
+                                        (unsigned long long)n, double(lo) / double(g.bytes), double(hi + 1) / double(g.bytes));
+            }
+            return seq_fmt("%llu bytes differ, max |d| %.4g", (unsigned long long)bytes, worst) + where;
+        };
+        std::vector<std::pair<std::string, Mode>> variants;
+        {
+            const std::string vs = "," + q.variants + ",";
+            static const std::pair<const char*, Mode> known[] = {{"full", kFull}, {"global", kGlobal},
+                {"twinbuf", kTwinBuf}, {"submit", kSubmit}, {"scrub", kScrub}, {"zero", kZero}};
+            for (const auto& k : known)
+                if (vs.find(std::string(",") + k.first + ",") != std::string::npos) variants.push_back({k.first, k.second});
+            if (q.ref) variants.clear();
+        }
+        auto distinct = [](const std::vector<Run>& rs) {
+            std::set<uint64_t> d;
+            for (const auto& r : rs) d.insert(r.all);
+            return d.size();
+        };
+        auto name = [&](size_t i) {
+            const std::string& p = q.rec[i].k->spirv;
+            std::string b = p.substr(p.find_last_of("/\\") + 1);
+            if (b.rfind("g_", 0) == 0) b.erase(0, 2);
+            if (b.size() > 4 && b.compare(b.size() - 4, 4, ".spv") == 0) b.resize(b.size() - 4);
+            return b;
+        };
+        // First offenders, for the summary.
+        const size_t none = ~size_t(0);
+        size_t base_vary = none, base_alone = none, alone_vary = none;
+        std::vector<size_t> var_vary(variants.size(), none), var_alone(variants.size(), none), var_base(variants.size(), none);
+        std::error_code ec;
+        std::filesystem::create_directories(q.dir, ec);
+        for (size_t i = q.from; i <= last; ++i) {
+            const auto ts = std::chrono::steady_clock::now();
+            std::string vals;
+            for (const auto& g : made[i])
+                if (!g.twin) vals += seq_fmt("%s%d:%llu", vals.empty() ? "" : ",", g.key, (unsigned long long)g.bytes);
+            put(seq_fmt("S %zu %s grid %ux%ux%u values %s", i, name(i).c_str(), q.rec[i].gx, q.rec[i].gy, q.rec[i].gz,
+                        vals.empty() ? "-" : vals.c_str()));
+            // In the sequence, the released barriers.
+            std::vector<Run> base;
+            for (uint32_t r = 0; r < q.runs; ++r) {
+                base.push_back(prefix(i, kBase, r));
+                if (r == 0) base1.assign(host, host + total[i]);
+                else if (base.back().all != base[0].all) put("  base run " + std::to_string(r + 1) + " vs run 1: " + diff(i));
+            }
+            const size_t bd = distinct(base);
+            if (bd > 1 && base_vary == none) base_vary = i;
+            std::string hs;
+            for (const auto& r : base) hs += seq_fmt(" %016llx", (unsigned long long)r.all);
+            put(seq_fmt("  base     %zu distinct of %u%s", bd, q.runs, hs.c_str()));
+            if (q.ref) {   // the reference: every `sample`-th 256-byte block of each value as the arena holds it
+                for (const auto& g : made[i]) {
+                    if (g.twin) continue;
+                    std::vector<uint8_t> smp;
+                    for (VkDeviceSize o = 0; o < g.bytes; o += VkDeviceSize(256) * q.sample)
+                        smp.insert(smp.end(), base1.begin() + size_t(g.at + o),
+                                   base1.begin() + size_t(g.at + std::min<VkDeviceSize>(o + 256, g.bytes)));
+                    const auto p = (std::filesystem::path(q.dir) / ("ref_k" + std::to_string(g.key) + ".bin")).string();
+                    if (FILE* f = std::fopen(p.c_str(), "wb")) { std::fwrite(smp.data(), 1, smp.size(), f); std::fclose(f); }
+                }
+                continue;
+            }
+            // Alone: the prefix's bytes kept, then dispatch i in a submit of its own after the queue is idle.
+            if (i > q.from) {
+                begin();
+                restore(false);
+                for (size_t j = q.from; j < i; ++j) {
+                    step(j);
+                    if (j + 1 < i) between(kBase, j);
+                }
+                full(VK_PIPELINE_STAGE_TRANSFER_BIT);
+                for (size_t b = 0; b < q.snap.size(); ++b) {
+                    const VkBufferCopy c{0, 0, q.snap[b].second.bytes};
+                    vkCmdCopyBuffer(cmd, q.snap[b].first, mid[b].handle, 1, &c);
+                }
+                submit();
+            }
+            std::vector<Run> alone;
+            std::string adiff;
+            for (uint32_t r = 0; r < q.iso; ++r) {
+                begin();
+                restore(i > q.from);
+                submit();
+                if (s.ctx.queue_lock) s.ctx.queue_lock();
+                vkQueueWaitIdle(s.ctx.queue);
+                if (s.ctx.queue_unlock) s.ctx.queue_unlock();
+                begin();
+                step(i);
+                readback(i);
+                submit();
+                alone.push_back(hashes(i));
+                if (r == 0 && alone[0].all != base[0].all) adiff = " (vs base run 1: " + diff(i) + ")";
+            }
+            const size_t ad = distinct(alone);
+            if (ad > 1 && alone_vary == none) alone_vary = i;
+            const bool same = alone[0].all == base[0].all;
+            if (!same && base_alone == none) base_alone = i;
+            put(seq_fmt("  alone    %zu distinct of %u, %s base%s", ad, q.iso, same ? "same as" : "DIFFERENT from",
+                        adiff.c_str()));
+            for (size_t v = 0; v < variants.size(); ++v) {
+                std::vector<Run> rs;
+                std::string vdiff;
+                for (uint32_t r = 0; r < q.runs; ++r) {
+                    rs.push_back(prefix(i, variants[v].second, r));
+                    if (r == 0 && rs[0].all != base[0].all) vdiff = " (vs base run 1: " + diff(i) + ")";
+                }
+                const size_t d = distinct(rs);
+                if (d > 1 && var_vary[v] == none) var_vary[v] = i;
+                if (rs[0].all != alone[0].all && var_alone[v] == none) var_alone[v] = i;
+                if (rs[0].all != base[0].all && var_base[v] == none) var_base[v] = i;
+                put(seq_fmt("  %-8s %zu distinct of %u, %s alone%s", variants[v].first.c_str(), d, q.runs,
+                            rs[0].all == alone[0].all ? "same as" : "DIFFERENT from", vdiff.c_str()));
+            }
+            // Against the reference network's values (base run 1).
+            if (!q.refs.empty())
+                for (const auto& g : made[i]) {
+                    if (g.twin) continue;
+                    const auto p = (std::filesystem::path(q.refs) / ("ref_k" + std::to_string(g.key) + ".bin")).string();
+                    FILE* f = std::fopen(p.c_str(), "rb");
+                    if (!f) { put(seq_fmt("  ref key %d: no reference", g.key)); continue; }
+                    std::vector<uint8_t> ref;
+                    uint8_t buf[65536];
+                    for (size_t k; (k = std::fread(buf, 1, sizeof buf, f)) > 0;) ref.insert(ref.end(), buf, buf + k);
+                    std::fclose(f);
+                    const Region* tw = nullptr;
+                    for (const auto& h : made[i]) if (h.twin && h.key == g.key) tw = &h;
+                    double sd = 0, sr = 0;
+                    uint64_t eq = 0, cnt = 0, bad = 0, tzero = 0;
+                    size_t at = 0;
+                    for (VkDeviceSize o = 0; o < g.bytes && at < ref.size(); o += VkDeviceSize(256) * q.sample)
+                        for (VkDeviceSize k = o; k < std::min<VkDeviceSize>(o + 256, g.bytes) && at < ref.size(); ++k, ++at) {
+                            ++cnt;
+                            if (base1[size_t(g.at + k)] == ref[at]) ++eq;
+                            if (!tw) continue;
+                            uint16_t h;
+                            std::memcpy(&h, base1.data() + size_t(tw->at + 2 * k), 2);
+                            if (!h) ++tzero;
+                            const float a = seq_f16(h), b = seq_e4m3(ref[at]);
+                            if (!std::isfinite(a) || !std::isfinite(b)) { ++bad; continue; }
+                            sd += std::fabs(double(a) - double(b));
+                            sr += std::fabs(double(b));
+                        }
+                    std::string t = tw ? seq_fmt(", twin rel %.4f (mean |ref| %.4g, %llu non-finite, %.1f%% zero)",
+                                                 sr > 0 ? sd / sr : (sd > 0 ? INFINITY : 0.0), cnt ? sr / double(cnt) : 0.0,
+                                                 (unsigned long long)bad, cnt ? 100.0 * double(tzero) / double(cnt) : 0.0)
+                                       : std::string();
+                    put(seq_fmt("  ref key %d: arena %.1f%% equal%s", g.key, cnt ? 100.0 * double(eq) / double(cnt) : 0.0,
+                                t.c_str()));
+                }
+            put(seq_fmt("  time %.0f ms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ts).count()));
+        }
+        auto at = [&](size_t i) {
+            return i == none ? std::string("none") : seq_fmt("dispatch %zu (%s)", i, name(i).c_str());
+        };
+        head += seq_fmt("MZSEQ 1\nnetwork %s\nframe %ux%u\nmodel %ux%u\nrecording %llu\ndispatches %zu..%zu of %zu\n",
+                        s.ctx.rdna3 ? "rdna3" : "fp8", width, height, mw, mh, (unsigned long long)q.frame, q.from, last, n);
+        head += seq_fmt("barrier %s\nruns %u alone %u\n", q.exec ? "execution only" : q.inv ? "invalidate only" : "full",
+                        q.runs, q.iso);
+        if (!q.ref) {
+            head += "RESULT base varies: " + at(base_vary) + "\n";
+            head += "RESULT base differs from alone: " + at(base_alone) + "\n";
+            head += "RESULT alone varies: " + at(alone_vary) + "\n";
+            for (size_t v = 0; v < variants.size(); ++v)
+                head += "RESULT variant " + variants[v].first + ": varies " + at(var_vary[v]) + "; differs from alone " +
+                        at(var_alone[v]) + "; differs from base " + at(var_base[v]) + "\n";
+        }
+        head += seq_fmt("seconds %.1f\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+        vkDeviceWaitIdle(dev);
+    } catch (const std::exception& x) {
+        head += std::string("FAILED ") + x.what() + "\n";
+        vkDeviceWaitIdle(dev);
+    }
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(q.dir, ec);
+        const auto p = (std::filesystem::path(q.dir) / "seq.txt").string();
+        if (FILE* f = std::fopen(p.c_str(), "w")) { std::fputs((head + out).c_str(), f); std::fclose(f); }
+    }
+    for (auto& b : mid) s.ctx.destroy(b);
+    if (fence) vkDestroyFence(dev, fence, nullptr);
+    if (pool) vkDestroyCommandPool(dev, pool, nullptr);
+    if (hb) vkDestroyBuffer(dev, hb, nullptr);
+    if (hm) vkFreeMemory(dev, hm, nullptr);
+    seq_destroy();
+    nr::logf("[nr] sequence check written: %s", q.dir.c_str());
+}
 
 // What RuntimeConfig::share carries: a full build's lowered network (GraphCore in nr_graph.cpp) and what the build
 // that takes it must match - the same arguments but for the source extent, the same model and working extent, and a
@@ -3011,6 +3646,8 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
     impl_->stage_write();
     if (!impl_->kcap.tried) impl_->kcap_setup();
     impl_->kcap_write();
+    if (!impl_->seq.tried) impl_->seq_setup();
+    impl_->seq_run();
     if (engine && temporal)
         impl_->incheck.begin(s.ctx, cmd, frame, *engine, temporal->feature, impl_->recordings,
                              impl_->temporal.lw[0], impl_->temporal.lh[0], impl_->mw, impl_->mh);
@@ -3608,21 +4245,31 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
                 push = pre_push;
             }
             if (impl_->kcap.on && pass == 0) impl_->kcap_take(cmd, i, *use, step, push, false);
+            const bool last = i + 1 >= s.steps.size();
+            const bool nobar = !last && i < s.runner.no_barrier_after.size() && s.runner.no_barrier_after[i];
+            if (impl_->seq.on && pass == 0) impl_->seq_take(cmd, i, *use, set, step, push, nobar);
+            // RDNA3 (local patch 21): the barrier NR_RDNA3_SYNC names, and with `zero` the scrub before each step.
+            const int sync = s.ctx.rdna3 ? impl_->rdna3_sync_mode() : int(Impl::kSyncReleased);
+            if (sync == Impl::kSyncZero) {
+                impl_->scrub_setup();
+                impl_->scrub_record(cmd, 0, true);
+            }
             dispatch(cmd, *use, step.gx, step.gy, step.gz, push, step.push_bytes, set);
             // Execution-only between network steps when the arena is coherent,
             // invalidate-only when it is not; the barrier after the last step
             // stays full, because the passes that follow it are not part of
             // either contract - they were not built with device-scoped loads
             // and the arena is not the only thing they read.
-            const bool last = i + 1 >= s.steps.size();
             // C=512 dispatches joined by tile counters (nr_graph.cpp NR_TCHAIN) have no barrier.
-            if (!last && i < s.runner.no_barrier_after.size() && s.runner.no_barrier_after[i]) continue;
-            compute_barrier(cmd, s.runner.exec_barrier && !last,
-                            s.runner.inv_barrier && !last);
+            if (nobar) continue;
+            if (sync != Impl::kSyncReleased && sync != Impl::kSyncZero && !last) impl_->sync_barrier(cmd, sync, false, false);
+            else compute_barrier(cmd, s.runner.exec_barrier && !last,
+                                 s.runner.inv_barrier && !last);
             if (impl_->stage.on && pass == 0) impl_->stage_take(cmd, i, last);
             if (impl_->kcap.on && pass == 0) impl_->kcap_take(cmd, i, *use, step, push, true);
         }
         if (time_net) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, impl_->timing, net_query + 1);
+        if (pass == 0) impl_->seq_end_frame();
         if (pass == 0 && passes > 1 && (c.anti_halo || estimate)) copy_general(s.surf0, impl_->first_answer);
         if (pass == 0 && passes > 1 && impl_->first_transfer.device && !prep_on && !mask && c.apply_model) {
             // first_pass_output: pass 1's answer onto the frame, before the next pass overwrites surf0. Classic
