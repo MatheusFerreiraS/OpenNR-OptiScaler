@@ -4,8 +4,8 @@ Worktree `wt-rdna2`, branch `mochizuki-rdna2`, local commit only (nothing pushed
 touched). Plan section 9 item 6. Clean room kept: the GPL RDNA2 port was not opened, searched or fetched; the kit is
 built from this branch's own export and the RX 7000 kits' tools.
 
-Package: `E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip`, 26,472,634 bytes (25.2 MB, 140 files,
-models not included), SHA-256 `B04167F271A9BA5FF2F5EBFF0447B95D89A032FD7B444DB7CAC25D109D9B5DDB` (also in
+Package: `E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip`, 24,577,928 bytes (23.4 MB, 136 files,
+models not included), SHA-256 `A3DAFDB86A3BCC862D358E58E787C1F5E70DB84776C48F48AD99C48D21248F9D` (also in
 `rx6000-test-kit\SHA256.txt`). One `run-test.bat`, one result zip `OpenNR-RX6000-result-<date>.zip`.
 
 ## What it runs (files\kit.ps1, cases in files\cases.ps1)
@@ -18,8 +18,8 @@ models not included), SHA-256 `B04167F271A9BA5FF2F5EBFF0447B95D89A032FD7B444DB7C
    id first, then FP8 > RDNA3 > RDNA2, with the shuffle/RTE requirements). Not an RDNA2 pick (and not forced): the
    network stages are skipped and the summary asks which card it is.
 2. **Models** from Hugging Face (the installer's URLs), size + SHA-256 checked, three tries (the last with BITS).
-3. **Pipeline compile**: `pipecheck.exe` on every `shaders-rdna2` and `shaders\renodx` module except `$Unused`
-   (below), each in its own child process, wave32, no matrix extension (`PIPECHECK_COOP=0`, as the RDNA2 runtime),
+3. **Pipeline compile**: `pipecheck.exe` on every `shaders-rdna2` and `shaders\renodx` module, each in its own
+   child process, wave32, no matrix extension (`PIPECHECK_COOP=0`, as the RDNA2 runtime),
    300 s a module, no new module after 900 s, the stage killed at 22 min. Writes `pipecheck.txt` and
    `pipelines-by-time.txt` (per-pipeline ms, slowest first). Any FAIL/CRASH/TIMEOUT/NOTRUN: network stages skipped.
 4. **Quality**: small 720p, small 1080p, 310.8 720p; clean mode (`NR_DIAG_SEED0=1 NR_DIAG_TGATE0=1`), 8 frames,
@@ -43,13 +43,8 @@ models not included), SHA-256 `B04167F271A9BA5FF2F5EBFF0447B95D89A032FD7B444DB7C
 7. `SUMMARY.txt` (IN SHORT block, then every line), `console.txt`, logs, two pictures (diff x16 PNG, output JPG) a
    quality case; zipped next to `run-test.bat`.
 
-`$Unused` = `g_fswinds32/64/128/256`: the non-persistent downsample, still emulated, dispatched by neither model, but
-shipped in `shaders-rdna2`, so the runtime's own pipeline check compiles them. On the RX 9070 XT cold they took 42,
-94, 132 and 260 s serially (528 of the 641 s of the first compile stage); on the gfx1030 null device (.342) the 128
-and 256 ones failed after 1.5-4 min. The kit leaves them to the runtime's check in the first run (in parallel, as in a
-game). **If they fail on a real RX 6000, the runtime turns the network off in every game** (stage 6 checks every file
-in the folder): that WARN line is the first thing to look for. Fix options if it happens: port them, or leave them out
-of `shaders-rdna2` / the check's list.
+`g_fswinds32/64/128/256` are gone from `shaders-rdna2` (2026-10-27, see "fswinds removed" below): the earlier
+kit's `$Unused` list and its note that they could keep the network off in every game no longer apply.
 
 Env for our own runs: `KIT_FORCE_RDNA2=1` (MZ_FORCE_RDNA2=1 on any card), `KIT_QUIET=1` (no Explorer).
 
@@ -81,6 +76,36 @@ C=32 Swin, the pre/post blocks; `fswin64` timed out at 150 s, the C>=64 ones not
 
 Estimates to compare with (phase 4, Small 720p): RX 6900 XT ~26 ms, RX 6800 ~38 ms, RX 6700 XT ~43 ms.
 
+## fswinds removed (2026-10-27)
+
+The unfused downsample `fswinds<C>` (still emulated: 42-260 s each on the 9070 XT, 128/256 no pipeline on the gfx1030
+null device) is no longer built for RDNA2 (`linux/shaders/rdna2/pipelines.json`), so neither the runtime's stage-6
+check (it compiles every `.spv` in the folder) nor `create_kernels` (it compiles dispatched kernels only) meets it.
+RDNA4 and RDNA3 keep theirs. Why no RDNA2 path needs it (`windows/src/core/nr_graph.cpp`):
+
+- The DS body is `fswinds<C>` only with `host_boundary` (the runtime always passes `--host-boundary`;
+  `--legacy-boundary` or `--legacy-ds-quant` give `fswin<C>` + `pool<C>` + `gemmds` instead). It is then replaced by
+  `fswindsp<C>` when `NR_DS_FUSE & bit(C)` (the DLL is built with `NR_DS_FUSE=15`: C = 32, 64, 128, 256, every DS level
+  of both models), `pg.ds_raster != 1` and not `--legacy-ds-quant`. `ds_raster` is 1 only with `--ds-tok-raster`,
+  reachable in a game only through the diagnostic `NR_GRAPH_ARGS`. Size and model (Small, 310.8) do not enter the
+  condition; the persistent fold of `fswindsp<C>` is off on RDNA2 anyway.
+- That one path now throws on RDNA2 instead of asking for a missing file. Tested with `NR_GRAPH_ARGS=--ds-tok-raster`,
+  forced RDNA2: `network build failed at 1280x720: RDNA2 network: no unfused downsample (fswinds32), the fused one
+  only (drop --ds-tok-raster)`.
+
+Checks: the rebuilt export against the previous one: every file in `shaders`, `shaders-rdna3`, `aco`, `int4` and the
+rest of `shaders-rdna2` byte-identical, only the four `g_fswinds*.spv` gone. RDNA4 `ab.ps1` (40 frames): 258FEC01 /
+01588CA6 / 2A308F2C / 04A421E7 (= 0.5.8). vkisa gfx1030 (.342 null device, 3 in parallel) on all 66 remaining
+`shaders-rdna2` modules: all compile, slowest 7 s (temporal pre/post variants 6-7 s, the rest 0-5 s). Nine small
+emulated GEMMs (`gemmprojt`, `gemmvqkvs`, `gemmvqkvnorm`, `gemmvproj`, `gemmvnores`, `gemmvqkv`, `gemmpool`,
+`gemmprojw`, `gemmnores`) still take 236-256 VGPRs and 2.6-3.6 KB scratch (speed only; not ported).
+
+Kit run 3 (forced, driver cache warm, models pre-copied; `exports\rx6000-kit\run3.out`, `run3-result.zip`): 6 min,
+pipelines 86 of 86, the runtime's check passed (86 of 86, 0.3 s on 8 threads) with no `MZ_RDNA2_CHECK=0` retry,
+first build 1.6 s; hashes E9F5E89BF57A08BA / D07096C4C35774C0 / D0A1B50ECEE12A7B, PSNR 47.79 / 52.92 / 49.72 dB,
+runs identical; SPEED 28.3 / 46.9 / 60.6 ms; STEPS 34.8 / 53.6 ms; emulated stage 12 of 21 IDENTICAL (as before).
+Compile and check times are warm-cache numbers; cold, the earlier 641 s compile stage loses the fswinds' 528 s.
+
 ## How to read a result
 
 - IN SHORT: card, compile yes/no, PASS/FAIL cases, run-to-run changes, network ms.
@@ -99,7 +124,6 @@ Estimates to compare with (phase 4, Small 720p): RX 6900 XT ~26 ms, RX 6800 ~38 
 
 - No RX 6000 here: the vkprobe pick logic, ADL sensor indices (graphics clock 1, activity 19, memory clock 2,
   temperature 8, power 23; power reads -1 on the 9070 XT) and the RDNA2 compile times are unverified on gfx103x.
-- The fswinds pipelines in the runtime's check (above).
 - Navi 24 (RX 6400/6500, gfx1034) and the APUs: in the id list, never probed (phase 0 did gfx1030-1032 only).
 - The emulated stage's budget means the big emulated Swin kernels are probably never reached on an RX 6000 (they did
   not compile at all on .342); the check covers the GEMM/attention/C=32 kernels.

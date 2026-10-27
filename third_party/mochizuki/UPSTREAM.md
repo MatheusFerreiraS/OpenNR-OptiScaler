@@ -374,7 +374,9 @@ Changes to the other RDNA2 shaders, all because an array has no one-argument con
 `NR_FRAG_X(0.0)` became `NR_FILL_X(0.0)` and the conversions `NR_FRAG_ACC(h)` became `NR_WIDEN_ACC(h)` (13 sites in
 `fswin_t.comp`, `vit_attn.comp`, `fswin_body.glsl`, `fswin_hw_attn.glsl`, `vit_attn_vt_chunk.glsl`), and
 `noise_field.comp` (no `coopmm.glsl`) declares RoundingModeRTE itself. `pipelines.json` is RDNA3's (no int4) without
-the persistent runs' pipelines (`fswinp*`, `fswinpds*`, `fswinpup*`: the RDNA2 host builds none, below); the markers
+the persistent runs' pipelines (`fswinp*`, `fswinpds*`, `fswinpup*`: the RDNA2 host builds none, below) and the
+unfused downsample (`fswinds*`: the host always fuses it into `fswindsp*`, and an RDNA2 build with `--ds-tok-raster`,
+the one switch that would keep it, throws); the markers
 are the same, `kswap 1` included. Built by `windows/build/build_network.py rdna2 --tree linux --no-quad` into
 `dlssnr-amd/shaders-rdna2` (`tools/build-mochizuki-runtime.cmd`).
 

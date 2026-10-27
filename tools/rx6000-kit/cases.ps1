@@ -18,11 +18,6 @@ $SpeedFrames = 40
 $Steps = @('small_1280x720', 'small_1920x1080')
 $StepFrames = 30
 $StepCount = 20
-# Pipelines shipped in shaders-rdna2 that neither model dispatches at 720p-1440p and that are still emulated (the
-# non-persistent downsample: 42-260 s each on the RX 9070 XT; on the gfx1030 null device of driver .342 the 128 and 256
-# ones did not compile at all). The kit's own compile stage leaves them out; the runtime's pipeline check compiles them
-# in the first run (8 threads, as in a game), and when it refuses one the runs go on without it (MZ_RDNA2_CHECK=0).
-$Unused = @('g_fswinds32.spv', 'g_fswinds64.spv', 'g_fswinds128.spv', 'g_fswinds256.spv')
 # Native against emulated (layer A): the emulated kernels of the pipelines the small model dispatches at 720p
 # (files\emulated), swapped in for the native ones wherever the driver compiles them in time; the output must stay
 # byte for byte the same.

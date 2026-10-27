@@ -3267,6 +3267,10 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
                     std::memcpy(body.push.data() + sizeof(PushFSwin), &dq, sizeof dq);
                     continue;
                 }
+                // shaders-rdna2 has only the fused body (fswindsp<C>).
+                if (g_rdna2 && disp[ds_body].kern == "fswinds" + std::to_string(C))
+                    throw std::runtime_error("RDNA2 network: no unfused downsample (fswinds" + std::to_string(C) +
+                                             "), the fused one only (drop --ds-tok-raster)");
                 disp.push_back(std::move(dg));
                 continue;
             }

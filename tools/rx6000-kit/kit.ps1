@@ -158,13 +158,12 @@ function PipeRows($path) {
 # 3. Every RDNA2 pipeline compiled once, each in its own process with a time limit.
 $pipesOk = $false
 if (-not $notRdna2) {
-    # The emulated pipelines no model dispatches ($Unused) are left to the runtime's own check in the first run.
     Write-Host '[3/7] Compiling every shader once (each in its own process; the first time takes a few minutes)...'
     $env:PIPECHECK_COOP = '0'; $env:PIPECHECK_TIMEOUT_S = '300'; $env:PIPECHECK_BUDGET_S = '900'
     $pc = Join-Path $result 'pipecheck.txt'
     $all = @(Get-ChildItem -LiteralPath (Join-Path $files 'dlssnr-amd\shaders-rdna2'), (Join-Path $files 'dlssnr-amd\shaders\renodx') `
         -Recurse -Filter *.spv | Sort-Object FullName)
-    $list = ($all | Where-Object { $Unused -notcontains $_.Name } | ForEach-Object { '"' + $_.FullName.Substring($files.Length + 1) + '"' }) -join ' '
+    $list = ($all | ForEach-Object { '"' + $_.FullName.Substring($files.Length + 1) + '"' }) -join ' '
     $code = Run 'pipecheck.exe' $list $pc 22
     Remove-Item Env:PIPECHECK_COOP, Env:PIPECHECK_TIMEOUT_S, Env:PIPECHECK_BUDGET_S -ErrorAction SilentlyContinue
     $rows = @(PipeRows $pc)
@@ -278,7 +277,7 @@ if ($run) {
             if (-not $r.ok -and $wasFirst -and $r.check -match 'check failed|never finished' -and -not $baseEnv.ContainsKey('MZ_RDNA2_CHECK')) {
                 # The runtime's own check refused a pipeline (in a game the network stays off): once more without it.
                 Line "WARN the runtime's pipeline check keeps the network off: $($r.check); the runs below skip it (MZ_RDNA2_CHECK=0)"
-                $script:unusedBad = $true
+                $script:checkBad = $true
                 $baseEnv['MZ_RDNA2_CHECK'] = '0'
                 $script:first = $true
                 $wasFirst = $true
@@ -418,7 +417,7 @@ $short.Add("Card: $card")
 if ($notRdna2) { $short.Add('This card would not use the RX 6000 network, so the network was not tested. Please tell us which card this is.') }
 else {
     $short.Add("Shaders compile: $(if ($pipesOk) { 'yes, all' } else { 'NO (see the pipelines lines)' })")
-    if ($script:unusedBad) { $short.Add('The runtime''s own shader check failed (see WARN): in a game the network would stay off') }
+    if ($script:checkBad) { $short.Add('The runtime''s own shader check failed (see WARN): in a game the network would stay off') }
     if ($run) {
         $short.Add("Picture right (40 dB or more against an RX 9070 XT): $(if ($pass.Count) { $pass -join ', ' } else { 'none' })")
         $short.Add("Picture wrong or failed: $(if ($fail.Count) { $fail -join ', ' } else { 'none' })")
