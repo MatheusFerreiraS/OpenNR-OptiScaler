@@ -16,6 +16,8 @@ four-wide (windows/build/quad_quant_glsl.py; --no-quad keeps them; it also drops
 round trips RADV deletes anyway, NR_Q32_DIRECT=0 in the environment keeps them), fully unrolled
 (windows/build/unroll_glsl.py) and compiled from the result.
 
+--tree linux builds linux/shaders/<arch> (the RDNA3 network, from mauri870/DLSSNR-RDNA3) the same way, for LLPC.
+
 The host must be compiled with the same constants: windows/build/arch/<arch>.sh.
 --check DIR compares every network SPV and marker with DIR byte for byte and
 lists the differences (exit 1 if any).
@@ -36,6 +38,7 @@ MOTION = ['motion_luma', 'motion_estimate']
 
 
 QUAD = True   # --no-quad: the pair loops as written (A/B)
+SHADERS = R / 'windows/shaders'   # --tree linux: linux/shaders, for the RDNA3 network
 # The sources whose pipelines are unrolled (unroll_glsl.py) before glslang: fswin_t (LLPC spills the arrays its rolled
 # loops index), and ffwd3_t, attn and vit_attn, so that no loop indexes an array of cooperative matrices with its
 # loop variable.
@@ -45,7 +48,7 @@ UNROLLED = {'fswin_t.comp', 'ffwd3_t.comp', 'attn.comp', 'vit_attn.comp'}
 def glslang(arch, src, defines, out, unroll=False, network=False):
     if unroll or (network and QUAD):
         pre = out.with_suffix('.pre.comp')
-        r = subprocess.run([str(R / 'toolchain/glslang/bin/glslang'), '-E', '-I' + str(R / 'windows/shaders' / arch / 'include'),
+        r = subprocess.run([str(R / 'toolchain/glslang/bin/glslang'), '-E', '-I' + str(SHADERS / arch / 'include'),
                             '-I' + str(R / 'windows/shaders/passes/include')] + ['-D' + d for d in defines] + [str(src)],
                            capture_output=True, text=True)
         if r.returncode:
@@ -59,7 +62,7 @@ def glslang(arch, src, defines, out, unroll=False, network=False):
                            check=True, stdout=subprocess.DEVNULL)
         src, defines = pre, []
     cmd = [str(R / 'toolchain/glslang/bin/glslang'), '-V', '--target-env', 'vulkan1.3',
-           '-I' + str(R / 'windows/shaders' / arch / 'include'), '-I' + str(R / 'windows/shaders/passes/include')]
+           '-I' + str(SHADERS / arch / 'include'), '-I' + str(R / 'windows/shaders/passes/include')]
     cmd += ['-D' + d for d in defines] + [str(src), '-o', str(out)]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
@@ -77,10 +80,13 @@ def main():
     ap.add_argument('--check', type=Path)
     ap.add_argument('--no-quad', action='store_true',
                     help='keep the pair quantisation loops (windows/build/quad_quant_glsl.py off)')
+    ap.add_argument('--tree', choices=['windows', 'linux'], default='windows',
+                    help='linux: the network of linux/shaders/<arch> (RDNA3), preprocessed the same way')
     a = ap.parse_args()
-    global QUAD
+    global QUAD, SHADERS
     QUAD = not a.no_quad
-    table = json.loads((R / 'windows/shaders' / a.arch / 'pipelines.json').read_text())
+    SHADERS = R / a.tree / 'shaders'
+    table = json.loads((SHADERS / a.arch / 'pipelines.json').read_text())
     out = a.out or R / 'build/windows' / a.arch / 'network'
     if out.exists():
         shutil.rmtree(out)
@@ -88,7 +94,7 @@ def main():
 
     pipelines = table['pipelines']
     for name, e in pipelines.items():
-        glslang(a.arch, R / 'windows/shaders' / a.arch / e['source'], e['defines'] + a.define, out / f'g_{name}.spv',
+        glslang(a.arch, SHADERS / a.arch / e['source'], e['defines'] + a.define, out / f'g_{name}.spv',
                 unroll=e['source'] in UNROLLED, network=True)
     for name, text in table['markers'].items():
         (out / name).write_text('\n'.join(text) + '\n' if isinstance(text, list) else text + '\n')
@@ -96,16 +102,16 @@ def main():
     (out / 'temporal').mkdir()
     for name, v in table['variants'].items():
         base = pipelines[v['base']]
-        glslang(a.arch, R / 'windows/shaders' / a.arch / base['source'], base['defines'] + v['add'],
+        glslang(a.arch, SHADERS / a.arch / base['source'], base['defines'] + v['add'],
                 out / 'temporal' / f'{name}.spv', unroll=base['source'] in UNROLLED, network=True)
     grade = table['style_grade']
     for name in grade['pipelines']:
         e = pipelines[name]
-        glslang(a.arch, R / 'windows/shaders' / a.arch / e['source'], e['defines'] + a.define + grade['add'],
+        glslang(a.arch, SHADERS / a.arch / e['source'], e['defines'] + a.define + grade['add'],
                 out / f'g_{name}_grade.spv', unroll=e['source'] in UNROLLED, network=True)
     for name in grade['variants']:
         base = pipelines[table['variants'][name]['base']]
-        glslang(a.arch, R / 'windows/shaders' / a.arch / base['source'],
+        glslang(a.arch, SHADERS / a.arch / base['source'],
                 base['defines'] + table['variants'][name]['add'] + grade['add'], out / 'temporal' / f'{name}_grade.spv',
                 unroll=base['source'] in UNROLLED, network=True)
     for k in MOTION:

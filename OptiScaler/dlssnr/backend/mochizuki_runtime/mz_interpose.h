@@ -28,8 +28,10 @@ class Capture
 {
   public:
     // root: the runtime's folder, the core's RuntimeConfig::root. Everything is off without root\dlssnr-amd (the
-    // core's development layout, which keeps its pipeline cache elsewhere).
-    Capture(VkDevice device, VkPhysicalDevice physical, const std::wstring& root) noexcept;
+    // core's development layout, which keeps its pipeline cache elsewhere). variant: L"-rdna3" for the RDNA3
+    // network, whose files are shaders-rdna3, pipeline-rdna3.cache and prewarm\manifest-rdna3.txt.
+    Capture(VkDevice device, VkPhysicalDevice physical, const std::wstring& root,
+            const std::wstring& variant = L"") noexcept;
     ~Capture();
     Capture(const Capture&) = delete;
     Capture& operator=(const Capture&) = delete;

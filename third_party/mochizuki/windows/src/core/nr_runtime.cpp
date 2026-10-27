@@ -115,7 +115,9 @@ void dispatch(VkCommandBuffer cmd, const nrvk::Kernel& k, uint32_t x, uint32_t y
 
 // Another descriptor set for a kernel's layout, over other resources: buffers
 // first, then images in binding order, exactly as nrvk::Kernel::create writes
-// its own (a sampler makes a combined image sampler, none a storage image).
+// its own (a sampler makes a combined image sampler, none a storage image). The e4m3 bindings
+// read the FP16 twin of their arena and the alias bindings the arena itself, as `create` binds
+// them (RDNA3); a set that skipped this made the kernel treat a byte arena as FP16.
 VkDescriptorSet kernel_set(VkDevice device, VkDescriptorPool pool, const nrvk::Kernel& k,
                            const std::vector<VkBuffer>& buffers,
                            const std::vector<const nrvk::Context::Image*>& images) {
@@ -124,11 +126,21 @@ VkDescriptorSet kernel_set(VkDevice device, VkDescriptorPool pool, const nrvk::K
     VkDescriptorSet set{};
     if (vkAllocateDescriptorSets(device, &ai, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
     const uint32_t nb = uint32_t(buffers.size()), ni = uint32_t(images.size());
-    std::vector<VkDescriptorBufferInfo> bi(nb);
+    std::vector<VkBuffer> bound(buffers);
+    if (k.twin_map && !k.twin_map->empty())
+        for (uint32_t b : k.twin_bindings) {
+            const auto twin = b < nb ? k.twin_map->find(buffers[b]) : k.twin_map->end();
+            if (twin != k.twin_map->end()) bound[b] = twin->second;
+        }
+    std::vector<uint32_t> alias_slots;
+    for (uint32_t a : k.alias_bindings)
+        if (a >= nrvk::Kernel::kAliasBase && a - nrvk::Kernel::kAliasBase < nb) alias_slots.push_back(a);
+    const uint32_t na = uint32_t(alias_slots.size());
+    std::vector<VkDescriptorBufferInfo> bi(nb + na);
     std::vector<VkDescriptorImageInfo> ii(ni);
-    std::vector<VkWriteDescriptorSet> w(nb + ni);
+    std::vector<VkWriteDescriptorSet> w(nb + ni + na);
     for (uint32_t i = 0; i < nb; ++i) {
-        bi[i] = {buffers[i], 0, VK_WHOLE_SIZE};
+        bi[i] = {bound[i], 0, VK_WHOLE_SIZE};
         w[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         w[i].dstSet = set; w[i].dstBinding = i; w[i].descriptorCount = 1;
         w[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[i].pBufferInfo = &bi[i];
@@ -141,7 +153,13 @@ VkDescriptorSet kernel_set(VkDevice device, VkDescriptorPool pool, const nrvk::K
                                                       : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         w[nb + i].pImageInfo = &ii[i];
     }
-    vkUpdateDescriptorSets(device, nb + ni, w.data(), 0, nullptr);
+    for (uint32_t i = 0; i < na; ++i) {
+        bi[nb + i] = {buffers[alias_slots[i] - nrvk::Kernel::kAliasBase], 0, VK_WHOLE_SIZE};
+        w[nb + ni + i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w[nb + ni + i].dstSet = set; w[nb + ni + i].dstBinding = alias_slots[i]; w[nb + ni + i].descriptorCount = 1;
+        w[nb + ni + i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[nb + ni + i].pBufferInfo = &bi[nb + i];
+    }
+    vkUpdateDescriptorSets(device, nb + ni + na, w.data(), 0, nullptr);
     return set;
 }
 
@@ -1249,8 +1267,12 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
     // was not (a game's device made before we could add them) builds with the driver's compiler.
     if (!nr::binary::directory().empty() && !nr::binary::enabled(host.device))
         nr::binary::disable("the device was created without pipeline binaries");
+    // The RDNA3 network runs only gfx11 records (the host's dlssnr-amd/aco-gfx11, none yet), never RDNA4's.
+    if (config.rdna3 && !nr::binary::directory().empty() &&
+        std::filesystem::path(nr::binary::directory()).filename() != "aco-gfx11")
+        nr::binary::disable("the RDNA3 network has no ACO records");
     const std::string aco = nr::binary::directory();
-    const auto native_shaders = installed ? data / "shaders" : root / "build";
+    const auto native_shaders = installed ? data / (config.rdna3 ? "shaders-rdna3" : "shaders") : root / "build";
     const auto network_shaders = !aco.empty() ? std::filesystem::path(aco) / "shaders" : native_shaders;
     // Shaders are read from inside the NR root, or from the ACO bundle when one is in use.
     const auto inside = [&](const std::filesystem::path& p) {
@@ -1352,6 +1374,7 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
     if (transfer != Transfer::Identical && !(props[host.queue_family].queueFlags & VK_QUEUE_GRAPHICS_BIT))
         throw std::invalid_argument("NR colour format conversion requires a graphics-capable queue");
     std::string why;
+    s.ctx.rdna3 = config.rdna3;
     if (!s.ctx.adopt(host.instance, host.physical, host.device, host.queue, host.queue_family, &why))
         throw std::runtime_error("NR device unsupported: " + why);
     s.ctx.queue_lock = host.queue_lock; s.ctx.queue_unlock = host.queue_unlock;
@@ -1454,7 +1477,7 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
         "--spv-dir", network_shaders.string(),
         "--host-boundary", arena_reuse() ? "--reuse" : "--no-reuse", "--source-width", std::to_string(mw),
         "--source-height", std::to_string(mh), "--accumulation", config.accumulation,
-        "--pipeline-cache", (installed ? data / "pipeline.cache" : root / "dlssnr-amd.pipelinecache").string()};
+        "--pipeline-cache", (installed ? data / (config.rdna3 ? "pipeline-rdna3.cache" : "pipeline.cache") : root / "dlssnr-amd.pipelinecache").string()};
 #if NR_INT4
     if (int4)   // the int4 network: its own shaders and its own pipeline cache
         for (size_t i = 0; i + 1 < arguments.size(); ++i) {
@@ -1871,7 +1894,7 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
         // The temporal pre/post blocks are network kernels: the ACO bundle's own SPIR-V when it is in use.
         auto shaders = std::filesystem::canonical(temporal_config.shaders.empty()
             ? (!aco.empty() ? std::filesystem::path(aco) / "shaders/temporal"
-               : installed ? data / "shaders/temporal" : root / "build/windows/rdna4/network/temporal")
+               : installed ? native_shaders / "temporal" : root / "build/windows/rdna4/network/temporal")
             : std::filesystem::path(temporal_config.shaders));
 #if NR_INT4
         // The int4 network's temporal pre/post variants are built with its defines (hard-swish, whose scale
@@ -2263,6 +2286,10 @@ static bool adopt_for(nrvk::Context& ctx, const HostDevice& host) {
 bool download_network_weights(const HostDevice& host, const RuntimeCore& core, std::vector<uint8_t>& out) {
     const GraphArenas* a = core.slot ? core.slot.get() : core.graph ? core.graph->arenas.get() : nullptr;
     if (!a || !a->wgt.handle || !a->weights_end) return false;
+    if (a->wgt_twin.handle) {   // the FP16 twins would have to go and come back with it
+        nr::logf("[nr] the RDNA3 network stays in VRAM (not offloaded)");
+        return false;
+    }
     nrvk::Context ctx;
     if (!adopt_for(ctx, host)) return false;
     try {

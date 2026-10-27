@@ -15,7 +15,9 @@ contains break/return at its own level, and the trip count is at most --max-trip
 `continue` (which then ends its own copy), and the copies sit in one more block, since the loop can be
 the unbraced body of an `if`. Inner loops are unrolled first; in each copy, the loops left whose headers
 use V get V's value written in and are tried again. `.length()` of a 16x16 subgroup cooperative matrix
-is written as 8 everywhere (8 components a lane at the subgroup size 32 the runtime requires).
+is written as 8 everywhere (8 components a lane at the subgroup size 32 the runtime requires; in the
+RDNA3 network only accumulators ask). `[[dont_unroll]]` is dropped and its loop unrolled like the rest: the
+RDNA3 network keeps a few loops rolled for RADV's register count, and LLPC crashes on them (driver 26.9.2).
 """
 import argparse
 import re
@@ -196,7 +198,7 @@ def main():
     ap.add_argument('--private-index', action='store_true',
                     help='only unroll loops whose variable indexes a local (non-buffer, non-shared) array')
     a = ap.parse_args()
-    text = open(a.src).read()
+    text = re.sub(r'\[\[\s*dont_unroll\s*\]\]', '', open(a.src).read())
     global PRIVATE_ONLY
     PRIVATE_ONLY = a.private_index
     # buffer block members declared as arrays, and shared arrays

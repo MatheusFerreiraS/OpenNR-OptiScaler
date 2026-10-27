@@ -23,6 +23,7 @@ Only what the runtime build reads, at the upstream paths:
 | `windows/build/build_network.py`, `unroll_glsl.py`, `quad_quant_glsl.py` | GLSL to SPIR-V, the upstream way |
 | `windows/build/arch/rdna4.sh` | the constants host and shaders share; `tools/build-mochizuki-runtime.cmd` repeats them |
 | `linux/package/model-tools/` | makes `dlssnr.bin` from a user's `nvngx_dlssnr.dll` 310.8.0 |
+| `linux/shaders/rdna3/`, `linux/build/arch/rdna3.sh`, `LICENSE-rdna3` | the RDNA3 network, from mauri870/DLSSNR-RDNA3 (see RDNA3) |
 
 Since v0.0.5 `windows/src/core/` also holds upstream's RenoDX stage (`nr_renodx.*`, `renodx/`), int4 mixed
 (`nr_ini_int4.hpp`, `NR_INT4`) and ACO pipeline binaries (`nr_pipeline_binary.hpp`, `nr_pal_binary.hpp`). All three
@@ -240,12 +241,123 @@ stage's; the runtime still runs the network on its own for a host that sends 0.
 Harness, RX 9070 XT, 1080p RGBA16F, ACO, pan 8 px a frame, wall time a frame with a full wait (not GPU time): off
 31.4 ms, RenoDX 1 / 2 / 6 passes 31.8 / 36.2 / 61.3 ms; the SDR path (R10G10B10A2, legacy codec) runs too.
 
+## RDNA3 (RX 7000, no FP8)
+
+The same network on gfx11, from mauri870/DLSSNR-RDNA3 (branch `rdna3`, a fork of upstream at `939b607`):
+
+- Source: https://github.com/mauri870/DLSSNR-RDNA3
+- Pinned commit: `aa392284` (2026-10-16)
+- Licence: MIT, `LICENSE-rdna3` beside this file (the fork's own file; the notice is upstream's)
+
+Every e4m3 value is held as FP16 and multiplied in the FP16 x FP16 -> FP32 16x16x16 WMMA, the e4m3 rounding done in
+ALU (the fork's `README-RDNA3.md`). Its kernels assume the gfx11 fragment layout the fork measured on RADV: an
+accumulator component `c` of lane `l` is element `(2c + l/16, l % 16)`, an A or B fragment holds sixteen components a
+lane, and the WMMA computes row `m` from lane half `m % 2` alone (`kswap` below).
+
+Taken: `linux/shaders/rdna3/` (without `pipelines-int4.json`) and `linux/build/arch/rdna3.sh`, as the fork has them
+but for local patch 12; and the fork's host changes to `linux/src/core` (7c6361d, 767911f, eecb894, 612b0ba), ported
+into `windows/src/core` as local patch 13:
+- `nrvk.hpp`: the FP16 matrix configuration instead of FP8, no float8 features on `adopt`; an FP16 twin of the
+  activation and weight arenas (`Context::fp16_twin`), bound by `Kernel::create` to every binding whose block holds
+  e4m3 data (found by block name, `e4m3_view_bindings`); alias bindings `16 + k` get the arena itself (raw 32-bit
+  views: tile counters, sync words, scales); the runner zeroes the activation twin with the arena.
+- `nr_graph.cpp`: the twins allocated beside the arenas, the weight twin uploaded as FP16 decodes of the e4m3 bytes;
+  the grouped FFN tiles packed in pairs but plain `[row][k]` (`plain_tiles`); the fused Swin weight tiles left plain,
+  with the odd rows of the tiles that meet register-built operands k-pair swapped (`kswap` in
+  `shader-constants.txt`, also accepted by `nr_shader_manifest.hpp`).
+- `nr_runtime.cpp` `kernel_set`: a second descriptor set binds twins and aliases as `create` does.
+
+Left out: the fork's int4 mixed for gfx11 (its pipelines, the `iu4` rewrite of `v_wmma_i32_16x16x16_iu4` through
+RADV's pipeline binaries), temporal reuse (`runtime_reuse_*`, `Controls::reuse_every`), the edit gain below 100% model
+scale in `runtime_transfer.comp` (32f3b1c, it changes the RDNA4 picture), `--value-stats`, `linux/test/`,
+`linux/src/pe/`, packaging and docs. `nr_device_features.hpp` (the Vulkan layer's) is not in the DLL.
+
+Local patches:
+
+12. `linux/shaders/rdna3/pipelines.json`: `NR_EDGE_BODIES=0` on its seven persistent runs (`fswinp256`, `fswinpds*`,
+    `fswinpup*`), as local patch 2 does for RDNA4. With the edge bodies LLPC (AMD Software 26.9.2) crashes on
+    `fswinp256`.
+13. One DLL for both networks: the fork's compile-time `NR_ARCH_RDNA3` is `RuntimeConfig::rdna3` and
+    `Context::rdna3` (set before `adopt`, and on the arena probe's session). With it the core reads
+    `dlssnr-amd/shaders-rdna3/` and `pipeline-rdna3.cache`, turns ACO off, and the graph build takes the Linux
+    network's kernel set (`linux_network()`, as ACO's: tile counters on the ViT, decoder and encoder kernels,
+    `gemmprojc`, `fswin32` as the frame tick, the N-pair attention weights). The Linux network's push blocks have no
+    arena address, so `gemm*` and `vitattn` push the Windows block without it (`aco_push_gap`, as ACO int4 does).
+    The twins are destroyed with the arenas (the fork's runtime never frees them). The defines of `rdna3.sh` are
+    `rdna4.sh`'s and `NR_ARCH_RDNA3=1`, so the core is compiled once, with `rdna4.sh`'s. Without `rdna3` every new
+    branch is off: the RDNA4 network's SPIR-V is byte-identical and so is its output (harness, 720p, 1080p, 4K).
+14. The build: `windows/build/build_network.py rdna3 --tree linux --no-quad` (new `--tree`), the Windows build's
+    preprocessing and unroll applied to `linux/shaders/rdna3`; LLPC crashes on the fork's rolled loops (most fswin,
+    ffwd3, attn and temporal post pipelines, as it does on the Linux RDNA4 network). `unroll_glsl.py` drops
+    `[[dont_unroll]]` (`NR_EXPAND_HLOOP`, `NR_EXPAND_KLOOP`, kept rolled for RADV's register count), on which LLPC
+    crashes too; no RDNA4 source has one. Its `.length()` = 8 is right here: only accumulators ask. No four-wide
+    quantisation (`quad_quant_glsl.py` is written for the FP8 pair loops). So the SPIR-V is not the fork's; built
+    plainly (`linux/build/build_network.py rdna3`, the same script, glslang and defines as the fork's
+    `build_network.py rdna3`) it would be, and that build crashes LLPC.
+15. v0.0.7's shared network memory (`GraphAct`, `GraphArenas`, the resize path's `GraphStaging`): the twins live with
+    the memory they shadow, not in the session. A `GraphAct` holds the activation twin (twice `cap`) and is freed
+    with it, so a network that takes over another's arena (`RuntimeConfig::act_arena`) uses that arena's twin;
+    `GraphArenas::wgt_twin` is the weight twin (twice `wgt_cap`), `GraphStaging::twin` the plan's tail as FP16.
+    `retarget` zeroes the activation twin with the arena and copies the tail's twin with the tail; `build_shared`
+    binds the slot's twins. The pipeline-sharing key (`nrvk::SharedPipeline`) also names the alias bindings. An RDNA3
+    network is never offloaded (`download_network_weights` refuses it: the twins would have to go and come back).
+16. The Style grade on RDNA3: `linux/shaders/rdna3/fswin_t.comp` takes v0.0.7's `NR_STYLE_GRADE` hook as upstream put
+    it in `linux/shaders/rdna4/fswin_t.comp` (same lines), `include/nr_style_grade.glsl` is copied from rdna4 (plain
+    f32 ALU), and `pipelines.json` has rdna4's `style_grade` table (`fswinimagepost32`, the three `temporal_post_fp32*`
+    variants). The RDNA4 `_grade` SPIR-V cannot serve RDNA3: each is the whole post block, FP8 matrices included.
+    The RDNA3 ones declare no Float8 capability. On the forced RX 9070 XT Natural runs and differs from Standard.
+17. The ACO slot for RDNA3: `nr_pal_binary.hpp` names the code objects it takes (`takes_machine`: gfx1200 and
+    gfx1201, as before) so the host can ask before it would take gfx11 records, and `nr_runtime.cpp` lets an RDNA3
+    network run ACO only from a bundle named `aco-gfx11` (never RDNA4's records). No gfx11 records exist yet.
+
+The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
+OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;
+VK_EXT_shader_float8 and its features are then neither required nor enabled. A device 0x75xx (RX 9000) without FP8 is
+refused as before. A device with FP8 is preferred over one without on the same adapter. `MZ_FORCE_RDNA3=1` takes the
+RDNA3 network on any card. ACO and int4 mixed are off with it. The prewarm uses `shaders-rdna3`,
+`pipeline-rdna3.cache` and `prewarm\manifest-rdna3.txt`. The log says which network and why:
+`[mochizuki] the RDNA3 network, on FP16 matrices: <reason>` or `[mochizuki] the FP8 network (VK_EXT_shader_float8)`.
+The VRAM check adds the twins (336 MB and 384 bytes a model pixel).
+
+Before the RDNA3 network runs, the host checks the device (`OptiScaler/dlssnr/backend/mochizuki_runtime/mz_rdna3.cpp`),
+and either check failing keeps NR off with the reason (`[mochizuki] RDNA3 network off: ...`, shown on the menu's
+mochizuki page). Both verdicts are kept in `dlssnr-amd\rdna3-check.txt` by device id and driver version (the
+pipelines' also by the names and sizes of the shader files), so each runs once a driver:
+- the layout probes of the RX 7000 kit (`rdna3_probe/*.comp`, embedded as SPIR-V): accumulator f32 and f16 maps, A and
+  B with 16 components a lane, the lane-half rule and the k-pair swap, as tiny dispatches on the network's own device
+  at the session's start (124 ms on the RX 9070 XT). A failure is the adapter's `[unsupported]` reason;
+- every pipeline of `shaders-rdna3` and `shaders\renodx` (99) compiled in a child process (`rundll32` on the DLL's
+  `MochizukiNrPipelineCheck` entry) on the builder thread before its locks, at below-normal priority on up to 8
+  threads, 300 s without progress counting as a hang. A crash with several pipelines in flight runs each of them
+  again alone to name it. The child's AMD driver cache is its own (per executable), so it warms nothing for the game:
+  on the RX 9070 XT the check took 12.3 s cold, then the network's own cold build 15.7 s.
+`MZ_RDNA3_CHECK=0` skips both, `=pipelines` the probes only (with `MZ_FORCE_RDNA3=1` on an RX 9000, whose layout
+fails the probes); the hooks `MZ_TEST_RDNA3_COMPILE_CRASH=<file>`, `MZ_TEST_RDNA3_COMPILE_HANG=<file>` and
+`MZ_TEST_RDNA3_TIMEOUT_MS` test the child's paths.
+
+ACO for the RDNA3 network: with ACO asked for, the host looks for `dlssnr-amd\aco-gfx11\` laid out as `aco\`
+(`records\` named by the hash of the SPIR-V in `shaders\`, which `linux/build/build_network.py rdna3` makes, and an
+optional `shell\` and `shell-aliases.txt`) and takes it when the PAL adapter takes the GPU's code objects (gfx1100
+0x41, gfx1101 0x46, gfx1102 0x47 by device id); otherwise `[mochizuki] ACO off for the RDNA3 network: no gfx11 ACO
+records ...` or `... the PAL adapter takes gfx1200/gfx1201 code objects only`, and the driver compiles
+`shaders-rdna3`. To plug mochizuki0323's records in: the gfx11 code objects in `aco-gfx11\records\`, the SPIR-V they
+were made from in `aco-gfx11\shaders\` (+ `temporal\`), `nr::pal::takes_machine` and the PAL adapter's
+register/user-data handling extended to gfx11, and the pipeline check then run on the template shaders the records go
+into.
+
+On an RX 9070 XT with `MZ_FORCE_RDNA3=1` (driver 26.9.2) every pipeline compiles, the network builds (16 s cold at
+1080p) and runs at 720p, 1080p and 4K without errors; the picture is wrong, as gfx12's fragment layout is not gfx11's.
+Nothing has run on an RX 7000 yet. After the v0.0.7 merge (2026-10-19): the RDNA4 network's SPIR-V is byte-identical
+to the main branch's build and so is its output (harness, 1080p, both models, Standard and Natural); forced RDNA3
+builds in 16.2 s cold at 1080p and runs both models.
+
 ## Build
 
 `tools\build-mochizuki-runtime.cmd [out]` from an MSVC developer prompt, with the Vulkan SDK 1.4.357 or newer
 (`VULKAN_SDK`) and Python. It downloads glslang 16.5.0, the version the upstream SPIR-V is pinned to, and Slang
 2026.19 (SHA-256 checked, for the RenoDX shaders) into `toolchain\` here, and writes `MochizukiNrRuntime.dll` and
-`dlssnr-amd\shaders\` (with `renodx\`) to `out` (default `exports\mochizuki-runtime`).
+`dlssnr-amd\shaders\` (with `renodx\`) and `dlssnr-amd\shaders-rdna3\` (53 network, 11 temporal, 15 runtime) to
+`out` (default `exports\mochizuki-runtime`).
 
 The shader folder has 55 network, 6 temporal and 15 runtime pipelines (v0.0.7 and the local passes;
 `runtime\FidelityFX-FSR1-LICENSE.txt` beside the FSR 1 EASU in `runtime_upscale`), 103 files. The prewarm list

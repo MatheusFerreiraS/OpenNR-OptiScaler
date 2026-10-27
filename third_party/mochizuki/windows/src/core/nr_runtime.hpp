@@ -264,6 +264,11 @@ struct RuntimeConfig {
     // beyond this build's need, for other networks to fit.
     std::shared_ptr<ActArenaRef> act_arena;
     double act_slack = 1.0;
+    // The RDNA3 network (local patch, mauri870/DLSSNR-RDNA3): for a device without FP8 that has the
+    // FP16 x FP16 -> FP32 16x16x16 subgroup matrices. The e4m3 values are held as FP16 (twin
+    // arenas), its shaders are dlssnr-amd/shaders-rdna3 and its cache pipeline-rdna3.cache. No ACO,
+    // no int4 mixed.
+    bool rdna3 = false;
 };
 
 // A build on this thread stops before its next pipeline once *build_cancel is
