@@ -2258,7 +2258,12 @@ shared NR_F16 ups_projected[NR_C*16];
 #define NR_ACTIVATION_LUT_SHIFT 4
 #endif
 #define NR_ACTIVATION_LUT_SIZE (1u << (16u-NR_ACTIVATION_LUT_SHIFT))
-#if NR_HWAVES
+#ifndef NR_NATIVE
+#define NR_NATIVE 0
+#endif
+#if NR_NATIVE
+// NR_NATIVE: the RDNA2 body of include/fswin_native.glsl, which declares its own LDS (as blocks, so nothing here).
+#elif NR_HWAVES
 // Two exchange buffers, both [token tile][channel fragment][256 B] - the arena's
 // own tile-blocked layout, so a fragment is one NR_STORE_ACC_COL out and one
 // NR_LOAD_B back, at the same addresses the register form used.
@@ -2853,6 +2858,9 @@ shared float nr_bl[NR_WIN * NR_WIN];
 #define NR_WKB
 #define NR_BODY_BARRIER() barrier()
 #endif
+#if NR_NATIVE
+#include "fswin_native.glsl"
+#else
 #if NR_WPW > 1
 void nr_wpw_window() {
 #else
@@ -3829,3 +3837,4 @@ void main() {
     }
 }
 #endif
+#endif  // NR_NATIVE
