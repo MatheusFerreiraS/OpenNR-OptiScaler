@@ -52,7 +52,17 @@
 #if NR_FFWD_WGW != 1 && NR_FFWD_WGW != 2 && NR_FFWD_WGW != 4 && NR_FFWD_WGW != 8
 #error "NR_FFWD_WGW must divide the eight groups"
 #endif
+#ifndef NR_NATIVE
+#define NR_NATIVE 0
+#endif
+#if NR_NATIVE && !defined(NR_FFWD_FM)
+#define NR_FFWD_FM 1
+#endif
+#if NR_NATIVE
+layout(local_size_x = 16 * NR_FFWD_WGW * NR_FFWD_FM) in;   // NR_NATIVE: include/ffwd_native.glsl, a lane a token
+#else
 layout(local_size_x = 32 * NR_FFWD_WGW) in;
+#endif
 layout(binding = 0, std430) NR_COH buffer ActF16 {
     NR_F16 act_f16[];
 };
@@ -223,6 +233,10 @@ shared NR_E4M3 nr_ffwd_xchg[NR_FFWD_WGW * NR_FFWD_XSLOTS * 256];
 #if !(NR_FFWD_KOFF && NR_FFWD_PACK && NR_FFWD_PAIR) || NR_FFWD_F32
 #error "NR_FFWD_FM=2: the packed, paired, k-offset path only"
 #endif
+#if NR_NATIVE
+// NR_NATIVE: the RDNA2 body of include/ffwd_native.glsl (its own main).
+#include "ffwd_native.glsl"
+#else
 #define S1_K2(i)                                                                                   \
     {                                                                                              \
         NR_FRAG_B x[2];                                                                            \
@@ -321,6 +335,7 @@ void main() {
     nr_tchain_signal_wave(tok / 16u, second ? 2u : 1u)
     NR_PROF_END(pc.o_off)
 }
+#endif  // NR_NATIVE
 #elif NR_FFWD_FM == 4
 // NR_FFWD_FM=4: one subgroup, one group, FOUR 16-token tiles - every weight
 // fragment feeds four MMAs. The hidden runs in 32-wide chunks so acc3[4][NR_FFWD_TPW] and
@@ -531,6 +546,9 @@ void main() {
     if (hh == 0u && v0) nr_tchain_signal_wave(tok / 16u, v1 ? 2u : 1u)
     NR_PROF_END(pc.o_off)
 }
+#elif NR_NATIVE
+// NR_NATIVE: the RDNA2 body of include/ffwd_native.glsl (its own main).
+#include "ffwd_native.glsl"
 #else
 void main() {
     NR_PROF_BEGIN()
