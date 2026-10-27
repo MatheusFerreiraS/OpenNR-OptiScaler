@@ -4,8 +4,9 @@ Worktree `wt-rdna2`, branch `mochizuki-rdna2`, local commit only (nothing pushed
 touched). Plan section 9 item 6. Clean room kept: the GPL RDNA2 port was not opened, searched or fetched; the kit is
 built from this branch's own export and the RX 7000 kits' tools.
 
-Package: `E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip` (size and SHA-256 in the report of this
-round and in `rx6000-test-kit\SHA256.txt`). One `run-test.bat`, one result zip `OpenNR-RX6000-result-<date>.zip`.
+Package: `E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip`, 26,472,634 bytes (25.2 MB, 140 files,
+models not included), SHA-256 `B04167F271A9BA5FF2F5EBFF0447B95D89A032FD7B444DB7CAC25D109D9B5DDB` (also in
+`rx6000-test-kit\SHA256.txt`). One `run-test.bat`, one result zip `OpenNR-RX6000-result-<date>.zip`.
 
 ## What it runs (files\kit.ps1, cases in files\cases.ps1)
 
