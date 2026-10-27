@@ -53,19 +53,26 @@
 #else
 #define NV_UPS 0
 #endif
+#if defined(NR_FUSED_UPS_BLEND) && defined(NR_FUSED_UPS_PROJECT) && !NR_HWAVES && defined(NR_INPUT_F16) && \
+    NR_UPS_BLEND_PK == 1 && !NR_UPS_KOUTER && !NR_UPS_SPF && !defined(NR_WIDE_UPS_PROJECT)
+#define NV_UPS32 1               // the C = 32 fused upsample: x = g * skip + up in FP16, up projected from the level below
+#else
+#define NV_UPS32 0
+#endif
 #if defined(NR_DS_PROJECT) && defined(NR_POOL_F16) && NR_DS_QPAIR
 #define NV_DS 1                  // the fused downsample: a pooled copy of the output, projected to the level below
 #else
 #define NV_DS 0
 #endif
-#if NR_PERSIST || NR_HEADS != NR_C / 32 || (defined(NR_FUSED_UPS_BLEND) && !NV_UPS) || \
-    (defined(NR_DS_PROJECT) && !NV_DS) || (NV_DS && (!NR_HWAVES || NV_UPS)) || defined(NR_FUSED_UPS_PROJECT) || (defined(NR_WIDE_UPS_PROJECT) && !NV_UPS) || \
+#if NR_PERSIST || NR_HEADS != NR_C / 32 || (defined(NR_FUSED_UPS_BLEND) && !NV_UPS && !NV_UPS32) || \
+    (defined(NR_DS_PROJECT) && !NV_DS) || (NV_DS && (NV_UPS || NV_UPS32)) || (defined(NR_FUSED_UPS_PROJECT) && !NV_UPS32) || \
+    (defined(NR_WIDE_UPS_PROJECT) && !NV_UPS) || \
     (NV_PRE && !NV_PRE_IO) || (NV_POST && !NV_POST_IO) || (NV_PRE && NV_POST) || \
-    (!NV_PRE && !NV_POST && (defined(NR_INPUT_F16) || (defined(NR_POOL_F16) && !NV_DS))) || ((NV_PRE || NV_POST) && NR_HWAVES) || \
+    (!NV_PRE && !NV_POST && ((defined(NR_INPUT_F16) && !NV_UPS32) || (defined(NR_POOL_F16) && !NV_DS))) || ((NV_PRE || NV_POST) && NR_HWAVES) || \
     NR_EDGE_BODIES || !NR_BAKED_EXP_BIAS || NR_ACC_F16 != 0 || \
     !NR_RESIDUAL_F32 || NR_QK_SCALE_FAST != 5 || NR_SWIN_BIAS_F16 || NR_WIN != 64 || \
     (NR_HWAVES && NR_TCHAIN) || (!NR_HWAVES && (NR_C != 32 || NR_FWAVES != 2))
-#error "NR_NATIVE: the plain fused Swin bodies (fswin32/32nh/64/128/256), fswinfusedup64/128/256, fswindsp64/128/256 and the pre and post blocks only"
+#error "NR_NATIVE: the fused Swin bodies (fswin, fswinfusedup, fswindsp at every width) and the pre and post blocks only"
 #endif
 
 #define NV_CF (NR_C / 16)        // 16-channel fragments across C
@@ -251,6 +258,60 @@ uvec4 nv_pool8(const float v[8]) {
     for (int p = 0; p < 4; ++p)
         r[p] = packFloat2x16(nr_quant_pair32(vec2(float(sm[2 * p]) * 0.25, float(sm[2 * p + 1]) * 0.25)));
     return r;
+}
+#endif
+
+#if NV_DS
+// The downsample projection of the pooled copy in nv_x4[(c / 8) * 16 + p]: 2C channels at each of the 16 pooled
+// pixels, `rows` a wave in `nb` blocks of 8, one lane a pixel (lanes 16-31 repeat 0-15); the addressing and
+// clearing of the destination are the emulated body's.
+void nv_ds_project(uint lane, uint w, uint rows, int nb) {
+{
+    const uint t = lane & 15u;
+    const int px0 = (2 * int(gl_WorkGroupID.x) + pc.shift) * 2, py0 = (2 * int(gl_WorkGroupID.y) + pc.shift_y) * 2;
+    const int spx_i = px0 + int(t % 4u), spy_i = py0 + int(t / 4u);
+    const bool in_grid = spx_i >= 0 && spy_i >= 0 &&
+        spx_i < int(pc.pool_tiles_x * 4u) && spy_i < int(pc.pool_tiles_y * 4u);
+    const uint spx = uint(max(spx_i, 0)), spy = uint(max(spy_i, 0));
+    const uint writer_rows = pc.ds_writer_rows == 0u ? pc.ds_rows : pc.ds_writer_rows;
+    const bool ds_identity = pc.ds_mode != 2u && pc.ds_raster == pc.ds_crow && writer_rows == pc.ds_rows;
+    for (int b = 0; b < nb; ++b) {
+        const uint row = rows * w + 8u * uint(b);
+        float acc[8];
+        for (int j = 0; j < 8; ++j) acc[j] = 0.0;
+        for (int kf = 0; kf < NV_CF + int(gl_WorkGroupID.z); kf = kf + 1) {
+            const uvec4 x0 = nv_x4[uint(kf) * 32u + t], x1 = nv_x4[uint(kf) * 32u + 16u + t];
+            const uint wb = NV_WROW(pc.ds_w_off, NV_CF, row, kf);
+            for (int j = 0; j < 8; ++j) acc[j] = nv_dot8(acc[j], nv_w4[wb + 2u * uint(j)], nv_w4[wb + 2u * uint(j) + 1u], x0, x1);
+        }
+        float16_t outv[8];
+        for (int j = 0; j < 8; ++j) outv[j] = float16_t(acc[j]);
+        const uint sg = row >> 4u;
+        uint dst_group, sdx, sdy;
+        if (ds_identity) {
+            dst_group = sg; sdx = spx; sdy = spy;
+        } else {
+            const uint linear = pc.ds_mode == 2u ? (sg * pc.ds_rows + spy) * pc.ds_crow + spx
+                : (sg * writer_rows + spy) * pc.ds_raster + spx;
+            dst_group = linear / (pc.ds_crow * pc.ds_rows);
+            const uint pixel = linear % (pc.ds_crow * pc.ds_rows);
+            sdx = pixel % pc.ds_crow; sdy = pixel / pc.ds_crow;
+        }
+        const bool s_oob = (pc.ds_mode != 2u && (spy >= writer_rows || spx >= pc.ds_raster)) ||
+            sdx >= pc.ds_otx * 4u || dst_group >= pc.ds_n / 16u;
+        if (pc.ds_writer_rows != 0u && (sdy >= pc.ds_writer_rows || sdx >= pc.ds_raster))
+            for (int j = 0; j < 8; ++j) outv[j] = float16_t(0.0);
+        if (pc.ds_clear_x != 0u && (sdx >= pc.ds_clear_x || sdy >= pc.ds_clear_y))
+            for (int j = 0; j < 8; ++j) outv[j] = float16_t(0.0);
+        const uint ob = pc.ds_o_off + (((sdy / 4u) * pc.ds_otx + sdx / 4u) * (pc.ds_n / 16u) + dst_group) * 256u
+                        + (4u * (sdy % 4u) + sdx % 4u) * 16u + (row & 15u);
+        if (lane < 16u && in_grid && !s_oob) {
+            uvec4 v;
+            for (int p = 0; p < 4; ++p) v[p] = packFloat2x16(nr_quant_pair(f16vec2(outv[2 * p], outv[2 * p + 1])));
+            nv_a4[ob / 8u] = v;
+        }
+    }
+}
 }
 #endif
 
@@ -454,54 +515,7 @@ void main() {
     }
 #if NV_DS
     barrier();
-    // ---- the downsample projection: 2C channels at each of the 16 pooled pixels, 64 rows a wave, one lane a
-    //      pixel (lanes 16-31 repeat 0-15); its addressing and clearing are the emulated body's ------------------
-    {
-        const uint t = lane & 15u;
-        const int px0 = (2 * int(gl_WorkGroupID.x) + pc.shift) * 2, py0 = (2 * int(gl_WorkGroupID.y) + pc.shift_y) * 2;
-        const int spx_i = px0 + int(t % 4u), spy_i = py0 + int(t / 4u);
-        const bool in_grid = spx_i >= 0 && spy_i >= 0 &&
-            spx_i < int(pc.pool_tiles_x * 4u) && spy_i < int(pc.pool_tiles_y * 4u);
-        const uint spx = uint(max(spx_i, 0)), spy = uint(max(spy_i, 0));
-        const uint writer_rows = pc.ds_writer_rows == 0u ? pc.ds_rows : pc.ds_writer_rows;
-        const bool ds_identity = pc.ds_mode != 2u && pc.ds_raster == pc.ds_crow && writer_rows == pc.ds_rows;
-        for (int b = 0; b < 8; ++b) {
-            const uint row = 64u * w + 8u * uint(b);
-            float acc[8];
-            for (int j = 0; j < 8; ++j) acc[j] = 0.0;
-            for (int kf = 0; kf < NV_CF + nv_opaque; kf = kf + 1) {
-                const uvec4 x0 = nv_x4[uint(kf) * 32u + t], x1 = nv_x4[uint(kf) * 32u + 16u + t];
-                const uint wb = NV_WROW(pc.ds_w_off, NV_CF, row, kf);
-                for (int j = 0; j < 8; ++j) acc[j] = nv_dot8(acc[j], nv_w4[wb + 2u * uint(j)], nv_w4[wb + 2u * uint(j) + 1u], x0, x1);
-            }
-            float16_t outv[8];
-            for (int j = 0; j < 8; ++j) outv[j] = float16_t(acc[j]);
-            const uint sg = row >> 4u;
-            uint dst_group, sdx, sdy;
-            if (ds_identity) {
-                dst_group = sg; sdx = spx; sdy = spy;
-            } else {
-                const uint linear = pc.ds_mode == 2u ? (sg * pc.ds_rows + spy) * pc.ds_crow + spx
-                    : (sg * writer_rows + spy) * pc.ds_raster + spx;
-                dst_group = linear / (pc.ds_crow * pc.ds_rows);
-                const uint pixel = linear % (pc.ds_crow * pc.ds_rows);
-                sdx = pixel % pc.ds_crow; sdy = pixel / pc.ds_crow;
-            }
-            const bool s_oob = (pc.ds_mode != 2u && (spy >= writer_rows || spx >= pc.ds_raster)) ||
-                sdx >= pc.ds_otx * 4u || dst_group >= pc.ds_n / 16u;
-            if (pc.ds_writer_rows != 0u && (sdy >= pc.ds_writer_rows || sdx >= pc.ds_raster))
-                for (int j = 0; j < 8; ++j) outv[j] = float16_t(0.0);
-            if (pc.ds_clear_x != 0u && (sdx >= pc.ds_clear_x || sdy >= pc.ds_clear_y))
-                for (int j = 0; j < 8; ++j) outv[j] = float16_t(0.0);
-            const uint ob = pc.ds_o_off + (((sdy / 4u) * pc.ds_otx + sdx / 4u) * (pc.ds_n / 16u) + dst_group) * 256u
-                            + (4u * (sdy % 4u) + sdx % 4u) * 16u + (row & 15u);
-            if (lane < 16u && in_grid && !s_oob) {
-                uvec4 v;
-                for (int p = 0; p < 4; ++p) v[p] = packFloat2x16(nr_quant_pair(f16vec2(outv[2 * p], outv[2 * p + 1])));
-                nv_a4[ob / 8u] = v;
-            }
-        }
-    }
+    nv_ds_project(lane, w, 64u, 8);
 #endif
 }
 
@@ -526,11 +540,21 @@ void main() {
 void main() {
     const int nv_opaque = int(gl_WorkGroupID.z);
 #if NR_TCHAIN
+    // The tile-counter prologue, as fswin_t.comp's main: the frame tick and, before a fused upsample, the wait
+    // for the four lower-level tiles it gathers.
     NR_TC_PROLOGUE
-    // The frame tick, as the emulated body (fswin_t.comp main).
     if (nr_tc_rec != 0xFFFFFFFFu && nr_tc_w[nr_tc_rec + 1u] != 0u && gl_WorkGroupID.x == 0u &&
         gl_WorkGroupID.y == 0u && gl_LocalInvocationIndex == 0u)
         atomicAdd(nr_tc_u[nr_tc_w[nr_tc_rec + 4u]], 1u);
+#if defined(NR_FUSED_UPS_PROJECT)
+    NR_TC_WAIT_BEGIN
+    for (uint nr_q = 0u; nr_q < 4u; ++nr_q) {
+        const int bx = clamp(4 * int(nr_wx) + 2 * pc.shift + 3 * int(nr_q & 1u), 0, int(pc.blend_itiles_x * 4u) - 1);
+        const int by = clamp(4 * int(nr_wy) + 2 * pc.shift_y + 3 * int(nr_q >> 1u), 0, int(pc.blend_itiles_y * 4u) - 1);
+        NR_TC_WAIT_TILE(uint(by / 4) * pc.blend_itiles_x + uint(bx / 4))
+    }
+    NR_TC_WAIT_END
+#endif
 #endif
     const uint lane = gl_SubgroupInvocationID, w = subgroupBroadcastFirst(gl_SubgroupID);
     const uint T = 32u * w + lane, m = T >> 4u;
@@ -593,6 +617,56 @@ void main() {
             xr[p] = nv_p(xh[2 * p], xh[2 * p + 1]);
             x[p] = packFloat2x16(nr_quant_pair(nv_h(xr[p])));
         }
+    }
+#define NV_ESWAP true
+#elif NV_UPS32
+    // The C = 32 fused upsample: up = f16(Wup . src) for the 16 half-resolution pixels under the window (2C channels
+    // each, wave w the rows 16w..), staged in nv_y4[(c / 8) * 16 + t]; then x = fma(skip, g, up) in FP16 as the post
+    // block (the emulated body's NR_FUSED_UPS_PROJECT, NR_UPS_BLEND_PK=1).
+    {
+        const uint t = lane & 15u;
+        const uint px = uint(clamp(4 * int(gl_WorkGroupID.x) + 2 * pc.shift + int(t % 4u), 0, int(pc.blend_itiles_x * 4u) - 1));
+        const uint py = uint(clamp(4 * int(gl_WorkGroupID.y) + 2 * pc.shift_y + int(t / 4u), 0, int(pc.blend_itiles_y * 4u) - 1));
+        const uint sb = (pc.blend_p_off + ((py / 4u) * pc.blend_itiles_x + px / 4u) * 4u * 256u + ((py % 4u) * 4u + px % 4u) * 16u) / 8u;
+        uvec4 src[8];
+        for (int k = 0; k < 8; ++k) src[k] = nv_a4[sb + uint(k >> 1) * 32u + uint(k & 1)];
+        float up[16];
+        for (int j = 0; j < 16; ++j) {
+            float a = 0.0;
+            for (int kf = 0; kf < 4; ++kf) {
+                const uint wb = NV_WROW(pc.ups_weight_off, 4, 16u * w + uint(j), kf);
+                a = nv_dot8(a, nv_w4[wb], nv_w4[wb + 1u], src[2 * kf], src[2 * kf + 1]);
+            }
+            up[j] = a;
+        }
+        if (lane < 16u)
+            for (int b = 0; b < 2; ++b)
+                nv_y4[(2u * w + uint(b)) * 16u + t] = uvec4(nv_p(float16_t(up[8 * b]), float16_t(up[8 * b + 1])),
+                    nv_p(float16_t(up[8 * b + 2]), float16_t(up[8 * b + 3])), nv_p(float16_t(up[8 * b + 4]), float16_t(up[8 * b + 5])),
+                    nv_p(float16_t(up[8 * b + 6]), float16_t(up[8 * b + 7])));
+        barrier();
+        const uint tx = uint(clamp(2 * int(gl_WorkGroupID.x) + pc.shift + int(m & 1u), 0, int(pc.tiles_x) - 1));
+        const uint ty = uint(clamp(2 * int(gl_WorkGroupID.y) + pc.shift_y + int(m >> 1u), 0, int(pc.tiles_y) - 1));
+        const uint slot = lane & 15u, dx = slot % 4u, dy = slot / 4u;
+        const uint local = ((m >> 1u) * 2u + dy / 2u) * 4u + (m & 1u) * 2u + dx / 2u;
+        const uint stile = ty * (pc.blend_stiles_x != 0u ? pc.blend_stiles_x : pc.blend_tiles_x) + tx;
+        const uint sa = (pc.blend_s_off + stile * 2u * 256u + slot * 16u) / 8u;
+        float16_t xh[32];
+        for (int q = 0; q < 4; ++q) {
+            const uvec4 pv = nv_y4[uint(q) * 16u + local], sv = nv_a4[sa + uint(q >> 1) * 32u + uint(q & 1)];
+            for (int i = 0; i < 4; ++i) {
+                const int ch = 8 * q + 2 * i;
+                const f16vec2 g2 = f16vec2(wgt_f16[pc.blend_g_off + uint(ch)], wgt_f16[pc.blend_g_off + uint(ch) + 1u]);
+                const f16vec2 xh2 = fma(nv_h(sv[i]), g2, nv_h(pv[i]));
+                xh[ch] = xh2.x; xh[ch + 1] = xh2.y;
+            }
+        }
+        if (oob) for (int r = 0; r < 32; ++r) xh[r] = float16_t(0.0);
+        for (int p = 0; p < 16; ++p) {
+            xr[p] = nv_p(xh[2 * p], xh[2 * p + 1]);
+            x[p] = packFloat2x16(nr_quant_pair(nv_h(xr[p])));
+        }
+        barrier();                                // every lane's read of the projection before K goes there
     }
 #define NV_ESWAP true
 #else
@@ -693,6 +767,23 @@ void main() {
             nv_a4[ob + 33u] = nv_pack_q16(o1, 8);
         }
 #endif
+#if NV_DS
+        // The pooled copy into nv_x4[(c / 8) * 16 + p] once both waves are done with V there, then the downsample
+        // projection: 2C channels at the 16 pooled pixels, wave w the rows 32w.., one lane a pixel.
+        barrier();
+        {
+            const uint t16 = lane & 15u;
+            for (int b = 0; b < 4; ++b) {
+                float v8[8];
+                for (int j = 0; j < 8; ++j) v8[j] = b < 2 ? o0[8 * (b & 1) + j] : o1[8 * (b & 1) + j];
+                const uvec4 pq = nv_pool8(v8);
+                if ((t16 & 5u) == 0u)
+                    nv_x4[uint(b) * 16u + (2u * (m >> 1u) + t16 / 8u) * 4u + 2u * (m & 1u) + (t16 % 4u) / 2u] = pq;
+            }
+        }
+        barrier();
+        nv_ds_project(lane, w, 32u, 4);
+#endif
 #if NV_PRE
         // The pooled copy (the pre block is wired like a `_ds` block): the 2x2 mean of the FP32 outputs, the pairs
         // along x summed in FP32 and rounded to FP16, the two rows added in FP16, a quarter of it on the e4m3 grid.
@@ -718,6 +809,18 @@ void main() {
                     nv_a4[pb] = uvec4(d[0], d[1], d[2], d[3]);
                     nv_a4[pb + 1u] = uvec4(d[4], d[5], d[6], d[7]);
                 }
+        }
+#endif
+#if NR_TCHAIN && NV_DS
+        // The next level waits for the tiles this window's downsample wrote (fswin_t.comp's end, verbatim).
+        if (nr_tc_sig != 0xFFFFFFFFu) {
+            memoryBarrier(gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelease);
+            barrier();
+            if (gl_LocalInvocationIndex < 4u) {
+                uint nr_t; NR_TC_DS_TILE(gl_LocalInvocationIndex, nr_t)
+                if (nr_t != 0xFFFFFFFFu)
+                    atomicAdd(nr_tc_u[nr_tc_sig + nr_t], 1u, gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelease);
+            }
         }
 #endif
     }
