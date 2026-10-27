@@ -36,13 +36,25 @@
 #else
 #define NV_PRE_IO 0
 #endif
+#if defined(NR_FUSED_IMAGE_OUTPUT)
+#define NV_POST 1                // the post block: x blended from the level below and the skip, RGB out
+#else
+#define NV_POST 0
+#endif
+#if defined(NR_FUSED_POST_BLEND) && defined(NR_INPUT_F16) && NR_IMGOUT_REGS && NR_POST_BLEND_PK && !NR_IO_WMMA && \
+    !NR_IO_DOT2 && !NR_IO_F32FMA && !NR_POST_REUSE && !NR_BLEND_G32 && !NR_POST_GAINBC
+#define NV_POST_IO 1
+#else
+#define NV_POST_IO 0
+#endif
 #if NR_PERSIST || NR_HEADS != NR_C / 32 || defined(NR_FUSED_UPS_BLEND) || \
     defined(NR_DS_PROJECT) || defined(NR_FUSED_UPS_PROJECT) || defined(NR_WIDE_UPS_PROJECT) || \
-    NV_PRE != NV_PRE_IO || (NV_PRE && NR_HWAVES) || defined(NR_FUSED_IMAGE_OUTPUT) || \
+    (NV_PRE && !NV_PRE_IO) || (NV_POST && !NV_POST_IO) || (NV_PRE && NV_POST) || \
+    (!NV_PRE && !NV_POST && (defined(NR_INPUT_F16) || defined(NR_POOL_F16))) || ((NV_PRE || NV_POST) && NR_HWAVES) || \
     NR_EDGE_BODIES || !NR_BAKED_EXP_BIAS || NR_ACC_F16 != 0 || \
     !NR_RESIDUAL_F32 || NR_QK_SCALE_FAST != 5 || NR_SWIN_BIAS_F16 || NR_WIN != 64 || \
     (NR_HWAVES && NR_TCHAIN) || (!NR_HWAVES && (NR_C != 32 || NR_FWAVES != 2))
-#error "NR_NATIVE: the plain fused Swin bodies (fswin32/32nh/64/128/256) and the pre block only"
+#error "NR_NATIVE: the plain fused Swin bodies (fswin32/32nh/64/128/256) and the pre and post blocks only"
 #endif
 
 #define NV_CF (NR_C / 16)        // 16-channel fragments across C
@@ -405,6 +417,41 @@ void main() {
         }
     }
 #define NV_ESWAP true
+#elif NV_POST
+    // The post block: x = gs * skip + gm * up, in FP16, `up` the level below at this pixel's half-resolution
+    // place (the emulated body's NR_FUSED_POST_BLEND, NR_POST_BLEND_PK); then as the pre block.
+    {
+        const uint tx = uint(clamp(2 * int(gl_WorkGroupID.x) + pc.shift + int(m & 1u), 0, int(pc.tiles_x) - 1));
+        const uint ty = uint(clamp(2 * int(gl_WorkGroupID.y) + pc.shift_y + int(m >> 1u), 0, int(pc.tiles_y) - 1));
+        const uint slot = lane & 15u, dx = slot % 4u, dy = slot / 4u;
+        const uint ipx = min((4u * tx + dx) / 2u, pc.blend_itiles_x * 4u - 1u);
+        const uint ipy = min((4u * ty + dy) / 2u, pc.blend_itiles_y * 4u - 1u);
+        const uint itile = (ipy / 4u) * pc.blend_itiles_x + ipx / 4u, islot = (ipy % 4u) * 4u + ipx % 4u;
+        const uint stw = pc.blend_stiles_x != 0u ? pc.blend_stiles_x : pc.blend_tiles_x;
+        const uint stile = ty * stw + tx;
+        float16_t xh[32];
+        for (int k = 0; k < 2; ++k) {
+            const uint pa = (pc.blend_p_off + (itile * 2u + uint(k)) * 256u + islot * 16u) / 8u;
+            const uint sa = (pc.blend_s_off + (stile * 2u + uint(k)) * 256u + slot * 16u) / 8u;
+            const uvec4 pv[2] = uvec4[2](nv_a4[pa], nv_a4[pa + 1u]), sv[2] = uvec4[2](nv_a4[sa], nv_a4[sa + 1u]);
+            for (int j = 0; j < 8; ++j) {
+                const uint ch = uint(16 * k + 2 * j);
+                const f16vec2 gm2 = f16vec2(wgt_f16[pc.blend_g_off + 32u + ch], wgt_f16[pc.blend_g_off + 32u + ch + 1u]);
+                const f16vec2 gs2 = f16vec2(wgt_f16[pc.blend_g_off + ch], wgt_f16[pc.blend_g_off + ch + 1u]);
+                const f16vec2 xh2 = fma(nv_h(sv[j >> 2][j & 3]), gs2, nv_h(pv[j >> 2][j & 3]) * gm2);
+                xh[16 * k + 2 * j] = xh2.x; xh[16 * k + 2 * j + 1] = xh2.y;
+            }
+        }
+        [[dont_flatten]] if (oob) {               // the emulated body's keep-alive, verbatim
+            for (int r = 0; r < 32; ++r) xh[r] = float16_t(0.0);
+            if (gl_NumWorkGroups.x == 0xffffffffu) act_e4m3[pc.o_off] = float16_t(0.0);
+        }
+        for (int p = 0; p < 16; ++p) {
+            xr[p] = nv_p(xh[2 * p], xh[2 * p + 1]);
+            x[p] = packFloat2x16(nr_quant_pair(nv_h(xr[p])));
+        }
+    }
+#define NV_ESWAP true
 #else
 #define NV_ESWAP false
     {
@@ -467,6 +514,34 @@ void main() {
         }
         NV_ROWS32(o0, pc.op_off, 0, cq, true)
         NV_ROWS32(o1, pc.op_off, 16, cq, true)
+#if NV_POST
+        // The RGB projection of the output in FP16 (four rows with the history weight), channel pairs in order,
+        // then the pixel's composition (fswin_imgout.glsl).
+        {
+            float16_t of[32];
+            for (int j = 0; j < 16; ++j) { of[j] = float16_t(o0[j]); of[16 + j] = float16_t(o1[j]); }
+            vec3 o = vec3(0.0);
+            float ow = 0.0;
+            const uint wp = (pc.image_w_off & 0x3FFFFFFFu) >> 1u;
+            for (int d = 0; d < 16; ++d) {
+                const float a = float(of[2 * d]), a1 = float(of[2 * d + 1]);
+                const f16vec2 wx = unpackFloat2x16(wgt_u32[wp + uint(d)]);
+                const f16vec2 wy = unpackFloat2x16(wgt_u32[wp + 16u + uint(d)]);
+                const f16vec2 wz = unpackFloat2x16(wgt_u32[wp + 32u + uint(d)]);
+                o.x += a * float(wx.x); o.x += a1 * float(wx.y);
+                o.y += a * float(wy.x); o.y += a1 * float(wy.y);
+                o.z += a * float(wz.x); o.z += a1 * float(wz.y);
+#ifdef NR_TEMPORAL_HISTORY
+                const f16vec2 ww = unpackFloat2x16(wgt_u32[wp + 48u + uint(d)]);
+                ow += a * float(ww.x); ow += a1 * float(ww.y);
+#endif
+            }
+            const uint q = m, slot = lane & 15u;
+            do {
+#include "fswin_imgout.glsl"
+            } while (false);
+        }
+#else
         if (!oob) {
             const uint ob = (pc.o_off + nr_tile_base(m) + (lane & 15u) * 16u) / 8u;
             nv_a4[ob] = nv_pack_q16(o0, 0);
@@ -474,6 +549,7 @@ void main() {
             nv_a4[ob + 32u] = nv_pack_q16(o1, 0);
             nv_a4[ob + 33u] = nv_pack_q16(o1, 8);
         }
+#endif
 #if NV_PRE
         // The pooled copy (the pre block is wired like a `_ds` block): the 2x2 mean of the FP32 outputs, the pairs
         // along x summed in FP32 and rounded to FP16, the two rows added in FP16, a quarter of it on the e4m3 grid.
