@@ -22,17 +22,27 @@
 // odd rows of its register-built activation x activation products have both operands swapped. NR_DOT2 is then
 // given the pair in the other order; here the same pairs are given in the same order (`.yx`), so the products and
 // their order are the emulated body's exactly.
-#extension GL_EXT_shared_memory_block : require
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_shuffle : require
 #extension GL_KHR_shader_subgroup_ballot : require
 
+#if defined(NR_FUSED_IMAGE_INPUT)
+#define NV_PRE 1                 // the pre block: x lifted from the image features, a pooled copy of the output
+#else
+#define NV_PRE 0
+#endif
+#if defined(NR_POOL_F16) && defined(NR_INPUT_F16)
+#define NV_PRE_IO 1
+#else
+#define NV_PRE_IO 0
+#endif
 #if NR_PERSIST || NR_HEADS != NR_C / 32 || defined(NR_FUSED_UPS_BLEND) || \
     defined(NR_DS_PROJECT) || defined(NR_FUSED_UPS_PROJECT) || defined(NR_WIDE_UPS_PROJECT) || \
-    defined(NR_POOL_F16) || defined(NR_INPUT_F16) || NR_EDGE_BODIES || !NR_BAKED_EXP_BIAS || NR_ACC_F16 != 0 || \
+    NV_PRE != NV_PRE_IO || (NV_PRE && NR_HWAVES) || defined(NR_FUSED_IMAGE_OUTPUT) || \
+    NR_EDGE_BODIES || !NR_BAKED_EXP_BIAS || NR_ACC_F16 != 0 || \
     !NR_RESIDUAL_F32 || NR_QK_SCALE_FAST != 5 || NR_SWIN_BIAS_F16 || NR_WIN != 64 || \
     (NR_HWAVES && NR_TCHAIN) || (!NR_HWAVES && (NR_C != 32 || NR_FWAVES != 2))
-#error "NR_NATIVE: the plain fused Swin bodies (fswin32/32nh/64/128/256) only"
+#error "NR_NATIVE: the plain fused Swin bodies (fswin32/32nh/64/128/256) and the pre block only"
 #endif
 
 #define NV_CF (NR_C / 16)        // 16-channel fragments across C
@@ -43,14 +53,17 @@
 #endif
 
 // LDS. C >= 64: token T's channels 16kf + 8hx .. +7 at (2kf + hx) * 64 + T. Head h's K at nv_y4[256h + 4T + q]
-// (channels 8q ..), its V at nv_x1[1024h + 32kp + v] = (V[2kp][v], V[2kp+1][v]). Blocks alias at offset 0.
-shared NvLds4 { uvec4 nv_x4[NV_NX]; uvec4 nv_y4[NV_NX]; };
-shared NvLds1 { uint nv_x1[4 * NV_NX]; uint nv_y1[4 * NV_NX]; };
+// (channels 8q ..), its V at nv_x4[256h + 8kp + v/4][v%4] = (V[2kp][v], V[2kp+1][v]).
+shared uvec4 nv_x4[NV_NX];
+shared uvec4 nv_y4[NV_NX];
 
 // The same buffers as uvec4 / vec4. Weights (binding 2, the FP16 twin) and activations are 256-element aligned.
 layout(set = 0, binding = 0, std430) NR_COH buffer NvAct4 { uvec4 nv_a4[]; };
 layout(set = 0, binding = 2, std430) readonly buffer NvWgt4 { uvec4 nv_w4[]; };
 layout(set = 0, binding = 3, std430) readonly buffer NvF32x4 { vec4 nv_f4[]; };
+#if NV_PRE
+layout(set = 0, binding = 4, std430) readonly buffer NvWgtF16x8 { uvec4 nv_w16[]; };   // the FP16 lift matrix
+#endif
 
 f16vec2 nv_h(uint u) { return unpackFloat2x16(u); }
 uint nv_p(float16_t a, float16_t b) { return packFloat2x16(f16vec2(a, b)); }
@@ -367,22 +380,49 @@ void main() {
     const uint lane = gl_SubgroupInvocationID, w = subgroupBroadcastFirst(gl_SubgroupID);
     const uint T = 32u * w + lane, m = T >> 4u;
     const bool oob = nr_tile_oob(m);
-    // x: the token's 32 channels (zero outside the image)
-    uint x[16];
+    // x: the token's 32 channels on the e4m3 grid (the MLP operand); xr: the residual's (FP16 in the pre block)
+    uint x[16], xr[16];
+#if NV_PRE
+    // The pre block: x = lift . f, f the token's 16 image features (image_input.glsl, which also stages them);
+    // the residual takes x in FP16, the MLP its e4m3 rounding, and E is stored k-pair swapped (`kswap`).
+    nr_prepare_features();
+    {
+        uvec4 f[2];
+        for (int j = 0; j < 8; ++j)
+            f[j >> 2][j & 3] = nv_p(input_features[T * 16u + uint(2 * j)], input_features[T * 16u + uint(2 * j + 1)]);
+        float16_t xh[32];
+        for (int r = 0; r < 32; ++r) {
+            const uint lb = (pc.image_lift_off + uint(r >> 4) * 256u + uint(r & 15) * 16u) / 8u;
+            xh[r] = float16_t(nv_dot8(0.0, nv_w16[lb], nv_w16[lb + 1u], f[0], f[1]));
+        }
+        [[dont_flatten]] if (pc.tiles_x == 0u) {   // the emulated body's keep-alive, verbatim
+            for (int r = 0; r < 32; ++r) xh[r] = float16_t(0.0);
+            if (gl_NumWorkGroups.x == 0xffffffffu) act_e4m3[pc.o_off] = float16_t(0.0);
+        }
+        for (int p = 0; p < 16; ++p) {
+            xr[p] = nv_p(xh[2 * p], xh[2 * p + 1]);
+            x[p] = packFloat2x16(nr_quant_pair(nv_h(xr[p])));
+        }
+    }
+#define NV_ESWAP true
+#else
+#define NV_ESWAP false
     {
         const uint xb = (pc.x_off + nr_tile_base(m) + (lane & 15u) * 16u) / 8u;
         for (int q = 0; q < 4; ++q) {
             const uvec4 v = oob ? uvec4(0u) : nv_a4[xb + uint(q >> 1) * 32u + uint(q & 1)];
             for (int i = 0; i < 4; ++i) x[4 * q + i] = v[i];
         }
+        xr = x;
     }
+#endif
     // ---- the MLP, streamed: y = Ct . q(act(E . x)) + rs * x ----------------------------------------
     float y[32];
-    for (int c = 0; c < 32; ++c) y[c] = float(nv_h(x[c >> 1])[c & 1]) * wgt_f32[pc.rs_off + uint(c)];
+    for (int c = 0; c < 32; ++c) y[c] = float(nv_h(xr[c >> 1])[c & 1]) * wgt_f32[pc.rs_off + uint(c)];
     for (int hf = 0; hf < 8 + nv_opaque; hf = hf + 1) {
         float e[16];
         for (int j = 0; j < 16; ++j) e[j] = 0.0;
-        NV_ROWS32(e, pc.e_off, 16 * hf, x, false)
+        NV_ROWS32(e, pc.e_off, 16 * hf, x, NV_ESWAP)
         uvec4 ep[2];
         for (int p = 0; p < 8; ++p)
             ep[p >> 2][p & 3] = packFloat2x16(nr_quant_pair32(vec2(nr_act_horner(e[2 * p]), nr_act_horner_b(e[2 * p + 1]))));
@@ -434,6 +474,33 @@ void main() {
             nv_a4[ob + 32u] = nv_pack_q16(o1, 0);
             nv_a4[ob + 33u] = nv_pack_q16(o1, 8);
         }
+#if NV_PRE
+        // The pooled copy (the pre block is wired like a `_ds` block): the 2x2 mean of the FP32 outputs, the pairs
+        // along x summed in FP32 and rounded to FP16, the two rows added in FP16, a quarter of it on the e4m3 grid.
+        // Lanes l, l^1, l^4, l^5 hold one 2x2 group; lane l & 5 == 0 writes its 32 channels.
+        {
+            float pm[32];
+            for (int c = 0; c < 32; ++c) {
+                const float v = c < 16 ? o0[c & 15] : o1[c & 15];
+                const float xs = v + subgroupShuffleXor(v, 1u);
+                const float16_t sm = float16_t(xs) + float16_t(subgroupShuffleXor(xs, 4u));
+                pm[c] = float(sm) * 0.25;
+            }
+            const int tx = 2 * int(gl_WorkGroupID.x) + pc.shift + int(m & 1u);
+            const int ty = 2 * int(gl_WorkGroupID.y) + pc.shift_y + int(m >> 1u);
+            const uint tile = uint(ty >> 1) * pc.pool_tiles_x + uint(tx >> 1);
+            const uint slot = uint(ty & 1) * 8u + uint(tx & 1) * 2u + ((lane & 15u) / 8u) * 4u + (lane % 4u) / 2u;
+            if ((lane & 5u) == 0u)
+                for (int n = 0; n < 2; ++n) {
+                    uint d[8];
+                    for (int p = 0; p < 8; ++p)
+                        d[p] = packFloat2x16(nr_quant_pair32(vec2(pm[16 * n + 2 * p], pm[16 * n + 2 * p + 1])));
+                    const uint pb = (pc.pool_off + (tile * 2u + uint(n)) * 256u + slot * 16u) / 8u;
+                    nv_a4[pb] = uvec4(d[0], d[1], d[2], d[3]);
+                    nv_a4[pb + 1u] = uvec4(d[4], d[5], d[6], d[7]);
+                }
+        }
+#endif
     }
 }
 #endif
