@@ -309,6 +309,16 @@ Local patches:
 17. The ACO slot for RDNA3: `nr_pal_binary.hpp` names the code objects it takes (`takes_machine`: gfx1200 and
     gfx1201, as before) so the host can ask before it would take gfx11 records, and `nr_runtime.cpp` lets an RDNA3
     network run ACO only from a bundle named `aco-gfx11` (never RDNA4's records). No gfx11 records exist yet.
+18. The stage dump (a diagnostic, both networks): `nr_runtime.cpp` `Impl::StageDump` and `windows/src/core/
+    stage_stats.comp` (embedded by `tools\build-mochizuki-runtime.cmd`). With `MZ_STAGE_DUMP=<dir>`, in recording
+    `MZ_STAGE_FRAME` (default 8) every activation value a later dispatch reads (by plan key, `voff.used`) gets 16
+    chunk statistics (sum, sum |x|, sum x^2, max |x|, NaN/Inf, zeros, an order-free hash of the decoded values) right
+    after the dispatch that made it, read as e4m3, f16 and f32 from the arena and on RDNA3 as f16 from the twin;
+    `MZ_STAGE_FULL=<key>` also copies that value's raw bytes; the persistent runs' epoch and error words are copied
+    at the end. `stages.txt` (dispatches, values, error words) and `stages.bin` are written at the next recording.
+    It adds dispatches and barriers to that one recording only. Without `MZ_STAGE_DUMP` nothing is created or
+    recorded: the output is byte-identical to the 0.5.8 DLL's (RX 9070 XT, harness, 12 sizes, both models, FP8 and
+    ACO), and with it the frame is too. `tools\rx7000-diag\stagecmp.cpp` compares two dumps.
 
 The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
 OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;

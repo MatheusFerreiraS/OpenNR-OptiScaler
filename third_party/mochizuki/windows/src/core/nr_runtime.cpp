@@ -10,6 +10,7 @@
 #include <string>
 #include <mutex>
 #include "nr_ini_network.hpp"
+#include "stage_stats.h"   // MZ_STAGE_DUMP's shader (stage_stats.comp), built by the runtime's build
 #if NR_INT4
 #include "nr_ini_int4.hpp"
 #endif
@@ -1054,10 +1055,254 @@ struct Runtime::Impl {
         if (k.feature_checks.size() > 256) k.feature_checks.clear();
     }
 
+    // MZ_STAGE_DUMP=<dir> (diagnostic, off unless set): statistics of every activation value of one frame, taken in
+    // the recording right after the dispatch that produced it, so one network can be compared with another stage by
+    // stage (the RX 7000 diagnostic kit). Values are named by their plan key, which both networks share whatever
+    // their dispatches; each is read as e4m3, f16 and f32 from the arena and, on RDNA3, as f16 from its twin, because
+    // the slot's element type is not recorded. MZ_STAGE_FRAME (default 8) is the recording taken, MZ_STAGE_CHUNKS
+    // (default 16) the slices each view is cut into, MZ_STAGE_FULL=<key> also copies that value's raw bytes.
+    // Nothing is recorded, created or changed without MZ_STAGE_DUMP.
+    struct StageDump {
+        bool tried{}, on{};
+        std::string dir;
+        uint64_t frame{8};
+        uint32_t chunks{16};
+        int full_key{-1};
+        uint32_t views{};
+        VkShaderModule module{};
+        VkDescriptorSetLayout dsl{};
+        VkPipelineLayout layout{};
+        VkPipeline pipeline{};
+        VkDescriptorPool pool{};
+        nrvk::Buffer out{}, full{};
+        struct Val { int key, disp, first, last; size_t off, bytes; };
+        std::vector<Val> vals;
+        std::vector<VkDescriptorSet> sets;   // [val * views + view]
+        size_t next{};                       // the first value not taken yet this frame
+        VkDeviceSize persist_at{}, full_twin_at{};
+        size_t full_val{~size_t(0)};
+        uint64_t written_at{~0ull};
+    };
+    StageDump stage;
+    static constexpr uint32_t kStageWords = 8;
+    void stage_setup() {
+        auto& d = stage;
+        auto& s = session;
+        d.tried = true;
+        const char* e = std::getenv("MZ_STAGE_DUMP");
+        if (!e || !*e) return;
+        d.dir = e;
+        if (const char* f = std::getenv("MZ_STAGE_FRAME")) d.frame = std::strtoull(f, nullptr, 0);
+        if (const char* c = std::getenv("MZ_STAGE_CHUNKS")) d.chunks = std::clamp(uint32_t(std::atoi(c)), 1u, 1024u);
+        if (const char* k = std::getenv("MZ_STAGE_FULL")) d.full_key = std::atoi(k);
+        if (s.disp.empty() || s.voff.used.empty()) {
+            nr::logf("[nr] stage dump: this runtime has no lowered plan of its own (a shared build), off");
+            return;
+        }
+        const VkDevice dev = s.ctx.device;
+        const auto twin = s.ctx.fp16_twin.find(s.act.handle);
+        const VkBuffer twin_buf = s.ctx.rdna3 && twin != s.ctx.fp16_twin.end() ? twin->second : VK_NULL_HANDLE;
+        d.views = twin_buf ? 4u : 3u;
+        for (const auto& u : s.voff.used) {
+            const int key = u.first;
+            const auto sz = s.vsize.find(key);
+            const auto at = s.voff.m.find(key);
+            if (sz == s.vsize.end() || !sz->second || at == s.voff.m.end()) continue;
+            int disp = -1;
+            for (size_t i = 0; i < s.disp.size() && disp < 0; ++i)
+                if (s.disp[i].lo <= u.second.first && u.second.first <= s.disp[i].hi) disp = int(i);
+            // A value its own dispatch both makes and uses up may share bytes with a later one inside that dispatch.
+            if (disp < 0 || u.second.second <= s.disp[size_t(disp)].hi) continue;
+            if (at->second % 256 || at->second + sz->second > s.act.bytes) continue;
+            d.vals.push_back({key, disp, u.second.first, u.second.second, at->second, sz->second});
+        }
+        std::stable_sort(d.vals.begin(), d.vals.end(), [](const StageDump::Val& a, const StageDump::Val& b) {
+            return a.disp != b.disp ? a.disp < b.disp : a.key < b.key;
+        });
+        const size_t caps = d.vals.size() * d.views;
+        d.persist_at = VkDeviceSize(caps) * d.chunks * kStageWords * 4;
+        try {
+            d.out = s.ctx.buffer(d.persist_at + VkDeviceSize(s.persist_err.size()) * 8 + 16, true);
+            for (size_t i = 0; i < d.vals.size(); ++i)
+                if (d.vals[i].key == d.full_key) {
+                    d.full_val = i;
+                    d.full_twin_at = (d.vals[i].bytes + 255) & ~size_t(255);
+                    d.full = s.ctx.buffer(d.full_twin_at + (twin_buf ? 2 * d.vals[i].bytes : 0), true);
+                }
+            const VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0,
+                                              sizeof mz_stage_stats, mz_stage_stats};
+            NRVK_CHECK(vkCreateShaderModule(dev, &mi, nullptr, &d.module));
+            VkDescriptorSetLayoutBinding lb[2] = {
+                {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+            VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+            li.bindingCount = 2; li.pBindings = lb;
+            NRVK_CHECK(vkCreateDescriptorSetLayout(dev, &li, nullptr, &d.dsl));
+            const VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+            VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+            pli.setLayoutCount = 1; pli.pSetLayouts = &d.dsl; pli.pushConstantRangeCount = 1; pli.pPushConstantRanges = &pr;
+            NRVK_CHECK(vkCreatePipelineLayout(dev, &pli, nullptr, &d.layout));
+            VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+            ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT,
+                        d.module, "main", nullptr};
+            ci.layout = d.layout;
+            NRVK_CHECK(vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, nullptr, &d.pipeline));
+            if (caps) {
+                const VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, uint32_t(caps * 2)};
+                VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+                pi.maxSets = uint32_t(caps); pi.poolSizeCount = 1; pi.pPoolSizes = &ps;
+                NRVK_CHECK(vkCreateDescriptorPool(dev, &pi, nullptr, &d.pool));
+                std::vector<VkDescriptorSetLayout> layouts(caps, d.dsl);
+                d.sets.resize(caps);
+                VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+                ai.descriptorPool = d.pool; ai.descriptorSetCount = uint32_t(caps); ai.pSetLayouts = layouts.data();
+                NRVK_CHECK(vkAllocateDescriptorSets(dev, &ai, d.sets.data()));
+                std::vector<VkDescriptorBufferInfo> bi(caps * 2);
+                std::vector<VkWriteDescriptorSet> w(caps);
+                for (size_t c = 0; c < caps; ++c) {
+                    const auto& v = d.vals[c / d.views];
+                    const bool tw = c % d.views == 3;
+                    const VkDeviceSize off = tw ? 2 * VkDeviceSize(v.off) : v.off;
+                    const VkDeviceSize n = tw ? 2 * VkDeviceSize(v.bytes) : (VkDeviceSize(v.bytes) + 3) & ~VkDeviceSize(3);
+                    bi[2 * c] = {tw ? twin_buf : s.act.handle, off, n};
+                    bi[2 * c + 1] = {d.out.handle, 0, VK_WHOLE_SIZE};
+                    w[c] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, d.sets[c], 0, 0, 2,
+                            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bi[2 * c], nullptr};
+                }
+                vkUpdateDescriptorSets(dev, uint32_t(w.size()), w.data(), 0, nullptr);
+            }
+        } catch (const std::exception& x) {
+            nr::logf("[nr] stage dump: setup failed (%s), off", x.what());
+            return;
+        }
+        d.on = true;
+        nr::logf("[nr] stage dump on: recording %llu, %zu values over %zu dispatches, %u views, %u chunks, into %s",
+                 (unsigned long long)d.frame, d.vals.size(), s.disp.size(), d.views, d.chunks, d.dir.c_str());
+    }
+    // After network dispatch `i` and its barrier, in the recording MZ_STAGE_FRAME: every value made by then.
+    void stage_take(VkCommandBuffer cmd, size_t i, bool last) {
+        auto& d = stage;
+        auto& s = session;
+        if (!d.on || recordings != d.frame) return;
+        if (d.next >= d.vals.size() || size_t(d.vals[d.next].disp) > i) {
+            if (!last) return;
+        }
+        VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0,
+                             nullptr, 0, nullptr);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, d.pipeline);
+        for (; d.next < d.vals.size() && size_t(d.vals[d.next].disp) <= i; ++d.next) {
+            const auto& v = d.vals[d.next];
+            for (uint32_t view = 0; view < d.views; ++view) {
+                const size_t c = d.next * d.views + view;
+                const uint32_t push[4] = {uint32_t(view == 3 ? 2 * v.bytes : v.bytes), view == 3 ? 1u : view,
+                                          uint32_t(c * d.chunks * kStageWords), d.chunks};
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, d.layout, 0, 1, &d.sets[c], 0, nullptr);
+                vkCmdPushConstants(cmd, d.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+                vkCmdDispatch(cmd, d.chunks, 1, 1);
+            }
+            if (d.next == d.full_val) {
+                const VkBufferCopy a{v.off, 0, v.bytes};
+                vkCmdCopyBuffer(cmd, s.act.handle, d.full.handle, 1, &a);
+                const auto twin = s.ctx.fp16_twin.find(s.act.handle);
+                if (d.views == 4 && twin != s.ctx.fp16_twin.end()) {
+                    const VkBufferCopy t{2 * VkDeviceSize(v.off), d.full_twin_at, 2 * VkDeviceSize(v.bytes)};
+                    vkCmdCopyBuffer(cmd, twin->second, d.full.handle, 1, &t);
+                }
+            }
+        }
+        if (last) {   // each persistent run's epoch and error word, as the check reads them
+            std::vector<VkBufferCopy> r;
+            for (size_t k = 0; k < s.persist_err.size(); ++k)
+                r.push_back({VkDeviceSize(s.persist_err[k]) - 4, d.persist_at + VkDeviceSize(k) * 8, 8});
+            if (!r.empty()) vkCmdCopyBuffer(cmd, s.act.handle, d.out.handle, uint32_t(r.size()), r.data());
+            d.written_at = recordings;
+        }
+        mb.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+        mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+    }
+    // The next recording (or the end): the frame has finished, the dump goes to files.
+    void stage_write() {
+        auto& d = stage;
+        auto& s = session;
+        if (d.written_at == ~0ull) return;
+        d.written_at = ~0ull;
+        d.on = false;
+        vkDeviceWaitIdle(s.ctx.device);
+        std::error_code ec;
+        std::filesystem::create_directories(d.dir, ec);
+        const auto path = [&](const char* n) { return (std::filesystem::path(d.dir) / n).string(); };
+        static const char* kView[4] = {"arena-e4m3", "arena-f16", "arena-f32", "twin-f16"};
+        if (FILE* f = std::fopen(path("stages.txt").c_str(), "w")) {
+            std::fprintf(f, "MZSTAGE 1\nnetwork %s\nframe %ux%u\nmodel %ux%u\nrecording %llu\nchunks %u\nwords %u\n",
+                         s.ctx.rdna3 ? "rdna3" : "fp8", width, height, mw, mh, (unsigned long long)d.frame, d.chunks,
+                         kStageWords);
+            std::fprintf(f, "views");
+            for (uint32_t v = 0; v < d.views; ++v) std::fprintf(f, " %s", kView[v]);
+            std::fprintf(f, "\ndispatches %zu\n", s.disp.size());
+            for (size_t i = 0; i < s.disp.size(); ++i) {
+                const auto& x = s.disp[i];
+                std::fprintf(f, "D %zu %s %u %u %u steps %d %d", i, x.kern.c_str(), x.gx, x.gy, x.gz, x.lo, x.hi);
+                if (x.s) std::fprintf(f, " b%d l%d %s", x.s->block, x.s->layer, x.s->type.c_str());
+                std::fprintf(f, "\n");
+            }
+            std::fprintf(f, "values %zu\n", d.vals.size());
+            for (size_t i = 0; i < d.vals.size(); ++i) {
+                const auto& v = d.vals[i];
+                const Step* st = size_t(v.first) < s.run.size() ? s.run[size_t(v.first)] : nullptr;
+                std::fprintf(f, "V %zu %d %d %d %d %zu %zu %s %d %d %d %d %d %d\n", i, v.key, v.disp, v.first, v.last,
+                             v.off, v.bytes, st ? st->type.c_str() : "-", st ? st->block : -1, st ? st->layer : -1,
+                             st ? st->W : 0, st ? st->H : 0, st ? st->C : 0, st ? int(st->tokens) : 0);
+            }
+            const uint32_t* p = reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(d.out.mapped) + d.persist_at);
+            for (size_t k = 0; k < s.persist_err.size(); ++k)
+                std::fprintf(f, "P %zu epoch %u error %u\n", k, p[2 * k], p[2 * k + 1]);
+            std::fclose(f);
+        }
+        if (FILE* f = std::fopen(path("stages.bin").c_str(), "wb")) {
+            std::fwrite(d.out.mapped, 1, size_t(d.persist_at), f);
+            std::fclose(f);
+        }
+        if (d.full.handle) {
+            const auto& v = d.vals[d.full_val];
+            const std::string base = "full_" + std::to_string(v.key);
+            if (FILE* f = std::fopen(path((base + "_arena.bin").c_str()).c_str(), "wb")) {
+                std::fwrite(d.full.mapped, 1, v.bytes, f);
+                std::fclose(f);
+            }
+            if (d.views == 4)
+                if (FILE* f = std::fopen(path((base + "_twin.bin").c_str()).c_str(), "wb")) {
+                    std::fwrite(static_cast<const uint8_t*>(d.full.mapped) + d.full_twin_at, 1, 2 * v.bytes, f);
+                    std::fclose(f);
+                }
+        }
+        nr::logf("[nr] stage dump written: %s", d.dir.c_str());
+    }
+    void stage_destroy() {
+        auto& d = stage;
+        const VkDevice dev = session.ctx.device;
+        if (d.pipeline) vkDestroyPipeline(dev, d.pipeline, nullptr);
+        if (d.layout) vkDestroyPipelineLayout(dev, d.layout, nullptr);
+        if (d.dsl) vkDestroyDescriptorSetLayout(dev, d.dsl, nullptr);
+        if (d.module) vkDestroyShaderModule(dev, d.module, nullptr);
+        if (d.pool) vkDestroyDescriptorPool(dev, d.pool, nullptr);
+        if (d.out.handle) session.ctx.destroy(d.out);
+        if (d.full.handle) session.ctx.destroy(d.full);
+    }
+
     ~Impl() {
         // Caller has already completed its submitted command buffers.
         auto& s = session;
         if (!s.ctx.device) return;
+        if (stage.tried) {
+            stage_write();
+            stage_destroy();
+        }
         for (auto& d : direct_ring) {
             direct_slot_release(d);
             if (d.pool) vkDestroyDescriptorPool(s.ctx.device, d.pool, nullptr);
@@ -2648,6 +2893,8 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
     s.retarget(cmd);
     impl_->controls(effective);
     impl_->check_read();
+    if (!impl_->stage.tried) impl_->stage_setup();
+    impl_->stage_write();
     if (engine && temporal)
         impl_->incheck.begin(s.ctx, cmd, frame, *engine, temporal->feature, impl_->recordings,
                              impl_->temporal.lw[0], impl_->temporal.lh[0], impl_->mw, impl_->mh);
@@ -3255,6 +3502,7 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
             if (!last && i < s.runner.no_barrier_after.size() && s.runner.no_barrier_after[i]) continue;
             compute_barrier(cmd, s.runner.exec_barrier && !last,
                             s.runner.inv_barrier && !last);
+            if (impl_->stage.on && pass == 0) impl_->stage_take(cmd, i, last);
         }
         if (time_net) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, impl_->timing, net_query + 1);
         if (pass == 0 && passes > 1 && (c.anti_halo || estimate)) copy_general(s.surf0, impl_->first_answer);
