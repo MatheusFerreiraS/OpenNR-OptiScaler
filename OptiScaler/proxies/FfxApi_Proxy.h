@@ -307,6 +307,56 @@ class FfxApiProxy
     static bool IsDenoiserReady(bool = false) { return IsSRReady() && denoiser_dx12.dll != nullptr; }
     static bool IsRadianceReady() { return (main_dx12.dll && !main_dx12.isLoader) || radiance_dx12.dll != nullptr; }
 
+    // The denoiser the game ships, for the game's own Ray Regeneration calls. 1.2 broke the 1.1 API, so a game built
+    // against 1.1 crashed in the 1.2 module OptiScaler loads for FSR-RR (Crimson Desert). Null when the game ships
+    // none, or when it is the module OptiScaler already uses.
+    static FfxModule* GameDenoiserDx12()
+    {
+        static FfxModule* game = []() -> FfxModule*
+        {
+            static FfxModule module;
+
+            auto dir = Util::ExePath().parent_path();
+            wchar_t loaderPath[MAX_PATH] {};
+            if (main_dx12_hooked.dll != nullptr && GetModuleFileNameW(main_dx12_hooked.dll, loaderPath, MAX_PATH) != 0)
+                dir = std::filesystem::path(loaderPath).parent_path();
+
+            const auto path = dir / L"amd_fidelityfx_denoiser_dx12.dll";
+            if (!std::filesystem::exists(path))
+                return nullptr;
+
+            module.dll = NtdllProxy::LoadLibraryExW_Ldr(path.c_str(), NULL, 0);
+            if (module.dll == nullptr)
+                return nullptr;
+
+            if (module.dll == denoiser_dx12.dll)
+            {
+                FreeLibrary(module.dll);
+                return nullptr;
+            }
+
+            auto getProc = KernelBaseProxy::GetProcAddress_();
+            module.Configure = (PfnFfxConfigure) getProc(module.dll, "ffxConfigure");
+            module.CreateContext = (PfnFfxCreateContext) getProc(module.dll, "ffxCreateContext");
+            module.DestroyContext = (PfnFfxDestroyContext) getProc(module.dll, "ffxDestroyContext");
+            module.Dispatch = (PfnFfxDispatch) getProc(module.dll, "ffxDispatch");
+            module.Query = (PfnFfxQuery) getProc(module.dll, "ffxQuery");
+            module.filePath = path.wstring();
+
+            if (module.CreateContext == nullptr || module.DestroyContext == nullptr || module.Configure == nullptr ||
+                module.Dispatch == nullptr || module.Query == nullptr)
+            {
+                FreeLibrary(module.dll);
+                return nullptr;
+            }
+
+            WLOG_INFO(L"The game's denoiser calls go to its own {}", module.filePath);
+            return &module;
+        }();
+
+        return game;
+    }
+
     static FFXStructType GetType(ffxStructType_t type)
     {
         switch (type & FFX_API_EFFECT_MASK) // type without the specific effect
