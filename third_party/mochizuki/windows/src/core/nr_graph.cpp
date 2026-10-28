@@ -5589,16 +5589,16 @@ void NrSession::create_kernels(const std::string& spv_dir, const std::set<std::s
         }
         struct Tick { ~Tick() { ++nr::g_build_pipes_done; } } tick;
         std::string p = spv_dir + "/g_" + d.kern + ".spv";
-        // RX 7000 kit 5 (local patch 22): the RDNA3 network's C=512 window attention as the RDNA2 tree's native body
-        // (g_attnnat.spv, no cooperative matrices) unless NR_RDNA3_ATTN=released; a tree without it keeps g_attn.spv.
-        // NR_RDNA3_ATTN=<file>.spv (diagnostic): that SPIR-V, same bindings and push block.
-        if (ctx.rdna3 && d.kern == "attn") {
-            const char* e = std::getenv("NR_RDNA3_ATTN");
+        // RX 7000 kits 5-6 (local patches 22, 23), diagnostics only: NR_RDNA3_ATTN / NR_RDNA3_VITATTN = native loads
+        // the RDNA2 tree's native body (g_attnnat.spv / g_vitattnnat.spv, no cooperative matrices), = <file>.spv that
+        // SPIR-V (same bindings and push block). Unset: the shipped g_attn.spv / g_vitattn.spv.
+        if (ctx.rdna3 && (d.kern == "attn" || d.kern == "vitattn")) {
+            const char* e = std::getenv(d.kern == "attn" ? "NR_RDNA3_ATTN" : "NR_RDNA3_VITATTN");
             const std::string mode = e ? e : "";
-            const std::string nat = spv_dir + "/g_attnnat.spv";
+            const std::string nat = spv_dir + "/g_" + d.kern + "nat.spv";
             if (mode.size() > 4 && mode.compare(mode.size() - 4, 4, ".spv") == 0 && std::ifstream(mode).good()) p = mode;
-            else if (mode != "released" && std::ifstream(nat).good()) p = nat;
-            nr::logf("[nr] RDNA3 window attention: %s", p == nat ? "native (g_attnnat.spv)" : p.c_str());
+            else if (mode == "native" && std::ifstream(nat).good()) p = nat;
+            nr::logf("[nr] RDNA3 %s: %s", d.kern.c_str(), p.c_str());
         }
         // The Windows network's vitattn and residual GEMMs read through the arena's device
         // address (NR_VBDA, NR_RBDA); a device without bufferDeviceAddress runs the

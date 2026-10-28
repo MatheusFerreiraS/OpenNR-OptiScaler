@@ -312,8 +312,14 @@
 // direction, so **all four pads are inert** and a future round should not pay
 // for them again. `lds_s`'s "worth re-sweeping" note above is answered: SPAD=2
 // is 95.9/96.8 against 94.4/94.9, i.e. nothing.
+// RDNA3: 0. A 72-byte Q/K row (QPAD 4) is only 8-byte aligned, and the gfx11 driver's fragment loads from such
+// rows read the wrong bytes (RX 7000 kit 5: dispatch 11 alone changes from run to run; QPAD 0 is right and
+// deterministic on an RX 7900 XTX). Every fragment row in LDS stays a multiple of 16 bytes.
 #ifndef NR_QPAD
-#define NR_QPAD 4
+#define NR_QPAD 0
+#endif
+#if (NR_HD + NR_QPAD) % 8 != 0 && !(defined(NR_NATIVE) && NR_NATIVE)
+#error "NR_QPAD: Q/K rows in LDS must be a multiple of 16 bytes on gfx11"
 #endif
 #ifndef NR_VPAD
 #define NR_VPAD 0

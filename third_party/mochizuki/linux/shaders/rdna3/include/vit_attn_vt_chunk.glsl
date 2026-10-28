@@ -32,6 +32,29 @@
             // probabilities that multiply a padding tile are already zero, and a
             // load that is always in bounds is always the same basic block.
             NR_FRAG_A vf[2];
+#if NR_VT_STAGE
+            // RDNA3: no ColumnMajor A load from the arena (sixteen f16 a lane, 32 bytes apart), which changes from
+            // run to run on an RX 7900 XTX (kit 5, dispatch 21). Lane l reads key l%16's sixteen dims of tile l/16
+            // (four 8-byte loads) and writes them transposed to LDS; both fragments then load RowMajor from 32-byte
+            // rows. The same values in the same fragments.
+            {
+                const uint vn = sl >> 4u, vt = sl & 15u, vtb = wave * 512u + vn * 256u;
+#if NR_VADDR && NR_VT_GUARD == 0
+                const uint v4 = (vcb + kb * X3 + vn * 256u + vt * 16u) >> 2;
+#else
+                const uint v4 = (nr_at16(pc.x_off, min(j0 + kb, jlast), vbase + vn * 16u, X3) + vt * 16u) >> 2;
+#endif
+                const fe4m3vec4 r0 = act_x4[v4], r1 = act_x4[v4 + 1u], r2 = act_x4[v4 + 2u], r3 = act_x4[v4 + 3u];
+                subgroupBarrier();   // the previous key block's fragment loads are done with lds_vt
+                for (uint v = 0u; v < 4u; ++v) {
+                    lds_vt[vtb + v * 16u + vt] = r0[v];        lds_vt[vtb + (v + 4u) * 16u + vt] = r1[v];
+                    lds_vt[vtb + (v + 8u) * 16u + vt] = r2[v]; lds_vt[vtb + (v + 12u) * 16u + vt] = r3[v];
+                }
+                subgroupMemoryBarrierShared();
+                subgroupBarrier();
+                for (uint n = 0u; n < 2u; ++n) NR_LOAD_A(vf[n], lds_vt, wave * 512u + n * 256u, 16u);
+            }
+#else
             for (uint n = 0u; n < 2u; ++n)
 #if NR_VADDR && NR_VT_GUARD == 0
                 NR_LOAD_A_COL(vf[n], act_e4m3, vcb + kb * X3 + n * 256u, 16u);
@@ -39,6 +62,7 @@
                 NR_LOAD_A_COL(vf[n], act_e4m3,
                               nr_at16(pc.x_off, min(j0 + kb, jlast),
                                       vbase + n * 16u, X3), 16u);
+#endif
 #endif
             for (uint b = 0u; b < uint(NR_QB); ++b) {
                 NR_FRAG_ACC lg = NR_ACC_ZERO;

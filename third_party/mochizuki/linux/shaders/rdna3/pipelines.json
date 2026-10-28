@@ -10,7 +10,7 @@
   "attn": {"source": "attn.comp",
    "defines": ["NR_ACC_F16=0", "NR_COHERENT_ACT=0", "NR_ATTN_PAIR_QUANT=1", "NR_IMAGE=1", "NR_ATTN_TRANSPOSE=1", "NR_ATTN_VTRANS=1", "NR_ATTN_KOFF=1", "NR_ATTN_OOB_BRANCH=1", "NR_ATTN_VFRAG=1", "NR_ATTN_QKSWAP=1", "NR_ATTN_EXP2=1", "NR_ATTN_REMAP=16", "NR_OCC_LDS=3072", "NR_GEMM_REMAP_PC=1", "NR_ATTN_WPAIR=1", "NR_TCHAIN=1", "NR_APIPE=2"]},
   "attnnat": {"source": "attn.comp",
-   "defines": ["NR_ACC_F16=0", "NR_COHERENT_ACT=0", "NR_ATTN_PAIR_QUANT=1", "NR_IMAGE=1", "NR_ATTN_TRANSPOSE=1", "NR_ATTN_VTRANS=1", "NR_ATTN_KOFF=1", "NR_ATTN_OOB_BRANCH=1", "NR_ATTN_VFRAG=1", "NR_ATTN_QKSWAP=1", "NR_ATTN_EXP2=1", "NR_ATTN_REMAP=16", "NR_OCC_LDS=3072", "NR_GEMM_REMAP_PC=1", "NR_ATTN_WPAIR=1", "NR_TCHAIN=1", "NR_APIPE=2", "NR_NATIVE=1"]},
+   "defines": ["NR_ACC_F16=0", "NR_COHERENT_ACT=0", "NR_ATTN_PAIR_QUANT=1", "NR_IMAGE=1", "NR_ATTN_TRANSPOSE=1", "NR_ATTN_VTRANS=1", "NR_ATTN_KOFF=1", "NR_ATTN_OOB_BRANCH=1", "NR_ATTN_VFRAG=1", "NR_ATTN_QKSWAP=1", "NR_ATTN_EXP2=1", "NR_ATTN_REMAP=16", "NR_OCC_LDS=3072", "NR_GEMM_REMAP_PC=1", "NR_ATTN_WPAIR=1", "NR_TCHAIN=1", "NR_APIPE=2", "NR_QPAD=4", "NR_NATIVE=1"]},
   "decups": {"source": "decoder_upsample.comp",
    "defines": ["NR_DECUPS_VEC=16"]},
   "ffwd3": {"source": "ffwd3_t.comp",
@@ -112,7 +112,9 @@
   "upsview": {"source": "upsample_view.comp",
    "defines": ["NR_UPSVIEW_VEC=1"]},
   "vitattn": {"source": "vit_attn.comp",
-   "defines": ["NR_COHERENT_ACT=0", "NR_C=1024", "NR_HEADS=32", "NR_VWAVES=1", "NR_KC=64", "NR_QT=32", "NR_VTRANS=1", "NR_VPRENORMALIZED=1", "NR_VPACKED_DEN=1", "NR_VSPLIT_TAIL=1", "NR_VQCLAMP=1", "NR_VADDR=1", "NR_VKMAN=1", "NR_VOUT_VEC=1", "NR_VKPERM=1", "NR_VOUT_PAIR=1", "NR_TCHAIN=1"]}
+   "defines": ["NR_COHERENT_ACT=0", "NR_C=1024", "NR_HEADS=32", "NR_VWAVES=1", "NR_KC=64", "NR_QT=32", "NR_VTRANS=1", "NR_VPRENORMALIZED=1", "NR_VPACKED_DEN=1", "NR_VSPLIT_TAIL=1", "NR_VQCLAMP=1", "NR_VADDR=1", "NR_VKMAN=1", "NR_VOUT_VEC=1", "NR_VKPERM=1", "NR_VOUT_PAIR=1", "NR_TCHAIN=1", "NR_VT_STAGE=1"]},
+  "vitattnnat": {"source": "vit_attn.comp",
+   "defines": ["NR_COHERENT_ACT=0", "NR_C=1024", "NR_HEADS=32", "NR_VWAVES=1", "NR_KC=64", "NR_QT=32", "NR_VTRANS=1", "NR_VPRENORMALIZED=1", "NR_VPACKED_DEN=1", "NR_VSPLIT_TAIL=1", "NR_VQCLAMP=1", "NR_VADDR=1", "NR_VKMAN=1", "NR_VOUT_VEC=1", "NR_VKPERM=1", "NR_VOUT_PAIR=1", "NR_TCHAIN=1", "NR_NATIVE=1"]}
  },
  "variants": {
   "temporal_pre_fp32": {"base": "fswinimagepreds32", "add": ["NR_TEMPORAL=1"]},

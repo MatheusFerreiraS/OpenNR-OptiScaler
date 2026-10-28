@@ -368,6 +368,22 @@ Local patches:
     FP8 network's (rel 0.0004), deterministic with any fill and scrub; the released `attn` is wrong there by design.
     RDNA4 never reads it: byte-identical to the 0.5.8 DLL (harness, 40 frames, small and 310.8 model, 1280x720 and
     1920x1080, driver compiler and ACO); `shaders` and `shaders-rdna3` byte-identical to 0.5.8's but for the new file.
+23. RDNA3 cooperative-matrix memory access kept 16-byte aligned and gather-free (RX 7000 kit 6). Kit 5 on an RX 7900
+    XTX: `attn` alone is right and deterministic with `NR_QPAD=0` (Q/K rows in LDS 64 bytes apart) and wrong, changing
+    run to run, with the released 4 (72-byte rows, 8-byte aligned); the next dispatch that changes even alone is
+    `vitattn`, which has no LDS fragments but is the only dispatched RDNA3 kernel with a ColumnMajor A load from a
+    buffer (V^T, sixteen f16 a lane 32 bytes apart). Every coopMatLoad/Store of `shaders-rdna3` was audited in the
+    SPIR-V: the 72-byte rows were the only stride that is not a multiple of 16 bytes (the runtime strides of
+    gemmvqkv/gemmvqkvs are N, a multiple of 128). Changes, RDNA3 tree only: `attn.comp` `NR_QPAD` defaults to 0
+    with an `#error` for rows that are not a multiple of 16 bytes (`attnnat` keeps 4, its SPIR-V unchanged);
+    `vit_attn.comp` `NR_VT_STAGE` (on in `pipelines.json`): each lane reads one key's sixteen dims of a V tile with
+    four 8-byte loads, stores them transposed to 1 KB of LDS a wave, and both V^T fragments load RowMajor from
+    32-byte rows (`vit_attn_vt_chunk.glsl`); `include/vit_native.glsl` (the RDNA2 tree's, 22abb593d, NR_DOT2 and RTE
+    added) as pipeline `vitattnnat`. `nr_graph.cpp` `create_kernels`: the shipped `g_attn.spv` / `g_vitattn.spv` by
+    default; `NR_RDNA3_ATTN` / `NR_RDNA3_VITATTN` = `native` or `<file>.spv` are diagnostics. On the RX 9070 XT the
+    staged V^T equals the ColumnMajor load bit for bit (probe, 100% equal to V^T); RDNA4 byte-identical to the 0.5.8
+    DLL (harness, 40 frames, small and 310.8 model, 1280x720 and 1920x1080, driver compiler and ACO); `shaders` and
+    `aco` byte-identical, `shaders-rdna3` differs only in g_attn, g_vitattn and the new g_vitattnnat.
 
 The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
 OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;
