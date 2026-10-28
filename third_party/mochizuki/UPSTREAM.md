@@ -309,6 +309,89 @@ Local patches:
 17. The ACO slot for RDNA3: `nr_pal_binary.hpp` names the code objects it takes (`takes_machine`: gfx1200 and
     gfx1201, as before) so the host can ask before it would take gfx11 records, and `nr_runtime.cpp` lets an RDNA3
     network run ACO only from a bundle named `aco-gfx11` (never RDNA4's records). No gfx11 records exist yet.
+18. The stage dump (a diagnostic, both networks): `nr_runtime.cpp` `Impl::StageDump` and `windows/src/core/
+    stage_stats.comp` (embedded by `tools\build-mochizuki-runtime.cmd`). With `MZ_STAGE_DUMP=<dir>`, in recording
+    `MZ_STAGE_FRAME` (default 8) every activation value a later dispatch reads (by plan key, `voff.used`) gets 16
+    chunk statistics (sum, sum |x|, sum x^2, max |x|, NaN/Inf, zeros, an order-free hash of the decoded values) right
+    after the dispatch that made it, read as e4m3, f16 and f32 from the arena and on RDNA3 as f16 from the twin;
+    `MZ_STAGE_FULL=<key>` also copies that value's raw bytes; the persistent runs' epoch and error words are copied
+    at the end. `stages.txt` (dispatches, values, error words) and `stages.bin` are written at the next recording.
+    It adds dispatches and barriers to that one recording only. Without `MZ_STAGE_DUMP` nothing is created or
+    recorded: the output is byte-identical to the 0.5.8 DLL's (RX 9070 XT, harness, 12 sizes, both models, FP8 and
+    ACO), and with it the frame is too. `tools\rx7000-diag\stagecmp.cpp` compares two dumps.
+19. No persistent runs on RDNA3 (`nr_graph.cpp`, the merge of plain fused-Swin layers into `fswinp*` dispatches):
+    an RDNA3 build runs every layer as its own dispatch, with the barrier between, unless `NR_RDNA3_PERSIST=1`, as
+    it keeps the barriers the tile counters would drop. The persistent runs pass data between workgroups of one
+    dispatch through flags. On the RX 7800 XT (driver 26.10.1) the RDNA3 network was wrong and changed from run to
+    run at every size; the RX 9070 XT forced onto that network runs out of its waits with the 310.8 model at
+    1600x900 and up (0.6 to 1.2 s a frame, error word set) and is byte-identical with and without them wherever
+    they finish (small model 1152x648, 1280x720, 1920x1080). Forced RDNA3, 310.8 model: 1600x900 583 -> 14.8 ms,
+    1920x1080 1188 -> 18.2 ms, run to run identical; small model 5.5 -> 5.8 ms at 1152x648, 6.9 -> 7.4 ms at 720p.
+    The RDNA4 network is unchanged (byte-identical to 0.5.8, harness, 720p and 1080p, both models).
+20. The kernel capture (a diagnostic, both networks): `nr_runtime.cpp` `Impl::KernelCapture`, `nrvk.hpp`
+    `buffer_sizes()` (every buffer `Context::buffer` makes and its size) and `Kernel::spirv` / `bound_buffers` (what
+    `create` bound). With `MZ_KCAP=<dir>` and `MZ_KCAP_DISP=<n>`, in recording `MZ_KCAP_FRAME` (default 3) every
+    buffer network dispatch n binds is copied whole right before it (`MZ_KCAP_AFTER=1`: after it), with its SPIR-V
+    name, grid, push constants as pushed and bindings (`capture.txt`, `buf<k>.bin`), so `tools\rx7000-diag3\kreplay`
+    can run that one dispatch again. Without `MZ_KCAP` nothing is created or recorded.
+21. The sequence check and the RDNA3 barrier choice (RX 7000 kit 4): `nr_runtime.cpp` `Impl::SeqDiag`,
+    `Impl::sync_barrier`, `windows/src/core/seq_scrub.comp` (embedded by `toolsuild-mochizuki-runtime.cmd`), and in
+    the host `MZ_ONE_QUEUE=1` (no second queue for the builds). With `MZ_SEQ=<dir>` the buffers the network writes are
+    copied before dispatch `MZ_SEQ_FROM` (1) of recording `MZ_SEQ_FRAME` (3), what each dispatch ran (pipeline, set,
+    push, grid) is kept, and at the next recording, the device idle, every dispatch i up to the one before the post
+    block is replayed: dispatches from..i in one submit with the frame's own barriers, `MZ_SEQ_RUNS` (3) times, the
+    values i makes (plan keys; arena and FP16 twin) read back and hashed; i alone in its own submit after
+    `vkQueueWaitIdle`, on the bytes the from..i-1 prefix left, `MZ_SEQ_ISO` (3) times; and the prefix with the
+    variants of `MZ_SEQ_VARIANTS` (full: srcAccess SHADER_WRITE; global: memory write -> memory read/write over all
+    commands; twinbuf: global plus whole buffer barriers on the arena and its twin; submit: one submit per dispatch;
+    scrub / zero: before each dispatch a dispatch that leaves its 64 KB of LDS and ~96 VGPRs a lane with a random
+    pattern / zeros). `MZ_SEQ_REF=1` writes each value's every `MZ_SEQ_SAMPLE`-th 256-byte block (the FP8 network's,
+    the reference), `MZ_SEQ_REFS=<dir>` measures against one. With persistent runs the weights are copied too
+    (`MZ_SEQ_ALL=1` always); a persistent run's replay is not faithful (fswinpup256 changes between replays on the forced
+    RX 9070 XT while the frame itself does not), so the kit replays the one-dispatch-a-layer network only.
+    `<dir>/seq.txt`: a RESULT line per check (the first dispatch that changes, that differs from itself alone, per
+    variant), then every dispatch. Nothing is created or recorded without `MZ_SEQ`.
+    `NR_RDNA3_SYNC` = `released` | `full` | `global` | `twinbuf` (default) | `zero` picks the barrier between two
+    RDNA3 network dispatches (the same as the variants above; `zero` the released barrier plus the zero scrub before
+    every network dispatch). RDNA4 never reads it: byte-identical to the 0.5.8 DLL (harness, 40 frames, small and
+    310.8 model, 1280x720 and 1920x1080, driver compiler and ACO). On the forced RX 9070 XT every mode gives the same
+    picture; released / full / global / twinbuf cost the same (1152x648 5.7 ms, 1080p 11.0-11.4 ms), zero about
+    twice that (10.0 / 21.0 ms).
+22. The RDNA3 window attention as the RDNA2 tree's native body (RX 7000 kit 5): `linux/shaders/rdna3/include/
+    attn_native.glsl` is `mochizuki-rdna2`'s (6bafaac91) with `NR_DOT2` and its round-to-nearest-even FP16 mode added,
+    `attn.comp` takes it under `NR_NATIVE=1` as the RDNA2 tree does, and `pipelines.json` builds it as `attnnat` (the
+    `attn` defines plus `NR_NATIVE=1`): no cooperative matrices, so no gfx11 fragment layout. `nr_graph.cpp`
+    `create_kernels` loads `g_attnnat.spv` for the RDNA3 network's `attn` dispatches when it exists, unless
+    `NR_RDNA3_ATTN=released`; `NR_RDNA3_ATTN=<file>.spv` loads that one (a diagnostic, same bindings and push block).
+    The log says which: `[nr] RDNA3 window attention: ...`. Same bindings, push block and grid as `attn`. On the RX
+    9070 XT, dispatch 11 alone on the FP8 network's own inputs (kreplay, 1152x648) gives key 74 99.35% equal to the
+    FP8 network's (rel 0.0004), deterministic with any fill and scrub; the released `attn` is wrong there by design.
+    RDNA4 never reads it: byte-identical to the 0.5.8 DLL (harness, 40 frames, small and 310.8 model, 1280x720 and
+    1920x1080, driver compiler and ACO); `shaders` and `shaders-rdna3` byte-identical to 0.5.8's but for the new file.
+23. RDNA3 cooperative-matrix memory access kept 16-byte aligned and gather-free (RX 7000 kit 6). Kit 5 on an RX 7900
+    XTX: `attn` alone is right and deterministic with `NR_QPAD=0` (Q/K rows in LDS 64 bytes apart) and wrong, changing
+    run to run, with the released 4 (72-byte rows, 8-byte aligned); the next dispatch that changes even alone is
+    `vitattn`, which has no LDS fragments but is the only dispatched RDNA3 kernel with a ColumnMajor A load from a
+    buffer (V^T, sixteen f16 a lane 32 bytes apart). Every coopMatLoad/Store of `shaders-rdna3` was audited in the
+    SPIR-V: the 72-byte rows were the only stride that is not a multiple of 16 bytes (the runtime strides of
+    gemmvqkv/gemmvqkvs are N, a multiple of 128). Changes, RDNA3 tree only: `attn.comp` `NR_QPAD` defaults to 0
+    with an `#error` for rows that are not a multiple of 16 bytes (`attnnat` keeps 4, its SPIR-V unchanged);
+    `vit_attn.comp` `NR_VT_STAGE` (on in `pipelines.json`): each lane reads one key's sixteen dims of a V tile with
+    four 8-byte loads, stores them transposed to 1 KB of LDS a wave, and both V^T fragments load RowMajor from
+    32-byte rows (`vit_attn_vt_chunk.glsl`); `include/vit_native.glsl` (the RDNA2 tree's, 22abb593d, NR_DOT2 and RTE
+    added) as pipeline `vitattnnat`. `nr_graph.cpp` `create_kernels`: the shipped `g_attn.spv` / `g_vitattn.spv` by
+    default; `NR_RDNA3_ATTN` / `NR_RDNA3_VITATTN` = `native` or `<file>.spv` are diagnostics. On the RX 9070 XT the
+    staged V^T equals the ColumnMajor load bit for bit (probe, 100% equal to V^T); RDNA4 byte-identical to the 0.5.8
+    DLL (harness, 40 frames, small and 310.8 model, 1280x720 and 1920x1080, driver compiler and ACO); `shaders` and
+    `aco` byte-identical, `shaders-rdna3` differs only in g_attn, g_vitattn and the new g_vitattnnat.
+24. The RDNA3 network as released after kit 6 (RX 7900 XTX rerun with the model): `attn` with `NR_QPAD=0` (patch 23)
+    is right and deterministic; `vitattn` still changes run to run with the staged V^T (the V^T probe was right
+    either way, so the gather was not it), and the full network is right at 1152x648 and 1280x720 only with the
+    native body (54-56 / 53-56 dB, 0.5.8 23-25 dB; +0.6-0.8 ms). So `vitattn` in `pipelines.json` is the native
+    body (`NR_NATIVE=1`, its SPIR-V the kit's `g_vitattnnat.spv`), `NR_VT_STAGE` is gone (`vit_attn_vt_chunk.glsl`
+    as in 0.5.8), and the diagnostic pipelines `attnnat` / `vitattnnat` and `include/attn_native.glsl` are removed,
+    since the startup pipeline check compiles every `.spv` in `shaders-rdna3`. `NR_RDNA3_ATTN` / `NR_RDNA3_VITATTN`
+    keep only the `<file>.spv` form (diagnostic, logged when used). RDNA4 byte-identical to the 0.5.8 DLL.
 
 The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
 OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;

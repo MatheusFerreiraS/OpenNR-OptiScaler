@@ -40,7 +40,11 @@ rem The RDNA3 network's layout probes (mz_rdna3.cpp), embedded as SPIR-V arrays.
 set "PROBE=OptiScaler\dlssnr\backend\mochizuki_runtime\rdna3_probe"
 if not exist "%OBJ%\rdna3_probe" mkdir "%OBJ%\rdna3_probe"
 for %%s in (acc32 acc16 fraga fragb halves kswap) do "%GLSLANG%\bin\glslang.exe" --target-env vulkan1.3 --vn mzr3_probe_%%s -o "%OBJ%\rdna3_probe\%%s.h" "%PROBE%\%%s.comp" >nul || goto fail
-cl %CFLAGS% %NR_DEFINES% %MZI% %INCLUDES% /c "%UP%\windows\src\core\nr_runtime.cpp" /Fo"%OBJ%\nr_runtime.obj" || goto fail
+rem MZ_STAGE_DUMP's statistics shader (a diagnostic, nr_runtime.cpp StageDump), embedded as a SPIR-V array.
+"%GLSLANG%\bin\glslang.exe" --target-env vulkan1.3 --vn mz_stage_stats -o "%OBJ%\stage_stats.h" "%UP%\windows\src\core\stage_stats.comp" >nul || goto fail
+rem MZ_SEQ's and NR_RDNA3_SYNC=zero's scrub (nr_runtime.cpp, local patch 21), embedded likewise.
+"%GLSLANG%\bin\glslang.exe" --target-env vulkan1.3 --vn mz_seq_scrub -o "%OBJ%\seq_scrub.h" "%UP%\windows\src\core\seq_scrub.comp" >nul || goto fail
+cl %CFLAGS% %NR_DEFINES% %MZI% %INCLUDES% /I "%OBJ%" /c "%UP%\windows\src\core\nr_runtime.cpp" /Fo"%OBJ%\nr_runtime.obj" || goto fail
 cl %CFLAGS% %INCLUDES% /c "%UP%\windows\src\core\nr_native_plan.cpp" /Fo"%OBJ%\nr_native_plan.obj" || goto fail
 rem Upstream's RenoDX stage, which the network always runs in: RenoDX's encode and composition around it.
 cl %CFLAGS% %INCLUDES% /c "%UP%\windows\src\core\nr_renodx.cpp" /Fo"%OBJ%\nr_renodx.obj" || goto fail
