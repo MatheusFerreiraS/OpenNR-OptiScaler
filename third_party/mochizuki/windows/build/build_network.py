@@ -102,7 +102,7 @@ def main():
     (out / 'temporal').mkdir()
     for name, v in table['variants'].items():
         base = pipelines[v['base']]
-        glslang(a.arch, SHADERS / a.arch / base['source'], base['defines'] + v['add'],
+        glslang(a.arch, SHADERS / a.arch / base['source'], base['defines'] + v['add'] + a.define,
                 out / 'temporal' / f'{name}.spv', unroll=base['source'] in UNROLLED, network=True)
     grade = table['style_grade']
     for name in grade['pipelines']:
@@ -112,7 +112,7 @@ def main():
     for name in grade['variants']:
         base = pipelines[table['variants'][name]['base']]
         glslang(a.arch, SHADERS / a.arch / base['source'],
-                base['defines'] + table['variants'][name]['add'] + grade['add'], out / 'temporal' / f'{name}_grade.spv',
+                base['defines'] + table['variants'][name]['add'] + a.define + grade['add'], out / 'temporal' / f'{name}_grade.spv',
                 unroll=base['source'] in UNROLLED, network=True)
     for k in MOTION:
         glslang(a.arch, R / 'windows/shaders/passes' / f'{k}.comp', [], out / 'temporal' / f'{k}.spv')

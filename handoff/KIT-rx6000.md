@@ -4,14 +4,97 @@ Worktree `wt-rdna2`, branch `mochizuki-rdna2`, local commit only (nothing pushed
 touched). Plan section 9 item 6. Clean room kept: the GPL RDNA2 port was not opened, searched or fetched; the kit is
 built from this branch's own export and the RX 7000 kits' tools.
 
-Package (rebuilt 2026-10-28 12:2x, kit v4: the attention cache in every C=32 Swin body, attn with 12 KB of LDS, and a
-variant stage that times the C>=64 cache on the card; section below):
-`E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip`, 20,287,078 bytes (19.3 MB, 125 files, models not
-included), SHA-256 `EB909F1C11B414781A5E690303D8056456ACB303C7E252537C357F8C522233A0` (also in
-`rx6000-test-kit\SHA256.txt`), copied to `rx6000-test-kit\send\OpenNR-RX6000-test-v4.zip` (+ `.sha256.txt`). One
-`run-test.bat`, one result zip `OpenNR-RX6000-result-<date>.zip`. Older kits in `send\`: v2 (`OpenNR-RX6000-test-v2.zip`,
-7A088A20...CCBFF4, the one the RX 6600 ran) and `OpenNR-RX6000-test.zip` (from before the fswinds removal). Kit v3
-(D1FF3AF8...6F97A1) was never sent.
+Package (rebuilt 2026-10-28 late, kit v5: the attention cache in every Swin body, pass 1 rolled, three candidate
+sets compiled cold on the card, six quality cases; section below):
+`E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip`, 47,359,395 bytes (45.2 MB, 211 files, models not
+included), SHA-256 `87CC9A6F022F19DDA7C6B78E953A5B887CB4935BCB08556D396A27830ABA001D` (also in
+`rx6000-test-kit\SHA256.txt`), copied to `rx6000-test-kit\send\OpenNR-RX6000-test-v5.zip` (+ `.sha256.txt`). One
+`run-test.bat`, one result zip `OpenNR-RX6000-result-<date>.zip`. Older kits in `send\`: v4 (EB909F1C...2233A0, the one
+the RX 6600 ran second), v2 (7A088A20...CCBFF4).
+
+## Cache on C>=64, pass 1 rolled, candidate sets (2026-10-28 late, kit v5)
+
+RX 6600 kit v4 result (driver 26.8.1, AMD proprietary shader compiler): all PASS with identical hashes, Small 720p
+61.0 ms, 1080p 128.1, 310.8 720p 142.1; variant `pcache64` IDENTICAL and faster (Small 720p steps 63.2 -> 60.3 ms,
+310.8 144.3 -> 140.9). But cold compile got worse: first build 89.6 s (check 29.6 s on 6 threads + 36 pipelines
+built serially in 58.9 s), and each C=32 body / pre / post took 5.1-6.2 s in pipecheck against 3.0-3.4 s in the kit v2
+cold run before the cache (the C>=64 cached form 6.3-6.8 s against 2.9-3.2). Three cold compiles happen per kit run
+(pipecheck, the runtime's check in rundll32, the build in mz_e2e): this driver's shader cache does not carry across
+those processes, and the v4 variant (MZ_RDNA2_CHECK=0) rebuilt its 9 files cold in mz_e2e right after pipecheck.
+
+Changes (`include/fswin_native.glsl`, `windows/build/build_network.py`; RDNA2 set only; output byte-identical):
+1. `NV_PCACHE` defaults to 1 for every body, C>=64 included (decision from the RX 6600).
+2. `NV_PCROLL` (new), how pass 1 fills the 32-entry probability cache: 0 unrolled (four `nv_probs16` copies, the v4
+   form), 1 rolled (default: `j < 4 + opaque`, one copy, each block shifted in at the end of the queue so the indices
+   stay constant), 2 two blocks an iteration (two copies, shifted by 16). Pass 2 is the same in all three (uniform
+   select). Same values, same FP16 sum order. Tried and dropped: a rolled pass 1 writing block j in place with a
+   select (gfx1030 155-161 VGPRs C=32, 242 C>=64).
+3. `build_network.py` passes `--define` to the temporal variants too (they ignored it, so a `--define` build mixed
+   forms in `temporal\`). No define in the real build: RDNA4/RDNA3 untouched.
+
+gfx1030 (vkisa, null NAVI21, .342), VGPRs / static instructions, unrolled -> rolled -> half: C=32 bodies and pre/post
+119-122 / 9.6-11.7k -> 143-148 / 8.4-10.5k -> 144-152 / 8.9-11.0k (8 -> 7 waves a SIMD for rolled and half); C>=64
+188-192 / 14.3-18.3k -> 228-229 / 13.1-17.1k -> 235-236 / 13.6-17.5k (LDS-bound at 4 waves in all three); 0 scratch
+everywhere. 28 files differ between the forms (19 C=32 family + 9 C>=64).
+
+Byte identity, forced RDNA2 on the 9070 XT (`nat5.ps1` via `p7id.ps1`, under the lock): 1 frame, both models,
+720p/1080p/1440p, all three forms: E9F5E89BF57A08BA / D07096C4C35774C0 / EB2040C4FB5801C2 and D0A1B50ECEE12A7B /
+A5A0A39437A13D19 / 3AA32BB2BDFB26BF (unchanged). Normal mode 40 frames, rolled and half: FA35B425 / C9A4FB6E /
+FB987C4B, 188D4AAD / 44C578C4 / 3DD8A4A3 (unchanged). Unrolled: the three Small cases and 310.8 720p the same; 310.8
+1080p/1440p gave the 1-frame hashes, because on gfx1201 the unrolled C>=64 cache spills (252 / 386 ms a frame) and
+every frame goes over the 0.25 s history gap (the known timing effect, see "Native GEMMs"); not an arithmetic change.
+Rebuilt export: `shaders\`, `shaders-rdna3\`, `aco\`, `int4\` byte-identical to the previous export, `shaders-rdna2` ==
+the rolled set (28 files changed); RDNA4 `ab.ps1` (40 frames): 258FEC01 / 01588CA6 / 2A308F2C / 04A421E7.
+
+9070 XT forced, sanity only (gfx1201 is not the target): the rolled C>=64 cache does not spill there, so the shipped
+set is a little faster than v4 (kit SPEED Small 720p 26.0 -> 24.0 ms, 1080p 43.3 -> 40.1, 310.8 720p 57-62 -> 49.9-50.3;
+STEPS 24.1 / 40.3 / 50.4 ms); half the same; unrolled 2.4x slower (the spill). Step runs in `p7\summary.txt` were noisy
+(27-35 ms for the same case across rounds).
+
+Kit v5 (`tools/rx6000-kit`):
+- Quality cases: Small 1152x648, 1280x720, 1506x847, 1920x1080, 2560x1440 and 310.8 1280x720, 3 runs each. New FP8
+  references made here (`make-refs.ps1`, refwork updated to this export; the three old references reproduced:
+  6A89FDF7 / 0D5AFED3 / 7DC466CE). FP8 / forced RDNA2 / PSNR (worst area): 648p C167A5C4 / 74C822AA / 49.46 dB,
+  847p CC2C84C6 / EDCED3A5 / 52.73 dB, 1440p F8F6FA02 / EB2040C4 / 52.99 dB (720p/1080p/310.8 as in the table below).
+  The old references are in `exports\rx6000-kit\reference-v4`.
+- Stage 6 is now the candidate sets: `files\variant\rolled` (the shipped set's 28 files), `half`, `unrolled`, each
+  with its own SPIR-V generator word (header word 2 low half 0x7701 / 0x7702 / 0x7703, `tools/rx6000-kit/genword.py`) so that no driver
+  cache holds them (the RX 6600 had compiled the unrolled C=32 files in kit v4). For each: laid over the shipped set
+  in `files\mixed_<name>`, first clean run Small 720p with the runtime's check on (cold: check time, per-shader times
+  from `rdna2-check\pipelines.log` into `variant\<name>\check-by-time.txt`, build time), then 310.8 720p clean; both
+  pictures must be IDENTICAL to stage 4's. Then the steps of Small 720p and 310.8 720p, 2 rounds, the sets
+  alternating (round 2 reversed). `SET` lines per set; `PICK`: the fastest (sum of the two cases' averages), or among
+  the sets within 1% of it the one whose 28 files the check compiled in the least summed time. IN SHORT says the pick.
+  The separate variant pipecheck is gone (the check's per-shader times replace it); `check-by-time.txt` for the
+  shipped set too.
+- README: five checks, "about 10 to 20 minutes (on an RX 6600 about 15)". RX 6600 estimate: v4's 8 min + ~1.5 min for
+  the new quality cases + three cold sets ~1.5 min each (check ~25 s + build ~50-60 s + steps) + 12 step runs ~2 min
+  = ~15 min; less if the rolled set compiles faster as expected.
+
+Kit run 8 (forced, models pre-copied, main stages cold, `exports\rx6000-kit\run8a.out`; it still had the shipped set as a
+candidate without its own generator word, replaced since): 5.7 min. Run 9 (the shipped kit, `run9.out`,
+`run9-result.zip`): 5.5 min; main stages warm; every quality case PASS with the hashes and dB above, runs identical;
+SPEED 23.98 / 40.17 / 49.89 ms; sets: rolled steps 74.8 ms, check of the 28 files 82.1 s summed (check 12.9 s, build
+47.6 + 5.6 s), half 75.2 ms / 87.1 s, unrolled 180.6 ms / 106.7 s; PICK rolled. On this driver (the system's, not the
+RX 6600's) the rolled files compile ~23% quicker than unrolled.
+
+What to read in the RX 6600's v5 result: `PICK`, the three `SET` lines (steps and the 28 files' cold check time), and
+`check-by-time.txt` / `variant\*\check-by-time.txt`. If PICK is `unrolled` (faster by more than 1%), set
+`NV_PCROLL` default 0; `half` -> 2; `rolled` -> keep. The first build (`INFO first network build`) is the game's
+first start: compare with v4's 89.6 s.
+
+Files (outside git): `exports\rdna2-work\p7id.ps1` (forced identity runs of several sets under the lock),
+`p7time.ps1`, `p7\` (`id1.txt`, `id40.txt`, `summary.txt`), `ab\p7_r0/r1/r2` (the three sets), `ab\p7_r4` (RDNA4 check),
+`build-p7.log`; `exports\rx6000-kit\variant\{rolled,half,unrolled}`, `variant-v4\pcache64`, `reference` (6 cases),
+`reference-v4`, `run8.ps1`, `run8a.out`, `run9.out`, `run9-result.zip`. Scratch
+`C:\Users\matheus\AppData\Local\Temp\claude\E--Projetos-opti-rr-dlss5\795b344c-93eb-4227-8c2f-f4383752f0e5\scratchpad\rdna2-p7`:
+`sets\r0 r1 r2` (NV_PCROLL 0/1/2), `out\` (gfx1030 ISA + `sum_r*.txt`), `scripts\` (`isa.sh`, `isaset.sh`,
+`kit_ed.py`), `prev\` (the previous export).
+
+Not done (host side, would cut the first start more than any shader form): the runtime compiles every pipeline three
+times on a cold driver (check children, then the serial build: no prewarm manifest on a first start). Sharing the
+check children's pipeline cache with the build, or a prewarm list known before the first build, would remove most of
+the 58.9 s serial build on the RX 6600.
 
 ## Swin attention cache everywhere, attn LDS (2026-10-28, kit v4)
 
@@ -238,7 +321,7 @@ dispatches (top: fswin256 13.9, attn 8.3, fswin128 6.4, ffwd3 5.2, fswin64 4.7).
    child process, wave32, no matrix extension (`PIPECHECK_COOP=0`, as the RDNA2 runtime),
    300 s a module, no new module after 900 s, the stage killed at 22 min. Writes `pipecheck.txt` and
    `pipelines-by-time.txt` (per-pipeline ms, slowest first). Any FAIL/CRASH/TIMEOUT/NOTRUN: network stages skipped.
-4. **Quality**: small 720p, small 1080p, 310.8 720p; clean mode (`NR_DIAG_SEED0=1 NR_DIAG_TGATE0=1`), 8 frames,
+4. **Quality**: small 648p, 720p, 847p, 1080p, 1440p and 310.8 720p (kit v5; before: small 720p, 1080p, 310.8 720p); clean mode (`NR_DIAG_SEED0=1 NR_DIAG_TGATE0=1`), 8 frames,
    3 runs each, scored by `compare.exe` against the RX 9070 XT FP8 references (quarter area 4x4-averaged, bottom 64
    rows, right 64 columns, lossless JXR; worst area counts), PASS at >= 40 dB and no NaN/Inf in all 3 runs; r1 vs r2/r3
    byte comparison for determinism; the output SHA-256 prefix is printed (compare with the table below). The first run
@@ -250,7 +333,8 @@ dispatches (top: fswin256 13.9, attn 8.3, fswin128 6.4, ffwd3 5.2, fswin64 4.7).
    read-only, samples every 100 ms, median/min/max graphics clock, memory clock, temperature over samples with
    graphics activity >= 50%). Then `NR_STEP_TIMES=20` (30 frames) at small 720p, small 1080p and 310.8 720p
    (`large_1280x720`, new 2026-10-27): `steps_<case>.txt` with the full per-pipeline table.
-6. **Variants** (new in v4): each `files\variant\<name>\` (a few `shaders-rdna2` files + `about.txt`) is compiled
+6. **Shader sets** (kit v5: three candidate sets compiled cold and timed, `PICK` line; section at the top). Kit v4 form:
+   **Variants**: each `files\variant\<name>\` (a few `shaders-rdna2` files + `about.txt`) is compiled
    with pipecheck, laid over a copy of the set in `files\mixed\`, run once clean for `$VariantCases` (Small 720p,
    310.8 720p; the sha must equal stage 4's) and with `NR_STEP_TIMES`: `VARIANT` lines, `steps_<name>_<case>.txt`.
    v4 ships `pcache64` (the C>=64 attention cache).
@@ -371,5 +455,8 @@ tools\rx6000-kit\make-refs.ps1 $k\refwork $k\reference                     # FP8
 tools\rx6000-kit\build-kit.ps1 exports\mochizuki-rdna2 $k\reference $k\kit $k\variant   # variant: optional
 tools\rx6000-kit\pack-kit.ps1 $k\kit E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip
 ```
+The variant folders (`$kariant\<name>`: the 28 files of one `NV_PCROLL` build, `build_network.py rdna2 --tree linux
+--no-quad --define NV_PCROLL=<n>`, plus `about.txt`) get their own generator word with
+`toolsx6000-kit\genword.py <dir> 0x770<n>`; one of them must be the shipped form.
 A new shaders-rdna2 needs new references only if the network's arithmetic changed (the references are the FP8
 network's).

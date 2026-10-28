@@ -420,6 +420,16 @@ quantised q and k over them once each lane has read its rows (one barrier more):
 waves a SIMD. The C=32 fused upsample and the wide one read their blend gains as one dword a pair. Same arithmetic
 and order: the output is byte-identical.
 
+`NV_PCACHE` is now the default of every native Swin body, C>=64 included: an RX 6600 (driver 26.8.1) ran the C>=64
+cached form 2-5% faster with the same picture, against 2-6x slower on gfx1201 (it spills there; the RDNA2 set never
+runs on gfx1201 outside the forced tests). `NV_PCROLL` says how pass 1 fills the cache: 0 unrolled (four copies of the
+logits; the RX 6600's compiler took 5.2-6.8 s for each such body, against 2.9-3.4 s before the cache), 1 rolled (the
+default: one copy, each block shifted in at the end of a 32-entry queue so the indices stay constant; gfx1030 .342
+143-148 VGPRs for C=32, 7 waves a SIMD instead of 8, 228 for C>=64, LDS-bound at 4 either way), 2 two blocks an
+iteration. Same values and order in all three: byte-identical output. `build_network.py` now passes `--define` to the
+temporal variants too (it did to the other network pipelines only). The RX 6000 kit compiles the three cold on the
+card and times them, to confirm the default.
+
 Host (local patch 18): `bool rdna3` became `nr::Arch` (`nr_arch.hpp`: rdna4, rdna3, rdna2) in `RuntimeConfig` and
 `nrvk::Context`; `Context::fp16()` is what `rdna3` meant everywhere (twins, Linux kernel set, `kswap`, NR_TCHAIN off).
 RDNA2 reads `shaders-rdna2` and `pipeline-rdna2.cache`, runs no ACO, and `adopt` requires neither the cooperative

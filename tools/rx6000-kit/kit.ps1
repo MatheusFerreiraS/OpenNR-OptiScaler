@@ -62,7 +62,7 @@ function ClearEnv($vars) { foreach ($k in $vars.Keys) { Remove-Item -Path "Env:$
 function Minutes() { [int]((Get-Date) - $t0).TotalMinutes }
 
 Write-Host ''
-Write-Host 'OpenNR RX 6000 test. This takes about 5 to 15 minutes. Please do not close this window.'
+Write-Host 'OpenNR RX 6000 test. This takes about 10 to 20 minutes. Please do not close this window.'
 Write-Host ''
 
 # 1. System and Vulkan.
@@ -244,6 +244,42 @@ function Score($bin, $c, $out, $pictures) {
     }
     return @{ psnr = -1.0; text = 'no comparison'; bad = 0 }
 }
+# The runtime's pipeline check of a dlssnr-amd folder (rdna2-check\pipelines.txt + .log): each shader's compile ms
+# (cold, on the check's threads) into $out, slowest first. Returns the sum, the three slowest and file -> ms, or $null.
+function CheckTable($dlssnr, $out) {
+    $lst = Join-Path $dlssnr 'rdna2-check\pipelines.txt'; $log = Join-Path $dlssnr 'rdna2-check\pipelines.log'
+    if (-not (Test-Path -LiteralPath $lst) -or -not (Test-Path -LiteralPath $log)) { return $null }
+    $names = @(Get-Content -LiteralPath $lst)
+    $rows = @()
+    foreach ($l in Get-Content -LiteralPath $log) {
+        if ($l -match '^ok (\d+) (\d+)' -and [int]$Matches[1] -lt $names.Count) {
+            $rows += @{ file = ($names[[int]$Matches[1]] -replace '^.*\\dlssnr-amd\\', ''); ms = [int]$Matches[2] }
+        }
+    }
+    $rows = @($rows | Sort-Object { -$_.ms })
+    Set-Content -LiteralPath $out -Value (@("pipeline  ms (the runtime's check: cold, $($rows.Count) shaders on its threads)") + @($rows | ForEach-Object { "$($_.file)  $($_.ms)" }))
+    $byFile = @{}
+    foreach ($w in $rows) { $byFile[$w.file] = $w.ms }
+    @{ sum = ($rows | ForEach-Object { $_.ms } | Measure-Object -Sum).Sum; ms = $byFile
+       top = (($rows | Select-Object -First 3 | ForEach-Object { '{0} {1:N1} s' -f (Split-Path $_.file -Leaf), ($_.ms / 1000) }) -join ', ') }
+}
+function Seconds($text) { if ($text -match '([\d.]+) s') { [double]$Matches[1] } else { 0.0 } }
+# One NR_STEP_TIMES run: steps_<name>.txt in the result and a "<label> <case>:" line; returns the ms a frame, or -1.
+function StepRun($tag, $c, $dir, $dll, $name, $label) {
+    $r = E2E $tag $c $StepFrames @{ NR_STEP_TIMES = "$StepCount" } $dir $dll
+    Remove-Item -LiteralPath (Join-Path $files $r.bin), (Join-Path $files "$($r.bin).prev") -ErrorAction SilentlyContinue
+    $lt = @(Get-Content -LiteralPath (Join-Path $dir "log_$tag.txt") -ErrorAction SilentlyContinue)
+    $i = -1
+    for ($j = 0; $j -lt $lt.Count; ++$j) { if ($lt[$j] -match 'NR_STEP_TIMES: \d+ frames') { $i = $j } }
+    if (-not $r.ok -or $i -lt 0) { Line "FAIL $label $($c.name): $(if ($r.why) { $r.why } else { 'no NR_STEP_TIMES table in the log' })"; return -1.0 }
+    $tab = @($lt[$i] -replace '^.*NR_STEP_TIMES: ', '')
+    for ($j = $i + 1; $j -lt $lt.Count -and $lt[$j] -match '\[nr\]\s+\S+\.spv\s'; ++$j) { $tab += ($lt[$j] -replace '^.*\[nr\]\s+', '') }
+    Set-Content -LiteralPath (Join-Path $result "steps_$name.txt") -Value $tab
+    $top = ($tab | Select-Object -Skip 1 -First 6 | ForEach-Object { if ($_ -match '^(\S+)\.spv\s+(\d+) x\s+([\d.]+) ms') { "$($Matches[1]) $($Matches[3])" } }) -join ', '
+    Line "$label $($c.name): $($tab[0]); top: $top"
+    if ($tab[0] -match '([\d.]+) ms a frame') { return [double]$Matches[1] }
+    return -1.0
+}
 function RunsDiff($a, $b, $c, $out) {
     $null = Run 'compare.exe' "--bins $a $b $($c.w) $($c.h)" $out 3
     $l = First $out '^RUNS '
@@ -345,46 +381,34 @@ if ($run -and -not $stop) {
         $c = $Speed | Where-Object { $_.name -eq $n } | Select-Object -First 1
         if (-not $c -or -not $have[$modelFile[$c.model]]) { continue }
         Write-Host "    $n, per shader ..."
-        $dir = Join-Path $result "speed\$n"
-        $r = E2E "$n.steps" $c $StepFrames @{ NR_STEP_TIMES = "$StepCount" } $dir
-        Remove-Item -LiteralPath (Join-Path $files $r.bin), (Join-Path $files "$($r.bin).prev") -ErrorAction SilentlyContinue
-        $lt = @(Get-Content -LiteralPath (Join-Path $dir "log_$n.steps.txt") -ErrorAction SilentlyContinue)
-        $i = -1
-        for ($j = 0; $j -lt $lt.Count; ++$j) { if ($lt[$j] -match 'NR_STEP_TIMES: \d+ frames') { $i = $j } }
-        if (-not $r.ok -or $i -lt 0) { Line "FAIL steps ${n}: $(if ($r.why) { $r.why } else { 'no NR_STEP_TIMES table in the log' })"; continue }
-        $tab = @($lt[$i] -replace '^.*NR_STEP_TIMES: ', '')
-        for ($j = $i + 1; $j -lt $lt.Count -and $lt[$j] -match '\[nr\]\s+\S+\.spv\s'; ++$j) { $tab += ($lt[$j] -replace '^.*\[nr\]\s+', '') }
-        Set-Content -LiteralPath (Join-Path $result "steps_$n.txt") -Value $tab
-        $top = ($tab | Select-Object -Skip 1 -First 6 | ForEach-Object { if ($_ -match '^(\S+)\.spv\s+(\d+) x\s+([\d.]+) ms') { "$($Matches[1]) $($Matches[3])" } }) -join ', '
-        Line "STEPS ${n}: $($tab[0]); top: $top"
+        $null = StepRun "$n.steps" $c (Join-Path $result "speed\$n") '.' $n 'STEPS'
     }
 }
 
-# 6. Variants: files\variant\<name>\ holds a few shaders-rdna2 files built another way (about.txt says how), swapped
-# in over the shipped set in their own folder; the picture must stay identical, the steps say which is faster.
+# 6. Shader sets: each files\variant\<name>\ (the files the sets differ in, built one way and given their own SPIR-V
+# generator word so that no driver cache holds them; about.txt) laid over a copy of the shipped set in
+# files\mixed_<name>. Each is compiled cold by the runtime's own check (per shader times) and built, its picture must be
+# IDENTICAL to stage 4's, then the steps of $VariantCases are timed in $CandidateRounds rounds, the sets alternating.
+# The pick: the fastest, or among those within $PickWithin of it the quickest to compile (those files in the check).
+$pick = ''
+$cands = @()
+$setFiles = @{}   # the files the sets differ in (shaders-rdna2\...), whose check times the pick compares
+if ($run -and -not $stop) {
+    $null = CheckTable (Join-Path $files 'dlssnr-amd') (Join-Path $result 'check-by-time.txt')
+    Line "INFO the shipped shader set is $($MainSet.name): $($MainSet.about)"
+}
 if ($run -and -not $stop -and (Test-Path -LiteralPath (Join-Path $files 'variant'))) {
     foreach ($vd in @(Get-ChildItem -LiteralPath (Join-Path $files 'variant') -Directory)) {
         $vn = $vd.Name
-        Write-Host "[6/7] Variant $vn (a few minutes)..."
+        Write-Host "[6/7] Shader set $vn (compiled cold, a few minutes)..."
         $about = First (Join-Path $vd.FullName 'about.txt') '.'
-        if ($about) { Line "INFO variant ${vn}: $about" }
+        Line "CANDIDATE ${vn}: $(if ($about) { $about } else { '(no about.txt)' })"
         $dir = Join-Path $result "variant\$vn"
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
         $alt = @(Get-ChildItem -LiteralPath $vd.FullName -Recurse -Filter *.spv)
-        $env:PIPECHECK_COOP = '0'; $env:PIPECHECK_TIMEOUT_S = '300'; $env:PIPECHECK_BUDGET_S = '600'
-        $pc = Join-Path $dir 'pipecheck.txt'
-        $null = Run 'pipecheck.exe' (($alt | ForEach-Object { '"' + $_.FullName.Substring($files.Length + 1) + '"' }) -join ' ') $pc 12
-        Remove-Item Env:PIPECHECK_COOP, Env:PIPECHECK_TIMEOUT_S, Env:PIPECHECK_BUDGET_S -ErrorAction SilentlyContinue
-        $rows = @(PipeRows $pc)
-        $bad = @($rows | Where-Object { $_.state -ne 'OK' })
-        $slow = ($rows | Sort-Object { -$_.ms } | Select-Object -First 3 | ForEach-Object { '{0} {1:N1} s' -f ($_.file -replace '^.*\\', ''), ($_.ms / 1000) }) -join ', '
-        if ($bad.Count -or $rows.Count -ne $alt.Count) {
-            Line "FAIL variant ${vn}: $(@($rows | Where-Object { $_.state -eq 'OK' }).Count) of $($alt.Count) shaders compiled"
-            foreach ($b in $bad) { Line "     $($b.state) $($b.file) $($b.text)" }
-            continue
-        }
-        Line ('PASS variant {0}: {1} of {1} shaders compiled; slowest {2}' -f $vn, $alt.Count, $slow)
-        $mix = Join-Path $files 'mixed'
+        foreach ($a in $alt) { $setFiles['shaders-rdna2\' + $a.FullName.Substring($vd.FullName.Length + 1)] = $true }
+        $mixName = "mixed_$vn"
+        $mix = Join-Path $files $mixName
         Remove-Item -LiteralPath $mix -Recurse -Force -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Path "$mix\dlssnr-amd\shaders" -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $files 'MochizukiNrRuntime.dll') -Destination $mix
@@ -397,33 +421,73 @@ if ($run -and -not $stop -and (Test-Path -LiteralPath (Join-Path $files 'variant
             try { New-Item -ItemType HardLink -Path "$mix\dlssnr-amd\$m" -Target $src -ErrorAction Stop | Out-Null }
             catch { Copy-Item -LiteralPath $src -Destination "$mix\dlssnr-amd\" }
         }
-        $v = @{ MZ_RDNA2_CHECK = '0' }
+        $cand = @{ name = $vn; dll = $mixName; ok = $true; check = -1.0; build = 0.0; cs = $null; steps = @{} }
+        $v = @{ E2E_WAIT_MIN = '14' }
         foreach ($k in $Clean.Keys) { $v[$k] = $Clean[$k] }
         foreach ($c in @($Quality | Where-Object { $VariantCases -contains $_.name })) {
             if (-not $hash[$c.name]) { continue }
-            $r = E2E "$($c.name).$vn" $c $QualityFrames $v $dir 'mixed' 10
+            $r = E2E "$($c.name).$vn" $c $QualityFrames $v $dir $mixName 15
             Remove-Item -LiteralPath (Join-Path $files $r.bin) -ErrorAction SilentlyContinue
-            if (-not $r.ok) { Line "FAIL variant $vn $($c.name): $($r.why)"; continue }
-            Line "VARIANT $vn $($c.name): $(if ($r.sha -eq $hash[$c.name]) { 'IDENTICAL picture' } else { 'DIFFERENT picture' }) (sha $($r.sha)); $(if ($r.build) { $r.build })"
+            if (-not $r.ok) { Line "FAIL set $vn $($c.name): $($r.why)"; $cand.ok = $false; break }
+            $same = $r.sha -eq $hash[$c.name]
+            if (-not $same) { $cand.ok = $false }
+            $ck = ''
+            $sec = Seconds $r.build
+            if ($r.check -match 'passed.* in ([\d.]+) s') { $cand.check = [double]$Matches[1]; $ck = "; $($r.check)"; $sec -= $cand.check }
+            elseif ($r.check) { $ck = "; $($r.check)"; $cand.ok = $false }
+            $cand.build += $sec
+            Line "VARIANT $vn $($c.name): $(if ($same) { 'IDENTICAL picture' } else { 'DIFFERENT picture' }) (sha $($r.sha)); $($r.build)$ck"
         }
-        foreach ($n in $VariantCases) {
-            $c = $Speed | Where-Object { $_.name -eq $n } | Select-Object -First 1
-            if (-not $c -or -not $have[$modelFile[$c.model]]) { continue }
-            $r = E2E "$n.$vn.steps" $c $StepFrames @{ NR_STEP_TIMES = "$StepCount"; MZ_RDNA2_CHECK = '0' } $dir 'mixed'
-            Remove-Item -LiteralPath (Join-Path $files $r.bin), (Join-Path $files "$($r.bin).prev") -ErrorAction SilentlyContinue
-            $lt = @(Get-Content -LiteralPath (Join-Path $dir "log_$n.$vn.steps.txt") -ErrorAction SilentlyContinue)
-            $i = -1
-            for ($j = 0; $j -lt $lt.Count; ++$j) { if ($lt[$j] -match 'NR_STEP_TIMES: \d+ frames') { $i = $j } }
-            if (-not $r.ok -or $i -lt 0) { Line "FAIL variant $vn steps ${n}: $(if ($r.why) { $r.why } else { 'no NR_STEP_TIMES table' })"; continue }
-            $tab = @($lt[$i] -replace '^.*NR_STEP_TIMES: ', '')
-            for ($j = $i + 1; $j -lt $lt.Count -and $lt[$j] -match '\[nr\]\s+\S+\.spv\s'; ++$j) { $tab += ($lt[$j] -replace '^.*\[nr\]\s+', '') }
-            Set-Content -LiteralPath (Join-Path $result "steps_${vn}_$n.txt") -Value $tab
-            $top = ($tab | Select-Object -Skip 1 -First 6 | ForEach-Object { if ($_ -match '^(\S+)\.spv\s+(\d+) x\s+([\d.]+) ms') { "$($Matches[1]) $($Matches[3])" } }) -join ', '
-            Line "VARIANT $vn STEPS ${n}: $($tab[0]); top: $top"
-        }
-        Remove-Item -LiteralPath $mix -Recurse -Force -ErrorAction SilentlyContinue
+        $cand.cs = CheckTable "$mix\dlssnr-amd" (Join-Path $dir 'check-by-time.txt')
+        $cands += $cand
     }
 }
+if ($cands.Count -gt 1) {
+    Write-Host "[6/7] Timing the $($cands.Count) shader sets ($CandidateRounds rounds)..."
+    for ($k = 1; $k -le $CandidateRounds; ++$k) {
+        $order = @($cands | Where-Object { $_.ok })
+        if ($k % 2 -eq 0) { [array]::Reverse($order) }
+        foreach ($cd in $order) {
+            foreach ($n in $VariantCases) {
+                $c = $Speed | Where-Object { $_.name -eq $n } | Select-Object -First 1
+                if (-not $c -or -not $have[$modelFile[$c.model]]) { continue }
+                $dir = Join-Path $result "variant\$($cd.name)"
+                New-Item -ItemType Directory -Path $dir -Force | Out-Null
+                $ms = StepRun "$n.$($cd.name).r$k" $c $dir $cd.dll "$($cd.name)_${n}_r$k" "SET $($cd.name) r$k STEPS"
+                if ($ms -lt 0) { $cd.ok = $false } else { $cd.steps[$n] = @($cd.steps[$n] | Where-Object { $_ -ne $null }) + $ms }
+            }
+        }
+    }
+    foreach ($cd in $cands) {
+        $cd.sum = 0.0
+        $cd.cold = -1.0
+        if ($cd.cs) {
+            $cd.cold = 0.0
+            foreach ($f in $setFiles.Keys) { if ($cd.cs.ms.ContainsKey($f)) { $cd.cold += $cd.cs.ms[$f] / 1000.0 } else { $cd.cold = -1.0; break } }
+        }
+        $parts = @()
+        foreach ($n in $VariantCases) {
+            $xs = @($cd.steps[$n] | Where-Object { $_ -ne $null })
+            if (-not $xs.Count) { $cd.ok = $false; continue }
+            $cd.sum += ($xs | Measure-Object -Average).Average
+            $parts += ('{0} {1} ms' -f $n, (($xs | ForEach-Object { '{0:N1}' -f $_ }) -join ' / '))
+        }
+        $cs = if ($cd.cs) { ', slowest {0}' -f $cd.cs.top } else { '' }
+        Line ('SET {0}: {1}; steps {2:N1} ms (sum of the cases'' averages: {3}); cold compile of the {4} files the sets differ in {5:N1} s (the check''s threads, summed{6}); check {7:N1} s, build {8:N1} s ({9})' -f `
+              $cd.name, $(if ($cd.ok) { 'OK' } else { 'NOT USABLE' }), $cd.sum, ($parts -join ', '), $setFiles.Count, $cd.cold, $cs, $cd.check, $cd.build,
+              'those files cold, the rest cached')
+    }
+    $good = @($cands | Where-Object { $_.ok -and $_.sum -gt 0 })
+    if ($good.Count) {
+        $best = ($good | ForEach-Object { $_.sum } | Measure-Object -Minimum).Minimum
+        $near = @($good | Where-Object { $_.sum -le $best * (1 + $PickWithin) })
+        $p = $near | Sort-Object { if ($_.cold -ge 0) { $_.cold } else { 1e9 } } | Select-Object -First 1
+        $pick = $p.name
+        Line ('PICK {0}: steps {1:N1} ms (fastest {2:N1}), cold compile of those files {3:N1} s; the rule: within {4:P0} of the fastest, then the quickest to compile' -f `
+              $p.name, $p.sum, $best, $p.cold, $PickWithin)
+    }
+}
+foreach ($cd in $cands) { if ($cd.dll -ne '.') { Remove-Item -LiteralPath (Join-Path $files $cd.dll) -Recurse -Force -ErrorAction SilentlyContinue } }
 
 # 7. Summary and the zip.
 Write-Host '[7/7] Writing the result...'
@@ -438,6 +502,7 @@ else {
         $short.Add("Picture wrong or failed: $(if ($fail.Count) { $fail -join ', ' } else { 'none' })")
         $short.Add("Picture changes from run to run: $(if ($vary.Count) { $vary -join ', ' } else { 'none' })")
         if ($speedRows.Count) { $short.Add("Network time per frame, ms: $($speedRows -join '; ')") }
+        if ($pick) { $short.Add("Best shader set on this card: $pick (see the SET and PICK lines)") }
     }
 }
 $head = @("OpenNR RX 6000 test kit (mochizuki RDNA2 network), $((Get-Date).ToString('yyyy-MM-dd HH:mm')), $(Minutes) min", '',
@@ -445,8 +510,9 @@ $head = @("OpenNR RX 6000 test kit (mochizuki RDNA2 network), $((Get-Date).ToStr
 $tail = @('', "How to read this: PASS = every run within $PassDb dB PSNR of the RX 9070 XT reference, FAIL = not, or the run failed.",
           '"identical" means the same picture every run. SPEED is the network alone (status line), with the GPU clock while busy.',
           'STEPS: the per-shader times (NR_STEP_TIMES; the timestamps make the sum about 20% more than SPEED).',
-          'VARIANT: a few shaders built another way swapped in; the picture must be IDENTICAL, its STEPS compare with the STEPS above.',
-          'Raw files: system.txt, pipecheck.txt, pipelines-by-time.txt, runtime-rdna2-check-*.txt, quality\, speed\, steps_*.txt, variant\, console.txt.')
+          'SET / VARIANT: the same network with some shaders built another way; the picture must be IDENTICAL. Each set is compiled cold',
+          '(the runtime''s check, then the network build) and its steps timed in alternating rounds; PICK: the fastest, or among near ties the quickest to compile.',
+          'Raw files: system.txt, pipecheck.txt, pipelines-by-time.txt, check-by-time.txt, runtime-rdna2-check-*.txt, quality\, speed\, steps_*.txt, variant\, console.txt.')
 Set-Content -LiteralPath (Join-Path $result 'SUMMARY.txt') -Value ($head + $summary + $tail)
 foreach ($f in 'rdna2-check.txt', 'rdna2-check\pipelines.txt', 'rdna2-check\pipelines.log') {
     $p = Join-Path $files "dlssnr-amd\$f"

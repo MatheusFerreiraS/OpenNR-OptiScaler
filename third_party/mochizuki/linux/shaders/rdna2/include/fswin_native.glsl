@@ -175,13 +175,17 @@ void nv_probs16(uint h, uint T, uint j, const uint q[16], out f16vec2 pr[8]) {
 }
 
 // Window attention of head h for query token T: q holds its 16 quantised Q pairs, cq gets the 16 quantised
-// context pairs. K and V of the head in LDS (above). NV_PCACHE (every C = 32 body; C >= 64: main): pass 2
-// takes pass 1's 64 probabilities from registers (32 more VGPRs, q dead after pass 1) instead of computing the
-// logits and exponents again. Pass 1 is unrolled (constant cache indices, four nv_probs16 calls); pass 2 stays
-// rolled and picks block j with a uniform select (unrolled it costs +45% compile time, a queue shifted through the
-// rolled loops +25 VGPRs on gfx1030). Same values, same order.
+// context pairs. K and V of the head in LDS (above). NV_PCACHE (every body): pass 2 takes pass 1's 64
+// probabilities from registers (32 more VGPRs) instead of computing the logits and exponents again; it picks block
+// j with a uniform select. NV_PCROLL, how pass 1 fills the cache: 0 unrolled (four nv_probs16 copies, constant
+// cache indices), 1 rolled (one copy; each block shifted in at the end of a 32-entry queue, so the indices stay
+// constant), 2 two blocks an iteration (two copies, the queue shifted by 16). Same values, same order in all three;
+// they differ in compile time (the RX 6600's driver: about 5.5 s for a C = 32 body unrolled) and registers.
 #ifndef NV_PCACHE
-#define NV_PCACHE (NR_HWAVES == 0)
+#define NV_PCACHE 1
+#endif
+#ifndef NV_PCROLL
+#define NV_PCROLL 1
 #endif
 void nv_attn(uint h, uint T, const uint q[16], out uint cq[16]) {
     const int opaque = int(gl_WorkGroupID.z);
@@ -191,17 +195,38 @@ void nv_attn(uint h, uint T, const uint q[16], out uint cq[16]) {
     for (int hi = 0; hi < 2; ++hi) for (int c = 0; c < 4; ++c) part[hi][c] = f16vec2(0.0hf);
 #if NV_PCACHE
     f16vec2 prc[32];
-    for (int j = 0; j < 4; ++j) {
-        f16vec2 pr[8];
-        nv_probs16(h, T, uint(j), q, pr);
-        for (int i = 0; i < 8; ++i) prc[8 * j + i] = pr[i];
+#endif
+#if NV_PCACHE && NV_PCROLL == 2
+    for (int i = 0; i < 32; ++i) prc[i] = f16vec2(0.0hf);
+    for (int j = 0; j < 2 + opaque; j = j + 1) {
+        f16vec2 pa[8], pb[8];
+        nv_probs16(h, T, uint(2 * j), q, pa);
+        nv_probs16(h, T, uint(2 * j + 1), q, pb);
+        for (int c = 0; c < 4; ++c) for (int hi = 0; hi < 2; ++hi) part[hi][c] = part[hi][c] + pa[2 * c + hi];
+        for (int c = 0; c < 4; ++c) for (int hi = 0; hi < 2; ++hi) part[hi][c] = part[hi][c] + pb[2 * c + hi];
+        for (int i = 0; i < 16; ++i) prc[i] = prc[i + 16];
+        for (int i = 0; i < 8; ++i) { prc[16 + i] = pa[i]; prc[24 + i] = pb[i]; }
+    }
 #else
+#if NV_PCACHE && NV_PCROLL == 0
+    for (int j = 0; j < 4; ++j) {
+#else
+#if NV_PCACHE
+    for (int i = 0; i < 32; ++i) prc[i] = f16vec2(0.0hf);
+#endif
     for (int j = 0; j < 4 + opaque; j = j + 1) {
+#endif
         f16vec2 pr[8];
         nv_probs16(h, T, uint(j), q, pr);
+#if NV_PCACHE && NV_PCROLL == 0
+        for (int i = 0; i < 8; ++i) prc[8 * j + i] = pr[i];
+#elif NV_PCACHE
+        for (int i = 0; i < 24; ++i) prc[i] = prc[i + 8];
+        for (int i = 0; i < 8; ++i) prc[24 + i] = pr[i];
 #endif
         for (int c = 0; c < 4; ++c) for (int hi = 0; hi < 2; ++hi) part[hi][c] = part[hi][c] + pr[2 * c + hi];
     }
+#endif
     f16vec2 tot[2];
     for (int hi = 0; hi < 2; ++hi) tot[hi] = ((part[hi][0] + part[hi][1]) + part[hi][2]) + part[hi][3];
     const f16vec2 t2 = tot[0] + tot[1];
@@ -500,8 +525,8 @@ void main() {
         uint cq[2][16];
 #if NV_PCACHE
         // The two tokens' attention in one rolled loop, the body inlined once (unrolled, the two cached probability
-        // sets spill: gfx1030 .342 256 VGPRs + 3.9 KB scratch). Rolled: gfx1030 188 VGPRs, no scratch, but gfx1201
-        // (the RX 9070 XT forced) 256 + 8 KB scratch and 2-6x slower, so it is off by default (`NV_PCACHE=1` builds it).
+        // sets spill: gfx1030 .342 256 VGPRs + 3.9 KB scratch). Rolled: gfx1030 188 VGPRs, no scratch; faster on the
+        // RX 6600 (kit v4), while gfx1201 (the RX 9070 XT forced) spills it (256 + 8 KB scratch, 2-6x slower).
         for (int s = 0; s < 2 + nv_opaque; s = s + 1) {
             uint qs[16], r[16];
             for (int p = 0; p < 16; ++p) qs[p] = s == 0 ? qe[0][p] : qe[1][p];
