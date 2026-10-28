@@ -419,6 +419,17 @@ Local patches:
     Our producer checked on the RX 9070 XT: its gfx1201 records of RDNA4's network are bit-identical in the output
     to upstream's for 44 of 55 kernels one at a time, 3 more at 55-56 dB (another Mesa), and the rest are explained
     (push block gap that RDNA4's records remap and the RDNA3 network removes; image descriptors).
+26. ACO's gfx10.3 code on the RX 6000 driver (RX 6000 ACO probe 2, `tools/aco-records/probe2/rx6600-result`): that
+    driver branch compiles with AMD's proprietary compiler, whose code objects carry feature bits in e_flags (0x938 on
+    an RX 6600) and metadata of their own (registers keyed by number), and it imports an LLPC-style container with
+    our record bit-exact. `nr_pal_binary.hpp`: `elf_machine` (gfx10.3 feature bits masked; gfx11/gfx12 exact as
+    before), MessagePack maps with non-string keys (kept and written back), `splice_elf` (splice's body) and
+    `synthesize` (the gfx10.3 container built from scratch: the RX 9070 XT's sections and metadata keys, this GPU's
+    machine, the record's settings; no IEEE mode, scratch still refused). `nr_pipeline_binary.hpp`: a gfx10.3 record
+    is never spliced into a captured template: `device_code` compiles an empty kernel once a device for the GPU's
+    machine and key size, and the container is synthesized (no template compile); `aco-gfx103x` bundles fall back
+    per pipeline like `aco-gfx11` (log `[nr] ACO gfx103x <name>: ...`). gfx12 and gfx11 splices and prologues are
+    byte-identical to the patch-25 adapter (`test_pal_prologue.cpp`, `--probe2`).
 
 The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
 OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;

@@ -84,9 +84,12 @@ inline Value decode(const Bytes& b,size_t& p,unsigned depth=0) {
     else if(map) {
         v.kind=Value::Map;
         for(size_t i=0;i<n;++i) {
-            auto k=decode(b,p,depth+1); require(k.kind==Value::String,"non-string metadata key");
-            for(const auto& f:v.fields) require(f.first!=k.s,"duplicate metadata key");
-            v.fields.emplace_back(std::move(k.s),decode(b,p,depth+1));
+            // AMD's proprietary compiler (the RX 6000 driver) keys .registers by register number: such a key is
+            // kept as a NUL and its MessagePack bytes, which no named lookup matches and encode writes back.
+            const size_t ks=p; auto k=decode(b,p,depth+1);
+            std::string key=k.kind==Value::String?std::move(k.s):std::string(1,'\0')+std::string(b.begin()+ks,b.begin()+p);
+            for(const auto& f:v.fields) require(f.first!=key,"duplicate metadata key");
+            v.fields.emplace_back(std::move(key),decode(b,p,depth+1));
         }
     } return v;
 }
@@ -98,7 +101,9 @@ inline void encode(Bytes& b,const Value& v) {
     case Value::String: b.push_back(0xdb);putbig(b,v.s.size(),4);b.insert(b.end(),v.s.begin(),v.s.end());break;
     case Value::Array: b.push_back(0xdd);putbig(b,v.items.size(),4);for(const auto& x:v.items)encode(b,x);break;
     case Value::Map: b.push_back(0xdf);putbig(b,v.fields.size(),4);for(const auto& f:v.fields) {
-        Value k;k.kind=Value::String;k.s=f.first;encode(b,k);encode(b,f.second);
+        if(!f.first.empty() && f.first[0]=='\0') b.insert(b.end(),f.first.begin()+1,f.first.end());
+        else {Value k;k.kind=Value::String;k.s=f.first;encode(b,k);}
+        encode(b,f.second);
     } break;
     }
 }
@@ -117,6 +122,18 @@ inline bool is_gfx103(uint32_t m) { return m==0x36 || m==0x37 || m==0x38 || m==0
 // it aims to leave free (gfx1100/1101/1151 have 1.5x the register file), never in the instructions.
 inline bool same_generation(uint32_t a, uint32_t b) {
     return (is_gfx12(a) && is_gfx12(b)) || (is_gfx11(a) && is_gfx11(b)) || (is_gfx103(a) && is_gfx103(b));
+}
+// The machine of a code object's e_flags. gfx10.3 objects from AMD's proprietary compiler (the RX 6000 driver
+// branch) also carry the xnack/sramecc fields (EF_AMDGPU_FEATURE_*_V4, bits 8-11: 0x938 on an RX 6600 = gfx1032,
+// xnack any, sramecc off); gfx11 and gfx12 take exact values only.
+inline uint32_t elf_machine(uint32_t flags) { return is_gfx103(flags&0xff) && !(flags&~0xfffu) ? flags&0xff : flags; }
+inline const char* gfx103_isa(uint32_t m) {
+    switch(m) {
+    case 0x36: return "amdgcn--amdpal--gfx1030"; case 0x37: return "amdgcn--amdpal--gfx1031";
+    case 0x38: return "amdgcn--amdpal--gfx1032"; case 0x39: return "amdgcn--amdpal--gfx1033";
+    case 0x3e: return "amdgcn--amdpal--gfx1034"; case 0x3d: return "amdgcn--amdpal--gfx1035";
+    case 0x45: return "amdgcn--amdpal--gfx1036"; default: return nullptr;
+    }
 }
 
 struct Record {
@@ -270,11 +287,12 @@ inline bool takes_machine(uint32_t mach) { return is_gfx12(mach) || is_gfx11(mac
 struct Section { uint32_t name,type;uint64_t flags,addr,offset,size;uint32_t link,info;uint64_t align,entsize; };
 static_assert(sizeof(Section)==64);
 struct Elf {
-    uint32_t mach=0;   // e_flags: the machine the container's code is for
+    uint32_t mach=0;   // e_flags' machine (elf_machine): the machine the container's code is for
     Bytes header;std::vector<Section> sections;std::vector<Bytes> data;std::vector<std::string> names;
+    Elf()=default;
     explicit Elf(const Bytes& b) {
         range(b,0,64);
-        mach=read<uint32_t>(b,48);
+        mach=elf_machine(read<uint32_t>(b,48));
         require(std::memcmp(b.data(),"\x7f" "ELF",4)==0 && b[4]==2 && b[5]==1 && b[7]==65 &&
                 read<uint16_t>(b,16)==1 && read<uint16_t>(b,18)==224 && takes_machine(mach) &&
                 read<uint64_t>(b,32)==0 && read<uint16_t>(b,56)==0 && read<uint16_t>(b,58)==64,"unsupported PAL ELF");
@@ -307,11 +325,11 @@ struct Elf {
         for(const auto& s:sections) {size_t p=out.size();out.resize(p+64);write(out,p,s);}return out;
     }
 };
-inline Bytes splice(const Bytes& binary,const Record& r,unsigned push_bytes=128,
-                    std::array<uint32_t,3> workgroup={0,0,0}) {
+// The record's code in a PAL container (the driver's own, or synthesize's), its metadata set to the record's.
+inline Bytes splice_elf(Elf& e,const Record& r,unsigned push_bytes,std::array<uint32_t,3> workgroup) {
     require(push_bytes<=128 && push_bytes%4==0 && r.push_bytes<=push_bytes,"unsupported pipeline push range");
     const unsigned descriptor_slot=push_bytes/4+1;
-    Elf e(binary); auto text=e.find(".text"),note=e.find(".note"),sym=e.find(".symtab");
+    auto text=e.find(".text"),note=e.find(".note"),sym=e.find(".symtab");
     // NRPAL001 records are gfx12 code (upstream's); NRPAL002 name their machine.
     require(r.mach ? same_generation(r.mach,e.mach) : is_gfx12(e.mach),"record and GPU are different generations");
     require(e.sections[text].align==256 && e.sections[text].addr==0,"PAL entry alignment");
@@ -381,5 +399,74 @@ inline Bytes splice(const Bytes& binary,const Record& r,unsigned push_bytes=128,
         notes.insert(notes.end(),md.begin(),md.end());while(notes.size()%4)notes.push_back(0);++metadata;
     }
     require(metadata==1,"PAL metadata note count");e.data[note]=std::move(notes);return e.build();
+}
+inline Bytes splice(const Bytes& binary,const Record& r,unsigned push_bytes=128,
+                    std::array<uint32_t,3> workgroup={0,0,0}) {
+    Elf e(binary);return splice_elf(e,r,push_bytes,workgroup);
+}
+
+// gfx10.3 (RX 6000): the driver's own code objects come from AMD's proprietary compiler, with metadata of its own
+// (registers keyed by number, no global table entry, other keys), and are not spliced. What that driver (26.8.1 on
+// an RX 6600, probe 2) imports bit-exact is the LLPC container instead: the RX 9070 XT's layout and metadata keys,
+// with the GPU's machine in e_flags (no feature bits) and EI_ABIVERSION 0 (1-3 are refused). It is built here, so a
+// gfx10.3 pipeline needs no compile of its template. mach: the GPU's machine, from a code object the driver made.
+inline Bytes synthesize(const Record& r,uint32_t mach,unsigned push_bytes,std::array<uint32_t,3> workgroup) {
+    const char* isa=gfx103_isa(mach);
+    require(isa && r.mach && is_gfx103(r.mach),"record and GPU are different generations");
+    require(workgroup[0] && workgroup[1] && workgroup[2],"literal SPIR-V local size required");
+    // IEEE mode is not in this container's metadata; ACO's gfx10.3 compute code never sets it.
+    require(!((r.rsrc1>>23)&1),"IEEE mode unsupported on gfx10.3");
+    const unsigned slot=push_bytes/4+1;
+    Elf e;e.mach=mach;e.header=Bytes(64,0);
+    std::memcpy(e.header.data(),"\x7f" "ELF\x02\x01\x01\x41",8);
+    write(e.header,16,uint16_t(1));write(e.header,18,uint16_t(224));write(e.header,20,uint32_t(1));
+    write(e.header,48,mach);write(e.header,52,uint16_t(64));write(e.header,58,uint16_t(64));
+    const std::string strtab=std::string("\0.text\0.AMDGPU.gpr_maximums\0_amdgpu_cs_main\0.note.GNU-stack\0.note\0.strtab\0.symtab\0",82);
+    auto at=[&](const char* n){return uint32_t(strtab.find(std::string(n)+'\0',1));};
+    auto add=[&](const char* n,uint32_t type,uint64_t flags,uint64_t align,Bytes d,uint32_t link=0,uint32_t info=0,uint64_t ent=0) {
+        Section s{};s.name=*n?at(n):0;s.type=type;s.flags=flags;s.align=align;s.link=link;s.info=info;s.entsize=ent;
+        e.sections.push_back(s);e.data.push_back(std::move(d));e.names.emplace_back(n);
+    };
+    add("",0,0,0,{});
+    add(".strtab",3,0,1,Bytes(strtab.begin(),strtab.end()));
+    add(".text",1,6,256,{});
+    add(".AMDGPU.gpr_maximums",1,0,1,{});
+    add(".note.GNU-stack",1,0,1,{});
+    // Notes: the ISA name (owner AMD, type 11), then the PAL metadata (owner AMDGPU, type 32).
+    Bytes notes;word(notes,4);word(notes,uint32_t(std::strlen(isa)));word(notes,11);
+    notes.insert(notes.end(),{'A','M','D',0});notes.insert(notes.end(),isa,isa+std::strlen(isa));
+    while(notes.size()%4)notes.push_back(0);
+    {
+        auto map=[](std::vector<std::pair<std::string,Value>> f){Value v;v.kind=Value::Map;v.fields=std::move(f);return v;};
+        auto str=[](const char* s){Value v;v.kind=Value::String;v.s=s;return v;};
+        auto f=Value::boolean(false);
+        Value reg;reg.kind=Value::Array;reg.items.emplace_back(uint64_t(0x10000000));
+        for(int i=1;i<32;++i)reg.items.emplace_back(uint64_t(0xffffffff));
+        Value hw_map;hw_map.kind=Value::Array;hw_map.items.push_back(str(".cs"));
+        Value cs=map({{".checksum_value",Value(0)},{".debug_mode",f},{".entry_point_symbol",str("_amdgpu_cs_main")},
+            {".excp_en",Value(0)},{".float_mode",Value(0)},{".forward_progress",f},{".image_op",f},{".lds_size",Value(0)},
+            {".mem_ordered",f},{".scratch_en",f},{".scratch_memory_size",Value(0)},{".sgpr_count",Value(0)},
+            {".sgpr_limit",Value(106)},{".threadgroup_dimensions",array({workgroup[0],workgroup[1],workgroup[2]})},
+            {".trap_present",f},{".user_data_reg_map",reg},{".user_sgprs",Value(0)},{".vgpr_count",Value(0)},
+            {".vgpr_limit",Value(256)},{".wavefront_size",Value(32)},{".wg_round_robin",f},{".wgp_mode",f}});
+        Value p=map({{".api",str("Vulkan")},
+            {".compute_registers",map({{".tg_size_en",f},{".tgid_x_en",f},{".tgid_y_en",f},{".tgid_z_en",f},
+                                       {".tidig_comp_cnt",Value(0)},{".x_interleave",Value(0)},{".y_interleave",Value(0)}})},
+            {".hardware_stages",map({{".cs",cs}})},{".internal_pipeline_hash",array({0,0})},
+            {".shaders",map({{".compute",map({{".api_shader_hash",array({r.spv_hash,0})},{".hardware_mapping",hw_map}})}})},
+            {".spill_threshold",Value(65535)},{".type",str("Cs")},{".user_data_limit",Value(slot+1)},
+            {".xgl_cache_info",map({{".128_bit_cache_hash",array({r.spv_hash,r.code_hash})},{".llpc_version",str("89.0")}})}});
+        Value ps;ps.kind=Value::Array;ps.items.push_back(std::move(p));
+        Bytes md;encode(md,map({{"amdpal.pipelines",std::move(ps)},{"amdpal.version",array({3,6})}}));
+        word(notes,7);word(notes,uint32_t(md.size()));word(notes,32);
+        notes.insert(notes.end(),{'A','M','D','G','P','U',0,0});notes.insert(notes.end(),md.begin(),md.end());
+        while(notes.size()%4)notes.push_back(0);
+    }
+    add(".note",7,0,4,std::move(notes));
+    // The null symbol and _amdgpu_cs_main (FUNC GLOBAL in .text at 0; splice_elf sets its size).
+    Bytes sym(48,0);write(sym,24,at("_amdgpu_cs_main"));sym[28]=0x12;write(sym,30,uint16_t(2));
+    add(".symtab",2,0,8,std::move(sym),1,1,24);
+    write(e.header,60,uint16_t(e.sections.size()));write(e.header,62,uint16_t(1));
+    return splice_elf(e,r,push_bytes,workgroup);
 }
 } // namespace nr::pal
