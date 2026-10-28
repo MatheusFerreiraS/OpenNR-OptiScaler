@@ -4,11 +4,76 @@ Worktree `wt-rdna2`, branch `mochizuki-rdna2`, local commit only (nothing pushed
 touched). Plan section 9 item 6. Clean room kept: the GPL RDNA2 port was not opened, searched or fetched; the kit is
 built from this branch's own export and the RX 7000 kits' tools.
 
-Package (rebuilt 2026-10-27 night, native GEMMs, no emulated stage):
-`E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip`, 17,634,013 bytes (16.8 MB, 115 files, models not
-included), SHA-256 `7A088A2074121613FD5380C55D0EA767A9C20629CDD3644C2CF9582B99CCBFF4` (also in
-`rx6000-test-kit\SHA256.txt`). One `run-test.bat`, one result zip `OpenNR-RX6000-result-<date>.zip`. The zip in
-`rx6000-test-kit\send\` (20:31) is the older kit, not this one.
+Package (rebuilt 2026-10-27 23:3x, kit v3: the cheaper pre and post blocks below):
+`E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip`, 17,662,812 bytes (16.8 MB, 115 files, models not
+included), SHA-256 `D1FF3AF8E43E72A56CB975457B84683ADABF3F26C8232986E6098BAE196F97A1` (also in
+`rx6000-test-kit\SHA256.txt`). One `run-test.bat`, one result zip `OpenNR-RX6000-result-<date>.zip`. The zips in
+`rx6000-test-kit\send\` are older kits (v2: `OpenNR-RX6000-test-v2.zip`, 7A088A20...CCBFF4, the one the RX 6600 ran).
+
+## Pre and post blocks (2026-10-27 late, kit v3)
+
+Why they cost a quarter of the frame on the RX 6600 (720p 8.50 + 8.19 ms of 68.2): `temporal_pre_fp32nh` and
+`temporal_post_fp32` are not image passes but the first and last C=32 Swin blocks of the network, at the full working
+resolution (the pre block's 2x2 pool and the post block's upsample put every other C=32 block at half resolution).
+That is 4x the tokens of a `g_fswin32nh` (921,600 at 720p), and per token they cost about what `fswin32nh` costs
+(RX 6600 9.2 / 8.9 ns against 8.1 ns). Not bandwidth: about 125 B a pixel in and out for the pre block (colour,
+noise, depth, motion, history taps; 64 B output + 16 B pooled) and ~140 B for the post block (skip, half-resolution
+input, colour, motion, history; two images out), ~0.5-0.6 ms of the RX 6600's 224 GB/s at 720p; on the 9070 XT the
+temporal gate closed (`NR_DIAG_TGATE0=1`, no history/motion/depth taps) and the pre block with no image features at all
+moved the dispatch by 1-4%. Cutting each one off after a stage (9070 XT forced, 720p): to the MLP 1.37 / 1.26 ms
+(fswin32nh 0.33 at 1/4 the tokens), + QKV 0.5, + attention 2.1 (pre) / 1.1 (post), + output 0.2. The 2.1x scaling
+with pixels is compute scaling. Two things were extra: the pre block staged the 8x8 group's 16 features a pixel in a
+2 KB LDS buffer behind a barrier (LDS 10 KB against 8 KB, 6 workgroups a CU instead of 8 on gfx1030: its attention
+was ~1.8x the post block's), and the attention computed its 64 logits and exponents twice (pass 1 for the sum, pass 2
+again for the context), as in every native Swin body.
+
+Changes (`include/fswin_native.glsl`, `include/image_input.glsl`; RDNA2 set only; output byte-identical):
+1. The pre block computes the 16 features of the lane's own pixel (`nr_pixel_features`, split out of
+   `nr_prepare_features`, the same code) instead of staging them in LDS: LDS 10240 -> 8192 B, one barrier less.
+2. `NV_PCACHE` (pre and post only): pass 1 keeps the 64 probabilities in registers (32 VGPRs; q is dead after it),
+   pass 2 takes them instead of the second logits/exponent pass: per token 1024 of ~9.2k `v_dot2` and 256 of 768
+   `ds_read_b128` fewer, 32 exponent pairs fewer. Pass 1 unrolled (constant indices), pass 2 rolled with a uniform
+   select. Tried: both unrolled (115 VGPRs, SPIR-V 1.2 -> 2.0 MB, cold compile +20%), a queue shifted through the
+   rolled loops (144 VGPRs, 7 waves a SIMD on gfx1030, cold compile -14%), same speed on the 9070 XT within 2%.
+3. The post block reads its blend gains as one dword a pair (`wgt_u32`, the host puts them 16-byte aligned):
+   64 16-bit vector loads (`buffer_load_short_d16`) became scalar loads; post `vmem_ld` 80 -> 24.
+
+| case (9070 XT forced, NR_STEP_TIMES=20, 2 rounds) | temporal_pre_fp32nh | temporal_post_fp32 | step sum | status line |
+|---|---|---|---|---|
+| Small 720p | 4.17 -> 3.06 | 3.18 -> 2.68 | 34.4 -> 33.0 | 29.4 -> 28.5 |
+| Small 1080p | 7.78 -> 5.77 | 5.76 -> 4.94 | 52.7 -> 50.2 | 46.1 -> 43.4 |
+| Small 1440p | 12.37 -> 9.04 | 9.11 -> 7.81 | 77.2 -> 73.1 | 70.7 -> 67.2 |
+| 310.8 720p | 3.71 -> 2.66 | 2.69 -> 2.31 | 65.7 -> 64.4 | 59.6 -> 58.4 |
+
+(-27% pre, -14% post; the untouched kernels within +-3% between the runs. The status line includes no step
+timestamps, so its gain is what a game would see. RX 6600 estimate, not measured: 720p 8.5 + 8.2 -> ~6.2 + ~7.0 ms.)
+
+gfx1030 (vkisa, null NAVI21, amdvlk 9.2.10.342), all 13 changed modules: pre 110 -> 119 VGPRs, LDS 10240 -> 8192;
+post 110 -> 120 VGPRs (hp 119 -> 120), LDS 8192; 0 scratch before and after; static instructions +850-970 (the
+unrolled pass 1; fewer executed); SPIR-V 1.22 -> 1.23 MB. Occupancy (wave32, LDS 8 KB a 2-wave workgroup, 120
+VGPRs) 8 waves a SIMD for both, the pre block was 6. Cold compile on the null device (SPIR-V generator word changed so
+the driver cache misses): pre 7.6 -> 10.6 s, post 7.5 -> 10.8 s on this CPU. That is the cost of option 2's unrolled
+pass 1; the queue variant would be 6.4 s at 144 VGPRs. In the kit run below the runtime check took 7.5 s for all 86
+on 8 threads (slowest `g_fswinimagepreds32` 3.5 s, cold).
+
+Checks: forced RDNA2, 1 frame, both models at 720p/1080p/1440p: E9F5E89BF57A08BA / D07096C4C35774C0 /
+EB2040C4FB5801C2 and D0A1B50ECEE12A7B / A5A0A39437A13D19 / 3AA32BB2BDFB26BF (unchanged); normal mode 40 frames, all six
+cases identical to the previous set (FA35B425 / C9A4FB6E / FB987C4B, 188D4AAD / 44C578C4 / 3DD8A4A3), and 30-frame
+step runs too (EE1DAB61 / 01900736 / A9180855, 71CF54D1). Only the 13 pre/post modules of `shaders-rdna2` changed
+(`g_fswinimagepreds32`, `g_fswinimagepreds32nh`, `g_fswinimagepost32(_grade)`, `temporal_pre_fp32`, `_nh`, `_nhhp`,
+`temporal_post_fp32`, `_hp`, `_h16` and their `_grade`); `shaders\`, `shaders-rdna3\` and `aco\shaders\` rebuilt
+from this tree are byte-identical to the export, the DLL is unchanged, RDNA4 `ab.ps1` (40 frames): 258FEC01 /
+01588CA6 / 2A308F2C / 04A421E7.
+
+Kit run 5 (forced, models pre-copied; `exports\rx6000-kit\run5.out`, `run5-result.zip`): 86 of 86 pipelines (28 s,
+cold for the 13), runtime check 86 of 86 in 7.5 s, first build 21.4 s; PASS 47.79 / 52.92 / 49.72 dB with the hashes
+of the table below, runs identical; SPEED 27.42 / 43.67 / 57.20 ms (run 4: 27.95 / 45.88 / 59.56); STEPS small 720p
+33.4 ms (pre 3.03, post 2.73), small 1080p 50.5 ms (5.64, 4.92), 310.8 720p 63.2 ms.
+
+Same win elsewhere (not done, recommendations): `NV_PCACHE` applies to every native Swin body of the RDNA2 set
+(fswin32/32nh, fswindsp32*, fswinfusedup32*, and the C>=64 head loop), where the attention is ~40-50% of the kernel;
+the C=32 fused upsample (`NV_UPS32`) reads its gains with the same 16-bit vector loads. RDNA4/RDNA3 run other bodies
+(cooperative matrices); whether their pre block's feature staging costs occupancy there was not measured.
 
 ## Native GEMMs (2026-10-27 night)
 

@@ -402,6 +402,15 @@ weights, the hidden units streamed) and `vit_attn.comp` -> `include/vit_native.g
 V rows as scalar reads). The GEMM and ViT attention bodies read activations through the scalar cache, so the RDNA2
 host never runs tile counters (`tchain_active()`, even with `NR_TCHAIN=1`).
 
+The pre and post blocks (`fswinimagepreds32*`, `fswinimagepost32*` and their `temporal_*` variants) are C=32 Swin
+blocks at the full working resolution, four times the tokens of a `fswin32nh`, which is why they were a quarter of the
+RDNA2 frame. In `fswin_native.glsl` they now (1) compute the 16 image features of the lane's own pixel
+(`nr_pixel_features`, split out of `image_input.glsl`'s `nr_prepare_features`) instead of staging the 8x8 group in a
+2 KB LDS buffer behind a barrier (LDS 10 -> 8 KB, the occupancy of the other C=32 blocks), (2) keep the 64 attention
+probabilities of pass 1 in registers for pass 2 (`NV_PCACHE`) instead of computing the logits and exponents again,
+and (3) read the post block's blend gains as one dword a pair (scalar loads instead of 64 16-bit vector loads). Same
+arithmetic and order: the output is byte-identical. The other Swin pipelines' SPIR-V is unchanged.
+
 Host (local patch 18): `bool rdna3` became `nr::Arch` (`nr_arch.hpp`: rdna4, rdna3, rdna2) in `RuntimeConfig` and
 `nrvk::Context`; `Context::fp16()` is what `rdna3` meant everywhere (twins, Linux kernel set, `kswap`, NR_TCHAIN off).
 RDNA2 reads `shaders-rdna2` and `pipeline-rdna2.cache`, runs no ACO, and `adopt` requires neither the cooperative

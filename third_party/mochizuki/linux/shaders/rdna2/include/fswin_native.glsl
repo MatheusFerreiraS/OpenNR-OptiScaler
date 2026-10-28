@@ -175,16 +175,33 @@ void nv_probs16(uint h, uint T, uint j, const uint q[16], out f16vec2 pr[8]) {
 }
 
 // Window attention of head h for query token T: q holds its 16 quantised Q pairs, cq gets the 16 quantised
-// context pairs. K and V of the head in LDS (above).
+// context pairs. K and V of the head in LDS (above). NV_PCACHE (the full-resolution pre and post blocks): pass 2
+// takes pass 1's 64 probabilities from registers (32 more VGPRs, q dead after pass 1) instead of computing the
+// logits and exponents again. Pass 1 is unrolled (constant cache indices, four nv_probs16 calls); pass 2 stays
+// rolled and picks block j with a uniform select (unrolled it costs +45% compile time, a queue shifted through the
+// rolled loops +25 VGPRs on gfx1030). Same values, same order.
+#if NV_PRE || NV_POST
+#define NV_PCACHE 1
+#else
+#define NV_PCACHE 0
+#endif
 void nv_attn(uint h, uint T, const uint q[16], out uint cq[16]) {
     const int opaque = int(gl_WorkGroupID.z);
     // pass 1: the probability sum in the emulated body's order: pair (4c + hi, 4c + 2 + hi) of block j into
     // partial [hi][c], j outer; then ((p0 + p1) + p2) + p3 a half, the halves added, then .x + .y, all FP16.
     f16vec2 part[2][4];
     for (int hi = 0; hi < 2; ++hi) for (int c = 0; c < 4; ++c) part[hi][c] = f16vec2(0.0hf);
+#if NV_PCACHE
+    f16vec2 prc[32];
+    for (int j = 0; j < 4; ++j) {
+        f16vec2 pr[8];
+        nv_probs16(h, T, uint(j), q, pr);
+        for (int i = 0; i < 8; ++i) prc[8 * j + i] = pr[i];
+#else
     for (int j = 0; j < 4 + opaque; j = j + 1) {
         f16vec2 pr[8];
         nv_probs16(h, T, uint(j), q, pr);
+#endif
         for (int c = 0; c < 4; ++c) for (int hi = 0; hi < 2; ++hi) part[hi][c] = part[hi][c] + pr[2 * c + hi];
     }
     f16vec2 tot[2];
@@ -197,7 +214,11 @@ void nv_attn(uint h, uint T, const uint q[16], out uint cq[16]) {
     for (int v = 0; v < 32; ++v) ctx[v] = 0.0;
     for (int j = 0; j < 4 + opaque; j = j + 1) {
         f16vec2 pr[8];
+#if NV_PCACHE
+        for (int i = 0; i < 8; ++i) pr[i] = j == 0 ? prc[i] : j == 1 ? prc[8 + i] : j == 2 ? prc[16 + i] : prc[24 + i];
+#else
         nv_probs16(h, T, uint(j), q, pr);
+#endif
         float16_t pk[16];
         for (int c = 0; c < 4; ++c)
             for (int hi = 0; hi < 2; ++hi) {
@@ -562,13 +583,13 @@ void main() {
     // x: the token's 32 channels on the e4m3 grid (the MLP operand); xr: the residual's (FP16 in the pre block)
     uint x[16], xr[16];
 #if NV_PRE
-    // The pre block: x = lift . f, f the token's 16 image features (image_input.glsl, which also stages them);
+    // The pre block: x = lift . f, f the 16 image features of the token's own pixel (image_input.glsl), in FP16;
     // the residual takes x in FP16, the MLP its e4m3 rounding, and E is stored k-pair swapped (`kswap`).
-    nr_prepare_features();
     {
+        float ff[16];
+        nr_pixel_features(gl_WorkGroupID.x * 8u + (m & 1u) * 4u + (T & 3u), gl_WorkGroupID.y * 8u + (m >> 1u) * 4u + ((T >> 2u) & 3u), ff);
         uvec4 f[2];
-        for (int j = 0; j < 8; ++j)
-            f[j >> 2][j & 3] = nv_p(input_features[T * 16u + uint(2 * j)], input_features[T * 16u + uint(2 * j + 1)]);
+        for (int j = 0; j < 8; ++j) f[j >> 2][j & 3] = nv_p(NR_F16(ff[2 * j]), NR_F16(ff[2 * j + 1]));
         float16_t xh[32];
         for (int r = 0; r < 32; ++r) {
             const uint lb = (pc.image_lift_off + uint(r >> 4) * 256u + uint(r & 15) * 16u) / 8u;
@@ -603,8 +624,10 @@ void main() {
             const uvec4 pv[2] = uvec4[2](nv_a4[pa], nv_a4[pa + 1u]), sv[2] = uvec4[2](nv_a4[sa], nv_a4[sa + 1u]);
             for (int j = 0; j < 8; ++j) {
                 const uint ch = uint(16 * k + 2 * j);
-                const f16vec2 gm2 = f16vec2(wgt_f16[pc.blend_g_off + 32u + ch], wgt_f16[pc.blend_g_off + 32u + ch + 1u]);
-                const f16vec2 gs2 = f16vec2(wgt_f16[pc.blend_g_off + ch], wgt_f16[pc.blend_g_off + ch + 1u]);
+                // the gain pair as one dword (the host puts the gains 16-byte aligned): a scalar load, not two
+                // 16-bit vector loads
+                const f16vec2 gm2 = unpackFloat2x16(wgt_u32[(pc.blend_g_off + 32u + ch) >> 1u]);
+                const f16vec2 gs2 = unpackFloat2x16(wgt_u32[(pc.blend_g_off + ch) >> 1u]);
                 const f16vec2 xh2 = fma(nv_h(sv[j >> 2][j & 3]), gs2, nv_h(pv[j >> 2][j & 3]) * gm2);
                 xh[16 * k + 2 * j] = xh2.x; xh[16 * k + 2 * j + 1] = xh2.y;
             }

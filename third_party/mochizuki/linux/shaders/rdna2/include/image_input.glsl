@@ -65,16 +65,10 @@ layout(set=0,binding=6) uniform sampler2D nr_tex;
 shared NR_F16 input_features[4*256];
 
 #include "image_noise.glsl"
-void nr_prepare_features() {
-    // One pass a pixel of the 8x8 group, whatever the wave count. The trip
-    // count is a *compile-time* 64/NR_THREADS and not a `< 64u` test, so at two
-    // waves this unrolls back to the single straight-line pass it has always
-    // been - written as a dynamic loop it rolled, and the two-wave build went
-    // 6650 -> 7008 instructions a window for nothing.
-    for(uint nr_i=0u;nr_i<64u/uint(NR_THREADS);++nr_i) {
-    const uint nr_pf=gl_LocalInvocationIndex+nr_i*uint(NR_THREADS);
-    const uint x=gl_WorkGroupID.x*8u+nr_pf%8u;
-    const uint y=gl_WorkGroupID.y*8u+nr_pf/8u;
+// The 16 input features of pixel (x, y) of the working grid. nr_prepare_features stages them for the whole
+// 8x8 group in LDS; the native RDNA2 pre block (fswin_native.glsl) calls this for its own token's pixel instead,
+// so it keeps no 2 KB feature buffer and no barrier (same values, the occupancy of the other C = 32 blocks).
+void nr_pixel_features(uint x, uint y, out float f[16]) {
     const uint sw=pc.image_source_W!=0u?pc.image_source_W:pc.tiles_x*4u;
     const uint sh=pc.image_source_H!=0u?pc.image_source_H:pc.tiles_y*4u;
     const int sx=x<sw?int(x):2*int(sw)-int(x)-2;
@@ -83,7 +77,6 @@ void nr_prepare_features() {
     const vec4 rgba=textureLod(nr_tex,uv,0.0);
     const f16vec3 centered=f16vec3(f16vec3(rgba.rgb)-f16vec3(0.5));
     const vec3 cn=vec3(f16vec3(centered*NR_F16(0.125)));
-    float f[16];
 #if NR_NOISE_FIELD
     // The noise features are a fixed function of (x, y, seed) and the noise
     // gain, so the host computes them once at build (noise_field.comp, the same
@@ -165,6 +158,20 @@ void nr_prepare_features() {
     f[11]=pc.image_tone*mask.g;f[12]=pc.image_structure*mask.b;
     f[13]=-1.0;f[14]=-1.0;
 #endif
+}
+
+void nr_prepare_features() {
+    // One pass a pixel of the 8x8 group, whatever the wave count. The trip
+    // count is a *compile-time* 64/NR_THREADS and not a `< 64u` test, so at two
+    // waves this unrolls back to the single straight-line pass it has always
+    // been - written as a dynamic loop it rolled, and the two-wave build went
+    // 6650 -> 7008 instructions a window for nothing.
+    for(uint nr_i=0u;nr_i<64u/uint(NR_THREADS);++nr_i) {
+    const uint nr_pf=gl_LocalInvocationIndex+nr_i*uint(NR_THREADS);
+    const uint x=gl_WorkGroupID.x*8u+nr_pf%8u;
+    const uint y=gl_WorkGroupID.y*8u+nr_pf/8u;
+    float f[16];
+    nr_pixel_features(x,y,f);
     // One feature calculation per pixel. Only the 16 input features need LDS;
     // the 32 projected features pass directly into the Swin B fragments.
     const uint token=((y%8u)/4u*2u+(x%8u)/4u)*16u+(y%4u)*4u+x%4u;
