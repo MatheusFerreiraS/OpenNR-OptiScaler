@@ -392,6 +392,32 @@ Local patches:
     as in 0.5.8), and the diagnostic pipelines `attnnat` / `vitattnnat` and `include/attn_native.glsl` are removed,
     since the startup pipeline check compiles every `.spv` in `shaders-rdna3`. `NR_RDNA3_ATTN` / `NR_RDNA3_VITATTN`
     keep only the `<file>.spv` form (diagnostic, logged when used). RDNA4 byte-identical to the 0.5.8 DLL.
+25. ACO for the RDNA3 network (gfx11), based on TheAutomatic's work (TheAutomatic/DLSSNR-AMD branch
+    codex/rdna3-aco-port, mochizuki PR #26, MIT): the gfx11 PAL importer idea (gfx11 code objects, the classic
+    `s_waitcnt`, the address32 high word as the PC's high dword, the workgroup IDs following the user SGPR count,
+    NRPAL002 records with the machine and the scratch size) re-done here, and gfx10.3 added:
+    - `nr_pal_binary.hpp`: `is_gfx12` / `is_gfx11` / `is_gfx103`, `same_generation` (a gfx11 record goes into any gfx11
+      container: ACO's code for gfx1100 differs from gfx1103's only in how many VGPRs it leaves free), NRPAL002 parse
+      (scratch only on gfx11, LDS allocation at least the use), `prologue_gfx11` for gfx11 and gfx10.3 (encodings,
+      m0 = 124/125, every system SGPR - workgroup IDs, workgroup info, scratch wave offset - moved from PAL's user count
+      to the record's, upward highest first before the argument copies or downward lowest first after them), the
+      scratch metadata. The gfx12 path is unchanged: every RDNA4 and int4 record's prologue is byte-identical to the
+      0.5.8 adapter's (`tools/aco-records/test_pal_prologue.cpp`, which also runs 40000 random gfx11/gfx10.3 layouts
+      through an SGPR interpreter of the prologue).
+    - `nr_pipeline_binary.hpp`: with the `aco-gfx11` bundle a pipeline whose record is missing or does not import is
+      compiled by the driver from its template in `shaders-rdna3` (logged `[nr] ACO gfx11 <name>: imported` /
+      `not imported (<why>); the driver compiles its template`), never the Linux SPIR-V itself (LLPC crashes on its
+      rolled loops). RDNA4's bundle keeps the old behaviour.
+    - `nrvk.hpp`: `MZ_LOG_LAYOUT=1` logs each kernel's set layout and push range (records must be made with them).
+    - Records: `windows/data/aco/gfx11/records` (the 0.5.9 fix's Linux SPIR-V, `tools/rx7000-diag7/build_spv.py fix`)
+      and `records-coop` (0.5.8's attn and vitattn, `... coop`), 33 each, made for gfx1100 (navi31) by
+      `tools/aco-records` (Mesa 25.3.6 RADV null winsys + three small patches, on Windows) with `layouts.txt`.
+      Kernels the RDNA3 graph did not create in the layout runs, and the three temporal kernels with a combined image
+      sampler before another binding (RADV and the AMD driver size it differently), have no record: the driver
+      compiles them. Not shipped in the product build yet (RX 7000 kit 7 first).
+    Our producer checked on the RX 9070 XT: its gfx1201 records of RDNA4's network are bit-identical in the output
+    to upstream's for 44 of 55 kernels one at a time, 3 more at 55-56 dB (another Mesa), and the rest are explained
+    (push block gap that RDNA4's records remap and the RDNA3 network removes; image descriptors).
 
 The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
 OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;
@@ -422,11 +448,9 @@ ACO for the RDNA3 network: with ACO asked for, the host looks for `dlssnr-amd\ac
 (`records\` named by the hash of the SPIR-V in `shaders\`, which `linux/build/build_network.py rdna3` makes, and an
 optional `shell\` and `shell-aliases.txt`) and takes it when the PAL adapter takes the GPU's code objects (gfx1100
 0x41, gfx1101 0x46, gfx1102 0x47 by device id); otherwise `[mochizuki] ACO off for the RDNA3 network: no gfx11 ACO
-records ...` or `... the PAL adapter takes gfx1200/gfx1201 code objects only`, and the driver compiles
-`shaders-rdna3`. To plug mochizuki0323's records in: the gfx11 code objects in `aco-gfx11\records\`, the SPIR-V they
-were made from in `aco-gfx11\shaders\` (+ `temporal\`), `nr::pal::takes_machine` and the PAL adapter's
-register/user-data handling extended to gfx11, and the pipeline check then run on the template shaders the records go
-into.
+records ...` or `... the PAL adapter does not take this GPU's code objects`, and the driver compiles
+`shaders-rdna3`. Since local patch 25 the adapter takes gfx11 (and gfx10.3) code objects and a pipeline without a
+working record falls back to the driver alone; the records are in `windows/data/aco/gfx11/` (not yet in the build).
 
 On an RX 9070 XT with `MZ_FORCE_RDNA3=1` (driver 26.9.2) every pipeline compiles, the network builds (16 s cold at
 1080p) and runs at 720p, 1080p and 4K without errors; the picture is wrong, as gfx12's fragment layout is not gfx11's.

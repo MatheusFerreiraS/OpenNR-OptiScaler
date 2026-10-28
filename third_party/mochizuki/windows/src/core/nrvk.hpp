@@ -1070,6 +1070,14 @@ struct Kernel {
         std::string key = std::to_string(reinterpret_cast<uintptr_t>(device)) + "|" + spirv_path + "|" +
                           std::to_string(push_bytes) + "|" + (ctx.pipeline_robustness ? "r" : "-") + "|";
         for (const auto& b : lb) key += char('0' + int(b.descriptorType));
+        // MZ_LOG_LAYOUT=1 (record making, tools/aco-records): each kernel's set layout and push range, which an ACO
+        // record's descriptor offsets have to be made with.
+        if (const char* ll = std::getenv("MZ_LOG_LAYOUT"); ll && *ll == '1') {
+            std::string s;
+            for (const auto& b : lb) s += " " + std::to_string(b.binding) + ":" + std::to_string(int(b.descriptorType));
+            nr::logf("[nr] layout %s push %u bindings%s", spirv_path.substr(spirv_path.find_last_of("/\\") + 1).c_str(),
+                     push_bytes, s.c_str());
+        }
         for (uint32_t i = 0; i < na; ++i) key += "|" + std::to_string(aliases[i].first);
         {
             std::lock_guard<std::mutex> guard(shared_pipelines_lock());

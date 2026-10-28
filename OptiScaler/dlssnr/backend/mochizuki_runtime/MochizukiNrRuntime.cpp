@@ -1103,11 +1103,11 @@ struct Vulkan
             Rdna3Layout();
     }
 
-    // ACO for the RDNA3 network, when it was asked for (ConfigureAco set dlssnr-amd\aco up): mochizuki0323 plans
-    // mauri870's network as gfx11 machine code, which would sit in dlssnr-amd\aco-gfx11\ laid out as aco\ is
-    // (records\ named by the hash of the SPIR-V in shaders\, which linux\build\build_network.py rdna3 makes). It is
-    // taken when its records are there and the PAL adapter takes this GPU's code objects (nr::pal::takes_machine);
-    // otherwise the driver compiles the network from shaders-rdna3. Neither is so yet: the adapter is gfx12 only.
+    // ACO for the RDNA3 network, when it was asked for (ConfigureAco set dlssnr-amd\aco up): the network as Mesa ACO
+    // gfx11 machine code in dlssnr-amd\aco-gfx11\ laid out as aco\ is (records\ named by the hash of the SPIR-V in
+    // shaders\, which linux\build\build_network.py rdna3 makes; tools\aco-records makes the records). It is taken when
+    // its records are there and the PAL adapter takes this GPU's code objects (nr::pal::takes_machine); a pipeline
+    // whose record is missing or does not import is compiled by the driver from shaders-rdna3 (nr_pipeline_binary.hpp).
     void Rdna3Aco()
     {
         const std::string asked = nr::binary::directory();
@@ -1123,7 +1123,7 @@ struct Vulkan
                                   GetFileAttributesA((bundle + "\\shaders").c_str()) == INVALID_FILE_ATTRIBUTES
                               ? "no gfx11 ACO records (dlssnr-amd\\aco-gfx11\\records\\)"
                           : !nr::pal::takes_machine(mach)
-                              ? "the PAL adapter takes gfx1200/gfx1201 code objects only, not this GPU's"
+                              ? "the PAL adapter does not take this GPU's code objects"
                               : nullptr;
         if (why)
         {
