@@ -64,6 +64,20 @@ def capture(family, spv, prefix, sentinel):
         raise make_record.Reject('capture failed (%d): %s' % (r.returncode, r.stderr.decode(errors='replace')[-400:]))
 
 
+def stats(family, spv, prefix):
+    """ACO's VGPRs and scratch for a kernel refused before its capture (layout), with its own reflected layout."""
+    env = dict(os.environ, RADV_FORCE_FAMILY=family, NR_ADDR32_HI='0x%x' % make_record.SENT_A, NR_RECORD_OUT=prefix,
+               MESA_SHADER_CACHE_DISABLE='true')
+    if family.lower().startswith('navi2'):
+        env['NR_CAPTURE_NO_COOP'] = '1'
+    try:
+        subprocess.run([CAPTURE, RADV, spv, prefix], env=env, capture_output=True, timeout=1800)
+        a = make_record.read_capture(prefix)
+        return {'vgpr': a['num_vgprs'], 'scratch': a['scratch_bytes_per_wave'] // 32, 'spilled': a['spilled_vgprs']}
+    except Exception:
+        return {}
+
+
 def one(family, spv, out, tmp):
     base = os.path.join(tmp, os.path.basename(spv))
     t0 = time.time()
@@ -75,7 +89,11 @@ def one(family, spv, out, tmp):
         info['s'] = round(time.time() - t0, 1)
         return 'OK', info
     except make_record.Reject as e:
-        return 'REJECT', {'name': os.path.basename(spv), 'why': str(e)}
+        info = {'name': os.path.basename(spv)}
+        if not os.path.exists(base + '.a.txt'):
+            info.update(stats(family, spv, base + '.s'))
+        info['why'] = '"%s"' % e
+        return 'REJECT', info
     except subprocess.TimeoutExpired:
         return 'REJECT', {'name': os.path.basename(spv), 'why': 'capture timed out'}
 

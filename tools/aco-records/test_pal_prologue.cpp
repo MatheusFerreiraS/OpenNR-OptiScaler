@@ -2,11 +2,14 @@
 //  1. every record in the given directories parses;
 //  2. gfx12: the prologue of every record is byte-identical to the adapter before the gfx11 work (orig/);
 //  3. gfx11 and gfx10.3: random argument layouts run through a small SGPR interpreter of the prologue's
-//     instructions, starting from PAL's layout, end in exactly the registers ACO's code expects.
+//     instructions, starting from PAL's layout, end in exactly the registers ACO's code expects;
+//  4. every record's prologue as dd989104c's adapter (base/) makes it; with --probe2 <tools/aco-records/probe2>,
+//     the RX 6600's containers and the synthesized gfx10.3 container (probe2_test).
 //
-//   cl /std:c++17 /EHsc /O2 /I<core> /I<orig> test_pal_prologue.cpp && test_pal_prologue <records dir>...
+//   cl /std:c++17 /EHsc /O2 /I<core> /I<orig> test_pal_prologue.cpp && test_pal_prologue [--probe2 <dir>] <records dir>...
 #include "nr_pal_binary.hpp"
 #include "nr_pal_binary_orig.hpp"
+#include "nr_pal_binary_base.hpp"
 #include <cstdio>
 #include <filesystem>
 #include <map>
@@ -118,9 +121,113 @@ static void layout_test(bool g10, std::mt19937& rng, int iterations) {
     }
 }
 
+// The RX 6600 result of probe 2 (probe2/rx6600-result) and the RX 9070 XT's containers (probe2/ref-gfx12):
+//  - the driver's own gfx1032 code objects (e_flags 0x938, registers keyed by number) parse, the metadata round trips;
+//  - synthesize() on the navi23 probe records gives the container the RX 6600 ran BIT-EXACT (synth), but for the
+//    fields it sets per pipeline (.api_shader_hash, .128_bit_cache_hash) and the ISA name note (its own machine);
+//  - a navi21 record builds the same container for gfx1032 (one gfx1030 set for every gfx10.3 GPU);
+//  - gfx12 / gfx11 splices are byte-identical to dd989104c's adapter (nr_base) and gfx10.3 records are refused there.
+static Bytes file(const std::filesystem::path& p) { return nr::pal::load(p.string()); }
+static nr::pal::Value& path(nr::pal::Value& m, std::initializer_list<const char*> keys) {
+    nr::pal::Value* v = &m.at("amdpal.pipelines").items.at(0);
+    for (auto k : keys) v = &v->at(k);
+    return *v;
+}
+static nr::pal::Value metadata(const nr::pal::Elf& e, std::string* isa = nullptr) {
+    const auto& d = e.data[e.find(".note")];
+    nr::pal::Value md;
+    for (size_t p = 0; p + 12 <= d.size();) {
+        auto ns = nr::pal::read<uint32_t>(d, p), ds = nr::pal::read<uint32_t>(d, p + 4), ty = nr::pal::read<uint32_t>(d, p + 8);
+        size_t desc = p + 12 + ((ns + 3) & ~3u);
+        if (ty == 32) md = nr::pal::unpack(Bytes(d.begin() + desc, d.begin() + desc + ds));
+        if (ty == 11 && isa) isa->assign(d.begin() + desc, d.begin() + desc + ds);
+        p = desc + ((ds + 3) & ~3u);
+    }
+    return md;
+}
+static void probe2_test(const std::filesystem::path& dir) {
+    const auto res = dir / "rx6600-result", ref = dir / "ref-gfx12";
+    unsigned own = 0;
+    for (const char* n : {"probe_a", "probe_b", "g_gemmproj", "g_fswin32"}) {
+        const Bytes b = file(res / (std::string(n) + ".0.bin"));
+        try {
+            nr::pal::Elf e(b);
+            CHECK(e.mach == 0x38, "%s: machine 0x%x", n, e.mach);
+            auto md = metadata(e);
+            Bytes x, y; nr::pal::encode(x, md); nr::pal::encode(y, nr::pal::unpack(x));
+            CHECK(x == y, "%s: metadata does not round trip", n);
+            unsigned numbered = 0;
+            for (auto& f : path(md, {".registers"}).fields) numbered += f.first[0] == '\0';
+            CHECK(numbered > 0, "%s: no numbered register keys", n);
+            ++own;
+        } catch (const std::exception& ex) { CHECK(false, "%s: the RX 6600's own code object: %s", n, ex.what()); }
+        bool base_refuses = false;
+        try { nr_base::pal::Elf e(b); } catch (...) { base_refuses = true; }
+        CHECK(base_refuses, "%s: dd989104c took the RX 6600's container", n);
+    }
+    struct P { const char* name; uint64_t key; unsigned push; std::array<uint32_t, 3> wg; };
+    unsigned synth = 0, generic = 0, same = 0;
+    for (const P& p : {P{"probe_a", 0x92166f4c10ec629eull, 12, {64, 1, 1}}, P{"probe_b", 0x231f53957b4de7d8ull, 16, {64, 2, 1}}}) {
+        char key[24]; std::snprintf(key, sizeof key, "%016llx.nrp", (unsigned long long)p.key);
+        const auto rec = [&](const char* fam) { return nr::pal::Record::parse(file(res / "records" / fam / key)); };
+        try {
+            const Bytes want = file(res / (std::string(p.name) + ".synth.bin")), got = nr::pal::synthesize(rec("navi23"), 0x38, p.push, p.wg);
+            nr::pal::Elf w(want), g(got);
+            CHECK(Bytes(want.begin(), want.begin() + 40) == Bytes(got.begin(), got.begin() + 40) &&
+                  Bytes(want.begin() + 48, want.begin() + 64) == Bytes(got.begin() + 48, got.begin() + 64), "%s: ELF header", p.name);
+            CHECK(w.names == g.names, "%s: section names", p.name);
+            for (size_t i = 0; i < w.sections.size() && i < g.sections.size(); ++i) {
+                const auto &a = w.sections[i], &c = g.sections[i];
+                CHECK(a.name == c.name && a.type == c.type && a.flags == c.flags && a.align == c.align && a.link == c.link &&
+                      a.info == c.info && a.entsize == c.entsize && (a.type == 7 || a.offset == c.offset), "%s: section %zu", p.name, i);
+                if (w.names[i] != ".note") CHECK(w.data[i] == g.data[i], "%s: %s bytes", p.name, w.names[i].c_str());
+            }
+            std::string wi, gi;
+            auto wm = metadata(w, &wi), gm = metadata(g, &gi);
+            CHECK(wi == "amdgcn--amdpal--gfx1201" && gi == "amdgcn--amdpal--gfx1032", "%s: ISA notes %s / %s", p.name, wi.c_str(), gi.c_str());
+            for (auto ks : {std::initializer_list<const char*>{".shaders", ".compute", ".api_shader_hash"},
+                            std::initializer_list<const char*>{".xgl_cache_info", ".128_bit_cache_hash"}})
+                path(wm, ks) = path(gm, ks);
+            Bytes x, y; nr::pal::encode(x, wm); nr::pal::encode(y, gm);
+            CHECK(x == y, "%s: metadata differs from the RX 6600's synth", p.name);
+            ++synth;
+            CHECK(nr::pal::synthesize(rec("navi21"), 0x38, p.push, p.wg) == got, "%s: the navi21 record builds another container", p.name);
+            ++generic;
+        } catch (const std::exception& ex) { CHECK(false, "%s: synthesize: %s", p.name, ex.what()); }
+        for (const char* fam : {"navi31", "gfx1201"}) {
+            bool refused = false;
+            try { nr::pal::synthesize(rec(fam), 0x38, p.push, p.wg); } catch (...) { refused = true; }
+            CHECK(refused, "%s: a %s record synthesized for gfx1032", p.name, fam);
+        }
+        bool refused = false;
+        try { nr::pal::synthesize(rec("navi23"), 0x4e, p.push, p.wg); } catch (...) { refused = true; }
+        CHECK(refused, "%s: a gfx10.3 record synthesized for gfx1201", p.name);
+        // gfx12 and gfx11 splices into the RX 9070 XT's container (the gfx11 one with e_flags 0x41), against dd989104c.
+        const Bytes ref12 = file(ref / (std::string(p.name) + ".0.bin"));
+        Bytes ref11 = ref12; nr::pal::write(ref11, 48, uint32_t(0x41));
+        for (auto [fam, container] : {std::pair<const char*, const Bytes*>{"gfx1201", &ref12}, {"navi31", &ref11}}) {
+            try {
+                const Bytes rb = file(res / "records" / fam / key);
+                CHECK(nr::pal::splice(*container, nr::pal::Record::parse(rb), p.push, p.wg) ==
+                      nr_base::pal::splice(*container, nr_base::pal::Record::parse(rb), p.push, p.wg), "%s %s: splice changed", p.name, fam);
+                ++same;
+            } catch (const std::exception& ex) { CHECK(false, "%s %s: splice: %s", p.name, fam, ex.what()); }
+            for (const char* other : {"navi23"}) {
+                bool r = false;
+                try { nr::pal::splice(*container, rec(other), p.push, p.wg); } catch (...) { r = true; }
+                CHECK(r, "%s: a gfx10.3 record spliced into a %s container", p.name, fam);
+            }
+        }
+    }
+    std::printf("probe 2: %u RX 6600 code objects read, %u synthesized = RX 6600 synth, %u navi21 = navi23, %u splices = dd989104c\n",
+                own, synth, generic, same);
+}
+
 int main(int argc, char** argv) {
-    unsigned parsed = 0, gfx12 = 0;
-    for (int i = 1; i < argc; ++i)
+    unsigned parsed = 0, gfx12 = 0, base = 0;
+    std::filesystem::path probe2;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--probe2" && i + 1 < argc) { probe2 = argv[++i]; continue; }
         for (const auto& f : std::filesystem::directory_iterator(argv[i])) {
             if (f.path().extension() != ".nrp") continue;
             const Bytes b = nr::pal::load(f.path().string());
@@ -134,14 +241,22 @@ int main(int argc, char** argv) {
                           "gfx12 prologue changed: %s", f.path().string().c_str());
                     ++gfx12;
                 }
+                // Every record's prologue for its own machine (gfx12: 0x4e), as dd989104c makes it.
+                auto o = nr_base::pal::Record::parse(b);
+                const uint32_t m = r.mach ? r.mach : 0x4e;
+                for (unsigned slot : {5u, 23u, 33u})
+                    CHECK(nr::pal::prologue(r, slot, m) == nr_base::pal::prologue(o, slot, m), "prologue changed: %s", f.path().string().c_str());
+                ++base;
             } catch (const std::exception& e) {
                 CHECK(false, "%s: %s", f.path().string().c_str(), e.what());
             }
         }
+    }
     std::mt19937 rng(1234);
     layout_test(false, rng, 20000);
     layout_test(true, rng, 20000);
-    std::printf("%u records parsed (%u gfx12 with an identical prologue), 40000 layouts, %d failures\n", parsed, gfx12,
-                failures);
+    if (!probe2.empty()) probe2_test(probe2);
+    std::printf("%u records parsed (%u gfx12 with an identical prologue, %u = dd989104c), 40000 layouts, %d failures\n",
+                parsed, gfx12, base, failures);
     return failures ? 1 : 0;
 }

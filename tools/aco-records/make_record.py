@@ -19,7 +19,8 @@ FAMILY = {  # RADV family -> (llvm cpu, ELF e_flags machine)
     'NAVI31': ('gfx1100', 0x41), 'NAVI32': ('gfx1101', 0x46), 'NAVI33': ('gfx1102', 0x47),
     'PHOENIX': ('gfx1103', 0x44), 'GFX1150': ('gfx1150', 0x43), 'GFX1151': ('gfx1151', 0x4a),
     'NAVI21': ('gfx1030', 0x36), 'NAVI22': ('gfx1031', 0x37), 'NAVI23': ('gfx1032', 0x38),
-    'NAVI24': ('gfx1034', 0x3e), 'GFX1200': ('gfx1200', 0x48), 'GFX1201': ('gfx1201', 0x4e),
+    'NAVI24': ('gfx1034', 0x3e), 'VANGOGH': ('gfx1033', 0x39), 'REMBRANDT': ('gfx1035', 0x3d),
+    'RAPHAEL_MENDOCINO': ('gfx1036', 0x45), 'GFX1200': ('gfx1200', 0x48), 'GFX1201': ('gfx1201', 0x4e),
 }
 UD_PUSH, UD_INLINE, UD_GRID = 1, 2, 19
 
@@ -190,7 +191,11 @@ def make(spv_path, pa, pb, out_path):
         raise Reject('user SGPR count differs from rsrc2')
     scratch = a['scratch_bytes_per_wave']
     if scratch and (gfx12 or gfx10):
-        raise Reject('scratch on %s' % cpu)
+        raise Reject('scratch on %s: %d bytes a lane, vgpr=%d spilled=%d' % (cpu, scratch // 32, a['num_vgprs'],
+                                                                          a['spilled_vgprs']))
+    # gfx10.3's container (nr_pal_binary.hpp synthesize) has no IEEE mode field; ACO leaves it off for compute.
+    if gfx10 and rsrc1 >> 23 & 1:
+        raise Reject('IEEE mode on %s' % cpu)
     wg = a['block'][0] * a['block'][1] * a['block'][2]
     push_bytes = (a['push_constant_size'] + 3) & ~3 if a['loads_push_constants'] else 0
     hdr = bytearray(96)
