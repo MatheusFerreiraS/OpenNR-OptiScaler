@@ -455,8 +455,8 @@ tools\rx6000-kit\make-refs.ps1 $k\refwork $k\reference                     # FP8
 tools\rx6000-kit\build-kit.ps1 exports\mochizuki-rdna2 $k\reference $k\kit $k\variant   # variant: optional
 tools\rx6000-kit\pack-kit.ps1 $k\kit E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip
 ```
-The variant folders (`$kariant\<name>`: the 28 files of one `NV_PCROLL` build, `build_network.py rdna2 --tree linux
+The variant folders (`$k\variant\<name>`: the 28 files of one `NV_PCROLL` build, `build_network.py rdna2 --tree linux
 --no-quad --define NV_PCROLL=<n>`, plus `about.txt`) get their own generator word with
-`toolsx6000-kit\genword.py <dir> 0x770<n>`; one of them must be the shipped form.
+`tools\rx6000-kit\genword.py <dir> 0x770<n>`; one of them must be the shipped form.
 A new shaders-rdna2 needs new references only if the network's arithmetic changed (the references are the FP8
 network's).
