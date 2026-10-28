@@ -368,21 +368,14 @@ shared NR_E4M3 lds_p[NR_QT * NR_KC];   // [query][key]  A, RowMajor
 // and measured 34.9 ms against its 27.9.
 shared float   lds_qs[NR_QT];          // per-query sqrt(32)*scale/||q||
 shared float   lds_ki[NR_KC];          // per-key 1/||k||
-// NR_VT_STAGE: V^T reaches its A fragments through LDS (vit_attn_vt_chunk.glsl), 1 KB a wave.
-#ifndef NR_VT_STAGE
-#define NR_VT_STAGE 0
-#endif
-#if NR_VTRANS && NR_VT_STAGE
-#extension GL_KHR_shader_subgroup_basic : require
-shared NR_E4M3 lds_vt[NR_VWAVES * 512];   // [wave][tile n][dim][key], 32-byte rows
-#endif
 
 #include "nr_prof.glsl"
 #ifndef NR_NATIVE
 #define NR_NATIVE 0
 #endif
 #if NR_NATIVE
-// NR_NATIVE: the RDNA2 tree's native body (include/vit_native.glsl, its own main), pipeline vitattnnat.
+// NR_NATIVE: the RDNA2 tree's native body (include/vit_native.glsl, its own main), what the RDNA3 network ships
+// (pipelines.json): this cooperative-matrix body changes from run to run on an RX 7900 XTX (RX 7000 kit 6).
 #include "vit_native.glsl"
 #else
 void main() {

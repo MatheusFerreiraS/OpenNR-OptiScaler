@@ -1,5 +1,5 @@
-// RDNA3 copy of the RDNA2 tree's include/vit_native.glsl (mochizuki-rdna2 22abb593d), for pipeline vitattnnat
-// (NR_RDNA3_VITATTN=native, a diagnostic): the ViT attention without cooperative matrices. Body unchanged; NR_DOT2
+// RDNA3 copy of the RDNA2 tree's include/vit_native.glsl (mochizuki-rdna2 22abb593d), the RDNA3 network's vitattn
+// (NR_NATIVE=1 in pipelines.json): the ViT attention without cooperative matrices. Body unchanged; NR_DOT2
 // and the round-to-nearest-even FP16 mode added as in attn_native.glsl. The RDNA3 host keeps the barrier between
 // the QKV GEMM and this dispatch, as the RDNA2 one does.
 #ifndef NR_DOT2

@@ -384,6 +384,14 @@ Local patches:
     staged V^T equals the ColumnMajor load bit for bit (probe, 100% equal to V^T); RDNA4 byte-identical to the 0.5.8
     DLL (harness, 40 frames, small and 310.8 model, 1280x720 and 1920x1080, driver compiler and ACO); `shaders` and
     `aco` byte-identical, `shaders-rdna3` differs only in g_attn, g_vitattn and the new g_vitattnnat.
+24. The RDNA3 network as released after kit 6 (RX 7900 XTX rerun with the model): `attn` with `NR_QPAD=0` (patch 23)
+    is right and deterministic; `vitattn` still changes run to run with the staged V^T (the V^T probe was right
+    either way, so the gather was not it), and the full network is right at 1152x648 and 1280x720 only with the
+    native body (54-56 / 53-56 dB, 0.5.8 23-25 dB; +0.6-0.8 ms). So `vitattn` in `pipelines.json` is the native
+    body (`NR_NATIVE=1`, its SPIR-V the kit's `g_vitattnnat.spv`), `NR_VT_STAGE` is gone (`vit_attn_vt_chunk.glsl`
+    as in 0.5.8), and the diagnostic pipelines `attnnat` / `vitattnnat` and `include/attn_native.glsl` are removed,
+    since the startup pipeline check compiles every `.spv` in `shaders-rdna3`. `NR_RDNA3_ATTN` / `NR_RDNA3_VITATTN`
+    keep only the `<file>.spv` form (diagnostic, logged when used). RDNA4 byte-identical to the 0.5.8 DLL.
 
 The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
 OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;
