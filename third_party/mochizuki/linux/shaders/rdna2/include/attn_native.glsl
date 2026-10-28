@@ -7,7 +7,7 @@
 //
 //   1. QKV projection: lane l of wave w owns tokens l and l + 32 of the window and the 48 rows 48w .. 48w + 47 of the
 //      head's 96 (Q 0-31, K 32-63, V 64-95). The rows are the same for every lane: weights as scalar uvec4 into v_dot2,
-//      each feeding two tokens. Q and K go to LDS as FP16 ([row][token]), V quantised and transposed ([channel][token]).
+//      each feeding two tokens. Q and K go to LDS as FP16 ([row pair][token]), V quantised and transposed ([channel][token]).
 //   2. Norms: token 32w + l normalises its Q and K (the emulated tree, both halves of the fragment in one lane) and
 //      stores the quantised q and k rows.
 //   3. Attention: query 32w + l holds its q in registers and reads every key's k row and V's rows at one address
@@ -24,10 +24,13 @@
 #error "NR_NATIVE: the shipping attn shape only (see pipelines.json)"
 #endif
 
-shared float16_t na_raw[64 * 64];      // Q (rows 0-31) and K (rows 32-63), FP16, [row][token]
+// Q (rows 0-31) and K (rows 32-63) in FP16, [row pair][token] (word (R / 2) * 64 + t, row R in the low half when
+// even); once every lane has read its token's rows, the same 8 KB hold q quantised ([token][8 channels], uvec4 T * 4 ..)
+// and k (256 + T * 4 ..). 12 KB in all, not 20: on gfx1030 5 waves a SIMD (163 VGPRs) instead of 3 (LDS).
+shared uvec4 na_qk4[512];
 shared uint na_vt[32 * 32];            // V quantised, [channel][token pair]
-shared uvec4 na_qn[64 * 4];            // q quantised, [token][8 channels]
-shared uvec4 na_kn[64 * 4];            // k quantised
+#define na_qn(i) na_qk4[i]
+#define na_kn(i) na_qk4[256u + (i)]
 
 layout(set = 0, binding = 4, std430) readonly buffer NaAct4 { uvec4 na_x4[]; };
 layout(set = 0, binding = 2, std430) readonly buffer NaWgt4 { uvec4 na_w4[]; };
@@ -120,7 +123,10 @@ void main() {
                 for (int r = 0; r < 48; ++r) {
                     const uint R = r0 + uint(r);
                     if (R < 64u) {
-                        na_raw[R * 64u + t] = NR_F16(acc[j][r]);
+                        if ((r & 1) == 0) {
+                            const uint u = (R >> 1u) * 64u + t;
+                            na_qk4[u >> 2u][u & 3u] = na_p(f16vec2(NR_F16(acc[j][r]), NR_F16(acc[j][r | 1])));
+                        }
                     } else {
                         const float16_t v = oob ? zv.x : nr_attn_quant(f16vec2(acc[j][r], 0.0)).x;
                         const float16_t vn = unpackFloat2x16(subgroupShuffleXor(na_p(f16vec2(v, v)), 1u)).x;
@@ -135,12 +141,17 @@ void main() {
         {
             const uint T = 32u * wave + lane;
             uvec4 qo[4], ko[4];
+            f16vec2 qk[32];
+            for (int c = 0; c < 32; c += 2) {
+                const uint uq = uint(c >> 1) * 64u + T, uk = uint(16 + (c >> 1)) * 64u + T;
+                const f16vec2 qw = na_h(na_qk4[uq >> 2u][uq & 3u]), kw = na_h(na_qk4[uk >> 2u][uk & 3u]);
+                qk[c] = f16vec2(qw.x, kw.x); qk[c + 1] = f16vec2(qw.y, kw.y);
+            }
+            barrier();                         // every lane's rows read before q and k replace them
             if (nr_tile_oob(T >> 4u)) {
                 const uint zqq = na_p(f16vec2(zq.x, zq.x)), zkk = na_p(f16vec2(zq.y, zq.y));
                 for (int i = 0; i < 4; ++i) { qo[i] = uvec4(zqq); ko[i] = uvec4(zkk); }
             } else {
-                f16vec2 qk[32];
-                for (int c = 0; c < 32; ++c) qk[c] = f16vec2(na_raw[uint(c) * 64u + T], na_raw[uint(32 + c) * 64u + T]);
                 f16vec2 e2[2];
                 for (int hh = 0; hh < 2; ++hh) {
                     precise f16vec2 t[8];
@@ -170,7 +181,7 @@ void main() {
                                   na_p(f16vec2(qkq[8 * i + 4].y, qkq[8 * i + 5].y)), na_p(f16vec2(qkq[8 * i + 6].y, qkq[8 * i + 7].y)));
                 }
             }
-            for (int i = 0; i < 4; ++i) { na_qn[T * 4u + uint(i)] = qo[i]; na_kn[T * 4u + uint(i)] = ko[i]; }
+            for (int i = 0; i < 4; ++i) { na_qn(T * 4u + uint(i)) = qo[i]; na_kn(T * 4u + uint(i)) = ko[i]; }
         }
         barrier();
 
@@ -178,13 +189,13 @@ void main() {
         {
             const uint Q = 32u * wave + lane;
             uvec4 q[4];
-            for (int i = 0; i < 4; ++i) q[i] = na_qn[Q * 4u + uint(i)];
+            for (int i = 0; i < 4; ++i) q[i] = na_qn(Q * 4u + uint(i));
             // logit of key k: the K row against the Q row, channel pairs in order (NR_MMA(lg, kf, qf))
             float lg[64];
             for (int k = 0; k < 64; ++k) {
                 float s = 0.0;
                 for (int i = 0; i < 4; ++i) {
-                    const uvec4 k4 = na_kn[uint(k) * 4u + uint(i)];
+                    const uvec4 k4 = na_kn(uint(k) * 4u + uint(i));
                     for (int e = 0; e < 4; ++e) s = NR_DOT2(s, na_h(k4[e]), na_h(q[i][e]));
                 }
                 lg[k] = s;

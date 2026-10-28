@@ -175,15 +175,13 @@ void nv_probs16(uint h, uint T, uint j, const uint q[16], out f16vec2 pr[8]) {
 }
 
 // Window attention of head h for query token T: q holds its 16 quantised Q pairs, cq gets the 16 quantised
-// context pairs. K and V of the head in LDS (above). NV_PCACHE (the full-resolution pre and post blocks): pass 2
+// context pairs. K and V of the head in LDS (above). NV_PCACHE (every C = 32 body; C >= 64: main): pass 2
 // takes pass 1's 64 probabilities from registers (32 more VGPRs, q dead after pass 1) instead of computing the
 // logits and exponents again. Pass 1 is unrolled (constant cache indices, four nv_probs16 calls); pass 2 stays
 // rolled and picks block j with a uniform select (unrolled it costs +45% compile time, a queue shifted through the
 // rolled loops +25 VGPRs on gfx1030). Same values, same order.
-#if NV_PRE || NV_POST
-#define NV_PCACHE 1
-#else
-#define NV_PCACHE 0
+#ifndef NV_PCACHE
+#define NV_PCACHE (NR_HWAVES == 0)
 #endif
 void nv_attn(uint h, uint T, const uint q[16], out uint cq[16]) {
     const int opaque = int(gl_WorkGroupID.z);
@@ -403,7 +401,7 @@ void main() {
             uvec4 v;
             for (int p = 0; p < 4; ++p) {
                 const uint ch = kf * 16u + hx * 8u + uint(2 * p);
-                const f16vec2 g2 = f16vec2(wgt_f16[pc.blend_g_off + ch], wgt_f16[pc.blend_g_off + ch + 1u]);
+                const f16vec2 g2 = unpackFloat2x16(wgt_u32[(pc.blend_g_off + ch) >> 1u]);   // ch even, gains 16-byte aligned
                 v[p] = packFloat2x16(nr_quant_pair(fma(nv_h(sv[p]), g2, nv_h(pv[p]))));
             }
             if (nr_tile_oob(q)) v = uvec4(0u);
@@ -500,7 +498,19 @@ void main() {
         for (int s = 0; s < 2; ++s) nv_store_kv(w, lane + 32u * uint(s), ke[s], ve[s]);
         subgroupMemoryBarrierShared();
         uint cq[2][16];
+#if NV_PCACHE
+        // The two tokens' attention in one rolled loop, the body inlined once (unrolled, the two cached probability
+        // sets spill: gfx1030 .342 256 VGPRs + 3.9 KB scratch). Rolled: gfx1030 188 VGPRs, no scratch, but gfx1201
+        // (the RX 9070 XT forced) 256 + 8 KB scratch and 2-6x slower, so it is off by default (`NV_PCACHE=1` builds it).
+        for (int s = 0; s < 2 + nv_opaque; s = s + 1) {
+            uint qs[16], r[16];
+            for (int p = 0; p < 16; ++p) qs[p] = s == 0 ? qe[0][p] : qe[1][p];
+            nv_attn(w, lane + 32u * uint(s), qs, r);
+            for (int p = 0; p < 16; ++p) { cq[0][p] = s == 0 ? r[p] : cq[0][p]; cq[1][p] = s == 0 ? cq[1][p] : r[p]; }
+        }
+#else
         for (int s = 0; s < 2; ++s) nv_attn(w, lane + 32u * uint(s), qe[s], cq[s]);
+#endif
         subgroupMemoryBarrierShared();            // every lane's last K read before the context replaces it
         for (int s = 0; s < 2; ++s)
             for (int q = 0; q < 4; ++q)
@@ -679,7 +689,8 @@ void main() {
             const uvec4 pv = nv_y4[uint(q) * 16u + local], sv = nv_a4[sa + uint(q >> 1) * 32u + uint(q & 1)];
             for (int i = 0; i < 4; ++i) {
                 const int ch = 8 * q + 2 * i;
-                const f16vec2 g2 = f16vec2(wgt_f16[pc.blend_g_off + uint(ch)], wgt_f16[pc.blend_g_off + uint(ch) + 1u]);
+                // the gain pair as one dword (16-byte aligned gains, ch even): a scalar load
+                const f16vec2 g2 = unpackFloat2x16(wgt_u32[(pc.blend_g_off + uint(ch)) >> 1u]);
                 const f16vec2 xh2 = fma(nv_h(sv[i]), g2, nv_h(pv[i]));
                 xh[ch] = xh2.x; xh[ch + 1] = xh2.y;
             }

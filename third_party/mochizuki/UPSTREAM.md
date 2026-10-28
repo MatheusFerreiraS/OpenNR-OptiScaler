@@ -411,6 +411,15 @@ probabilities of pass 1 in registers for pass 2 (`NV_PCACHE`) instead of computi
 and (3) read the post block's blend gains as one dword a pair (scalar loads instead of 64 16-bit vector loads). Same
 arithmetic and order: the output is byte-identical. The other Swin pipelines' SPIR-V is unchanged.
 
+`NV_PCACHE` is now the default of every C=32 body (`fswin32`, `fswin32nh`, `fswindsp32*`, `fswinfusedup32*`), not only
+the pre and post blocks (gfx1030 .342: 116-122 VGPRs, 8 waves a SIMD as before, 0 scratch). The C>=64 bodies keep
+their two attention calls (`NV_PCACHE=0`): with the cache, one rolled call fits gfx1030 (188-192 VGPRs, still 4 waves
+a SIMD, the LDS limit) but spills 8 KB on gfx1201, where the forced runs are timed; `NV_PCACHE=1` builds that form
+(the RX 6000 kit times it on the card as a variant). `attn_native.glsl` keeps Q and K in FP16 row pairs and puts the
+quantised q and k over them once each lane has read its rows (one barrier more): LDS 20 -> 12 KB, gfx1030 3 -> 5
+waves a SIMD. The C=32 fused upsample and the wide one read their blend gains as one dword a pair. Same arithmetic
+and order: the output is byte-identical.
+
 Host (local patch 18): `bool rdna3` became `nr::Arch` (`nr_arch.hpp`: rdna4, rdna3, rdna2) in `RuntimeConfig` and
 `nrvk::Context`; `Context::fp16()` is what `rdna3` meant everywhere (twins, Linux kernel set, `kswap`, NR_TCHAIN off).
 RDNA2 reads `shaders-rdna2` and `pipeline-rdna2.cache`, runs no ACO, and `adopt` requires neither the cooperative
