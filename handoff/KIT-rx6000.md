@@ -4,9 +4,55 @@ Worktree `wt-rdna2`, branch `mochizuki-rdna2`, local commit only (nothing pushed
 touched). Plan section 9 item 6. Clean room kept: the GPL RDNA2 port was not opened, searched or fetched; the kit is
 built from this branch's own export and the RX 7000 kits' tools.
 
-Package: `E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip`, 24,577,928 bytes (23.4 MB, 136 files,
-models not included), SHA-256 `A3DAFDB86A3BCC862D358E58E787C1F5E70DB84776C48F48AD99C48D21248F9D` (also in
-`rx6000-test-kit\SHA256.txt`). One `run-test.bat`, one result zip `OpenNR-RX6000-result-<date>.zip`.
+Package (rebuilt 2026-10-27 night, native GEMMs, no emulated stage):
+`E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip`, 17,634,013 bytes (16.8 MB, 115 files, models not
+included), SHA-256 `7A088A2074121613FD5380C55D0EA767A9C20629CDD3644C2CF9582B99CCBFF4` (also in
+`rx6000-test-kit\SHA256.txt`). One `run-test.bat`, one result zip `OpenNR-RX6000-result-<date>.zip`. The zip in
+`rx6000-test-kit\send\` (20:31) is the older kit, not this one.
+
+## Native GEMMs (2026-10-27 night)
+
+The first RX 6000 result (RX 6600, driver 26.8.1, the older kit with fswinds) had a correct network (49.8-53.3 dB,
+deterministic) but a 195.8 s first build: the nine GEMMs still emulated took 22-45 s each to compile on that driver
+(`gemmprojt` 44.8, `gemmvqkvs` 44.7, `gemmnores` 23.8, `gemmpool` 23.2, `gemmprojw` 22.7, `gemmvqkvnorm` 22.5,
+`gemmvproj` 22.3, `gemmvqkv` 22.2, `gemmvnores` 22.1), against ~3 s for a native one. All nine now take
+`include/gemm_native.glsl` (`NR_NATIVE=1` + `NR_NG_TW/CL/WAVES` in `rdna2/pipelines.json`), so every `gemm*` of the
+RDNA2 set is native. The body grew: tile-blocked weights (not only N-pair), the `NR_OUT_PERM` 1/2 raster stores, the
+2x2 pool (`NR_NG_TW` a multiple of 8) and the plain `[token][N]` FP16 output; same chain order and epilogue rounding,
+so the same bytes.
+
+| pipeline | tile, native setting | gfx1030 .342 before: VGPR / scratch / instr | after | 9070 XT forced, ms a frame (before -> after) |
+|---|---|---|---|---|
+| gemmprojt | 32x128, TW4 CL2 | 256 / 3600 B / 16.7k | 55 / 0 / 1169 | Small 720p 0.180 -> 0.065, 310.8 1080p 0.199 -> 0.096 |
+| gemmvqkvs | 32x128, TW4 CL2 | 256 / 3584 B / 15.3k | 55 / 0 / 388 | 0.178 -> 0.033, 0.150 -> 0.052 |
+| gemmnores | 64x128, TW8 CL2 | 256 / 2624 B / 9.2k | 53 / 0 / 1444 | 0.127 -> 0.060, 0.154 -> 0.056 |
+| gemmpool | 64x128, TW8 CL2 | 256 / 2784 B / 9.4k | 54 / 0 / 1208 | 0.207 -> 0.096, 0.265 -> 0.109 |
+| gemmprojw | 64x128, TW8 CL2 | 236 / 2624 B / 8.6k | 51 / 0 / 1303 | Small 1440p 7.31 -> 3.56, 310.8 1440p 7.07 -> 3.40 |
+| gemmvqkvnorm | 64x256, TW16 CL2 | 256 / 3264 B / 11.6k | 68 / 0 / 2990 | Small 1440p 9.81 -> 2.48, 310.8 1440p 9.11 -> 2.35 |
+| gemmvproj | 64x256, TW16 CL2 | 256 / 3232 B / 9.8k | 70 / 0 / 1691 | not dispatched (`--legacy-boundary` only, which the DLL never passes) |
+| gemmvnores | 64x256, TW16 CL2 | 256 / 3216 B / 9.0k | 69 / 0 / 1428 | not dispatched (no host reference) |
+| gemmvqkv | 64x256, TW16 CL2 | 256 / 3184 B / 8.0k | 67 / 0 / 1131 | not dispatched (unfused QKV norm / `NR_DECQ_SMALL=0` only) |
+
+All 16 waves (512 threads); at 1440p TW16/CL1 and TW4/CL4 for `gemmprojw`, TW8/CL4 for `gemmvqkvnorm` were slower.
+Compile time on the .342 null device is ~0.5 s a process for every one of them, before and after: that driver does
+not show the RX 6600's 22-45 s, so the cut from 8-17k instructions with 2.6-3.6 KB scratch to 0.4-3k with none is the
+evidence that they should compile like the other native kernels (~3 s there). Unverified until a real RX 6000 runs.
+All 66 `shaders-rdna2` modules: compile for gfx1030 (vkisa, .342), 0 scratch, max 163 VGPRs (`attn`), 0-1 s each.
+
+Output: 1 frame and clean 8 frames (`NR_DIAG_SEED0/TGATE0`), forced RDNA2, both models at 720p, 1080p and 1440p
+byte-identical to the previous set: E9F5E89BF57A08BA / D07096C4C35774C0 / EB2040C4FB5801C2 (Small),
+D0A1B50ECEE12A7B / A5A0A39437A13D19 / 3AA32BB2BDFB26BF (310.8). Normal-mode 30 frames also identical except 310.8 1440p
+(36F766D4 -> ED4D24E7): the old set's second frame took 262 ms, over the RenoDX history gap (0.25 s), the new one 177
+ms, so only the old one restarts the history; deterministic per set over repeated runs. `shaders\` and
+`shaders-rdna3\` rebuilt with `--check`: identical; RDNA4 `ab.ps1` (40 frames): 258FEC01 / 01588CA6 / 2A308F2C /
+04A421E7. Whole network, 9070 XT forced, status line (30 frames, step runs): Small 1440p 79.9 -> 70.6 ms, 310.8 1440p
+147.9 -> 136.7 ms; at 720p/1080p the nine were < 1 ms a frame together and now about 0.3.
+
+Kit run 4 (forced, warm caches, models pre-copied; `exports\rx6000-kit\run4.out`, `run4-result.zip`): ~2 min, 86 of
+86 pipelines (2 s, slowest `g_gemmvqkvnorm` 0.3 s), runtime check 86 of 86 in 0.7 s, first build 2.5 s, PASS 47.79 /
+52.92 / 49.72 dB with the hashes above, runs identical; SPEED 27.95 / 45.88 / 59.56 ms; STEPS small 720p 34.3 ms,
+small 1080p 61.4 ms (higher than the 52.7 ms of the step runs above; one run, not repeated), 310.8 720p 65.6 ms in 153
+dispatches (top: fswin256 13.9, attn 8.3, fswin128 6.4, ffwd3 5.2, fswin64 4.7).
 
 ## What it runs (files\kit.ps1, cases in files\cases.ps1)
 
@@ -32,16 +78,14 @@ models not included), SHA-256 `A3DAFDB86A3BCC862D358E58E787C1F5E70DB84776C48F48A
 5. **Speed**: same three cases, normal mode (as in a game), 40 frames: the status line's network ms and p95, frame
    median, VRAM estimate/growth, and the GPU clock while busy (`gpuclock.exe`, ADL `ADL2_New_QueryPMLogData_Get`,
    read-only, samples every 100 ms, median/min/max graphics clock, memory clock, temperature over samples with
-   graphics activity >= 50%). Then `NR_STEP_TIMES=20` (30 frames) at small 720p and 1080p: `steps_<case>.txt` with
-   the full per-pipeline table.
-6. **Native against emulated** (layer A on real hardware): `files\emulated\` holds the emulated SPIR-V of the 21
-   native pipelines the small model dispatches at 720p. `pipecheck` compiles them smallest first (150 s each, nothing
-   new after 300 s; skipped below 12 GB RAM, one emulated compile took ~5.6 GB on the null device); every one that
-   compiles replaces its native file in a private copy (`files\mixed`, deleted after), one clean small 720p run with
-   `MZ_RDNA2_CHECK=0`, 9 min limit; its hash must equal the native run's. Native and emulated are byte-identical per
-   kernel (phases 3-4), so any mix must give the same bytes. The ones that do not compile in time are listed.
-7. `SUMMARY.txt` (IN SHORT block, then every line), `console.txt`, logs, two pictures (diff x16 PNG, output JPG) a
+   graphics activity >= 50%). Then `NR_STEP_TIMES=20` (30 frames) at small 720p, small 1080p and 310.8 720p
+   (`large_1280x720`, new 2026-10-27): `steps_<case>.txt` with the full per-pipeline table.
+6. `SUMMARY.txt` (IN SHORT block, then every line), `console.txt`, logs, two pictures (diff x16 PNG, output JPG) a
    quality case; zipped next to `run-test.bat`.
+
+The earlier stage 6 (native against emulated: the emulated SPIR-V of 21 pipelines swapped in where they compiled
+within 300 s) is gone (2026-10-27): on the real RX 6600 it compiled none of them in its budget, so it only cost time;
+`files\emulated\` is no longer shipped and `build-kit.ps1` takes no emulated set.
 
 `g_fswinds32/64/128/256` are gone from `shaders-rdna2` (2026-10-27, see "fswinds removed" below): the earlier
 kit's `$Unused` list and its note that they could keep the network off in every game no longer apply.
@@ -98,7 +142,7 @@ rest of `shaders-rdna2` byte-identical, only the four `g_fswinds*.spv` gone. RDN
 01588CA6 / 2A308F2C / 04A421E7 (= 0.5.8). vkisa gfx1030 (.342 null device, 3 in parallel) on all 66 remaining
 `shaders-rdna2` modules: all compile, slowest 7 s (temporal pre/post variants 6-7 s, the rest 0-5 s). Nine small
 emulated GEMMs (`gemmprojt`, `gemmvqkvs`, `gemmvqkvnorm`, `gemmvproj`, `gemmvnores`, `gemmvqkv`, `gemmpool`,
-`gemmprojw`, `gemmnores`) still take 236-256 VGPRs and 2.6-3.6 KB scratch (speed only; not ported).
+`gemmprojw`, `gemmnores`) still took 236-256 VGPRs and 2.6-3.6 KB scratch (native since: "Native GEMMs" above).
 
 Kit run 3 (forced, driver cache warm, models pre-copied; `exports\rx6000-kit\run3.out`, `run3-result.zip`): 6 min,
 pipelines 86 of 86, the runtime's check passed (86 of 86, 0.3 s on 8 threads) with no `MZ_RDNA2_CHECK=0` retry,
@@ -115,8 +159,6 @@ Compile and check times are warm-cache numbers; cold, the earlier 641 s compile 
 - sha equal to the table above: the RX 6000 computes the same bytes as the 9070 XT forced (expected only if the
   gfx103x compiler forms `v_dot2` the same way; last-bit differences are possible, phase 0 section 4). PSNR >= 40 dB
   is the bar either way.
-- `EMULATED ... IDENTICAL`: native == emulated on real hardware for the listed kernels; DIFFERS names a native kernel
-  whose arithmetic differs on gfx103x (swap kernels in `files\emulated` one at a time to find it).
 - SPEED vs the estimates above, with the GPU clock (a low clock means power/thermal limits, not the kernels).
 - `steps_*.txt`: per-pipeline ms on the card, to compare with the phase-4 table (the 9070 XT forced column).
 
@@ -125,8 +167,10 @@ Compile and check times are warm-cache numbers; cold, the earlier 641 s compile 
 - No RX 6000 here: the vkprobe pick logic, ADL sensor indices (graphics clock 1, activity 19, memory clock 2,
   temperature 8, power 23; power reads -1 on the 9070 XT) and the RDNA2 compile times are unverified on gfx103x.
 - Navi 24 (RX 6400/6500, gfx1034) and the APUs: in the id list, never probed (phase 0 did gfx1030-1032 only).
-- The emulated stage's budget means the big emulated Swin kernels are probably never reached on an RX 6000 (they did
-  not compile at all on .342); the check covers the GEMM/attention/C=32 kernels.
+- Native == emulated is no longer checked on real hardware (stage 6 dropped); the per-kernel byte identity is from
+  the 9070 XT forced runs only.
+- The nine new native GEMMs' compile time on a real RX 6000 driver: expected ~3 s like the other native kernels, not
+  measured (the .342 null device compiles both forms in under a second).
 - References are the 9070 XT's FP8 network; the threshold (40 dB) leaves ~7 dB of margin over what forced RDNA2 gets.
 
 ## Files
@@ -137,17 +181,21 @@ Compile and check times are warm-cache numbers; cold, the earlier 641 s compile 
   extension only when offered (`PIPECHECK_COOP=0` to leave it out), recursive folders, `PIPECHECK_BUDGET_S`, NOTRUN.
   The RX 7000 kits' behaviour on RX 7000 is unchanged (they offer the matrix extension).
 - Outside git, `exports/rx6000-kit/`: `tools\` (built exes), `refwork\` (reference runs), `reference\` (img_*.jxr,
-  refs.txt), `emulated-set\` (full layer-A build: `build_network.py rdna2 --tree linux --no-quad` with NR_NATIVE
-  stripped from a temporary copy of pipelines.json, restored by git checkout), `kit\` (laid-out kit, run logs
-  `run1.out`, `run2.out`), `run1-result.zip`, `models\`.
+  refs.txt), `emulated-set\` (full layer-A build, no longer shipped), `kit\` (laid-out kit), run logs
+  `run1.out`..`run4.out`, `run1-result.zip`..`run4-result.zip`, `run4-steps_large_1280x720.txt`, `models\`.
+- Outside git, `exports/rdna2-work/`: `nat5.ps1` (forced-RDNA2 runs on a given `shaders-rdna2` set with the export's
+  DLL), `ab\p5_base` (previous set), `ab\p5_new1` (this one), `ab\p5_sw` (setting sweep), `ab\p5_r4` (RDNA4 check),
+  `p5\` (step-table logs). Scratch `rdna2-p5\`: `base\`, `new1\` (the two sets), `out\` (gfx1030 ISA + stats,
+  `all_new1.txt` for all 66 modules, `base_all.txt`, `ms.txt`), `scripts\` (`mk.sh`, `isa.sh`, `setjson.py`,
+  `allisa.sh`), `prev\shaders-rdna2` (the export's previous set).
 
 ## Rebuild
 
 ```
 $k = 'E:\Projetos\opti_rr_dlss5\wt-rdna2\exports\rx6000-kit'
 tools\rx6000-kit\make-refs.ps1 $k\refwork $k\reference                     # FP8 refs + forced RDNA2 scores
-tools\rx6000-kit\build-kit.ps1 exports\mochizuki-rdna2 $k\emulated-set $k\reference $k\kit
+tools\rx6000-kit\build-kit.ps1 exports\mochizuki-rdna2 $k\reference $k\kit
 tools\rx6000-kit\pack-kit.ps1 $k\kit E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip
 ```
-A new shaders-rdna2 needs a new emulated set and references only if the network's arithmetic changed (the
-references are the FP8 network's).
+A new shaders-rdna2 needs new references only if the network's arithmetic changed (the references are the FP8
+network's).

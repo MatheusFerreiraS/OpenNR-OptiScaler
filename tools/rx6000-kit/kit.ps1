@@ -62,11 +62,11 @@ function ClearEnv($vars) { foreach ($k in $vars.Keys) { Remove-Item -Path "Env:$
 function Minutes() { [int]((Get-Date) - $t0).TotalMinutes }
 
 Write-Host ''
-Write-Host 'OpenNR RX 6000 test. This takes about 15 to 25 minutes. Please do not close this window.'
+Write-Host 'OpenNR RX 6000 test. This takes about 10 to 20 minutes. Please do not close this window.'
 Write-Host ''
 
 # 1. System and Vulkan.
-Write-Host '[1/7] System and Vulkan...'
+Write-Host '[1/6] System and Vulkan...'
 $sys = Join-Path $result 'system.txt'
 $code = Run 'vkprobe.exe' '--report' $sys 3
 $sysText = @(if (Test-Path -LiteralPath $sys) { Get-Content -LiteralPath $sys })
@@ -103,7 +103,7 @@ elseif ($notRdna2) { Line "SKIPPED the network tests: this card would not get th
 $have = @{}
 $modelFile = @{ small = 'dlssnr-small.bin'; large = 'dlssnr.bin' }
 if (-not $notRdna2) {
-    Write-Host '[2/7] Downloading the models (about 250 MB, once)...'
+    Write-Host '[2/6] Downloading the models (about 250 MB, once)...'
     $downloads = @(
         @{ name = 'dlssnr-small.bin'; size = 113917248; sha = '7e966e2639dbec6596aa0bac3b8761137d2c40ca8cb4aca30df7ca10043c6e33';
            url = 'https://huggingface.co/datasets/zmodelerlover/amd-nr/resolve/main/mochizuki/model-small-1/dlssnr-small.bin' },
@@ -150,7 +150,7 @@ function PipeRows($path) {
         $file = $Matches[1]; $state = $Matches[2]; $rest = $Matches[3]
         $ms = if ($rest -match '^(\d+) ms') { [int]$Matches[1] } elseif ($rest -match 'after (\d+) ms') { [int]$Matches[1] } `
               elseif ($rest -match 'after (\d+) s') { 1000 * [int]$Matches[1] } else { 0 }
-        $rows += @{ file = ($file -replace '^.*dlssnr-amd\\', '' -replace '^.*emulated\\', 'emulated\'); state = $state; ms = $ms; text = $rest }
+        $rows += @{ file = ($file -replace '^.*dlssnr-amd\\', ''); state = $state; ms = $ms; text = $rest }
     }
     $rows
 }
@@ -158,7 +158,7 @@ function PipeRows($path) {
 # 3. Every RDNA2 pipeline compiled once, each in its own process with a time limit.
 $pipesOk = $false
 if (-not $notRdna2) {
-    Write-Host '[3/7] Compiling every shader once (each in its own process; the first time takes a few minutes)...'
+    Write-Host '[3/6] Compiling every shader once (each in its own process; the first time takes a few minutes)...'
     $env:PIPECHECK_COOP = '0'; $env:PIPECHECK_TIMEOUT_S = '300'; $env:PIPECHECK_BUDGET_S = '900'
     $pc = Join-Path $result 'pipecheck.txt'
     $all = @(Get-ChildItem -LiteralPath (Join-Path $files 'dlssnr-amd\shaders-rdna2'), (Join-Path $files 'dlssnr-amd\shaders\renodx') `
@@ -256,7 +256,7 @@ function RunsDiff($a, $b, $c, $out) {
 $pass = @(); $fail = @(); $vary = @(); $hash = @{}
 $stop = -not $run
 if ($run) {
-    Write-Host "[4/7] Picture check: $($Quality.Count) cases x $QualityRuns runs (the first one builds the network, a few minutes)..."
+    Write-Host "[4/6] Picture check: $($Quality.Count) cases x $QualityRuns runs (the first one builds the network, a few minutes)..."
     foreach ($c in $Quality) {
         if ($stop) { break }
         if (-not $have[$modelFile[$c.model]]) { Line "SKIPPED $($c.name): $($modelFile[$c.model]) missing"; continue }
@@ -300,8 +300,7 @@ if ($run) {
                 $diffs += "r1-r${k} " + (RunsDiff $a $b $c (Join-Path $dir "runs_r1_r$k.txt"))
             }
         }
-        if ($c.name -ne $Emulated) { Remove-Item -Path (Join-Path $files "work\$($c.name).r*.bin") -ErrorAction SilentlyContinue }
-        else { Get-ChildItem -Path (Join-Path $files "work\$($c.name).r*.bin") | Where-Object { $_.Name -ne "$($c.name).r1.bin" } | Remove-Item }
+        Remove-Item -Path (Join-Path $files "work\$($c.name).r*.bin") -ErrorAction SilentlyContinue
         $varies = @($diffs | Where-Object { $_ -notmatch 'identical$' }).Count -gt 0
         $okAll = $scores.Count -eq $QualityRuns -and @($scores | Where-Object { $_.psnr -lt $PassDb -or $_.bad -gt 0 }).Count -eq 0
         $verdict = if ($fails.Count -or -not $okAll) { 'FAIL' } else { 'PASS' }
@@ -317,7 +316,7 @@ if ($run) {
 # 5. Speed: normal runs with the GPU clock sampled alongside, then the per-pipeline times.
 $speedRows = @()
 if ($run -and -not $stop) {
-    Write-Host "[5/7] Speed: $($Speed.Count) cases, then the time of each shader..."
+    Write-Host "[5/6] Speed: $($Speed.Count) cases, then the time of each shader..."
     foreach ($c in $Speed) {
         if (-not $have[$modelFile[$c.model]]) { continue }
         Write-Host "    $($c.name) ..."
@@ -361,57 +360,8 @@ if ($run -and -not $stop) {
     }
 }
 
-# 6. Native against emulated: the emulated kernels that compile in time swapped in, the output must not change.
-if ($run -and -not $stop -and $hash[$Emulated]) {
-    Write-Host '[6/7] Native against emulated shaders (up to about 10 minutes)...'
-    $c = $Quality | Where-Object { $_.name -eq $Emulated } | Select-Object -First 1
-    $dir = Join-Path $result 'emulated'
-    New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    $mem = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).TotalPhysicalMemory / 1GB
-    if ($mem -and $mem -lt 12) { Line ("SKIPPED emulated: {0:N0} GB of memory; one emulated shader can take 6 GB to compile" -f $mem) }
-    else {
-        $emu = @(Get-ChildItem -LiteralPath (Join-Path $files 'emulated') -Recurse -Filter *.spv | Sort-Object Length)
-        $env:PIPECHECK_COOP = '0'; $env:PIPECHECK_TIMEOUT_S = '150'; $env:PIPECHECK_BUDGET_S = '300'
-        $pc = Join-Path $dir 'pipecheck.txt'
-        $list = ($emu | ForEach-Object { '"' + $_.FullName.Substring($files.Length + 1) + '"' }) -join ' '
-        $null = Run 'pipecheck.exe' $list $pc 9
-        Remove-Item Env:PIPECHECK_COOP, Env:PIPECHECK_TIMEOUT_S, Env:PIPECHECK_BUDGET_S -ErrorAction SilentlyContinue
-        $rows = @(PipeRows $pc)
-        $okRows = @($rows | Where-Object { $_.state -eq 'OK' })
-        foreach ($b in @($rows | Where-Object { $_.state -ne 'OK' })) { Line "     emulated $($b.file): $($b.state) $($b.text)" }
-        if (-not $okRows.Count) { Line "INFO emulated: none of the $($emu.Count) emulated shaders compiled in time, not run" }
-        else {
-            # Its own folder: the native set with the compiled emulated files over it, the models linked.
-            $mix = Join-Path $files 'mixed'
-            Remove-Item -LiteralPath $mix -Recurse -Force -ErrorAction SilentlyContinue
-            New-Item -ItemType Directory -Path "$mix\dlssnr-amd\shaders" -Force | Out-Null
-            Copy-Item -LiteralPath (Join-Path $files 'MochizukiNrRuntime.dll') -Destination $mix
-            Copy-Item -LiteralPath (Join-Path $files 'dlssnr-amd\shaders-rdna2') -Destination "$mix\dlssnr-amd\shaders-rdna2" -Recurse
-            Copy-Item -LiteralPath (Join-Path $files 'dlssnr-amd\shaders\renodx') -Destination "$mix\dlssnr-amd\shaders\renodx" -Recurse
-            foreach ($o in $okRows) {
-                $rel = $o.file -replace '^emulated\\', ''
-                Copy-Item -LiteralPath (Join-Path $files $o.file) -Destination "$mix\dlssnr-amd\shaders-rdna2\$rel" -Force
-            }
-            $src = Join-Path $files "dlssnr-amd\$($modelFile[$c.model])"
-            try { New-Item -ItemType HardLink -Path "$mix\dlssnr-amd\$($modelFile[$c.model])" -Target $src -ErrorAction Stop | Out-Null }
-            catch { Copy-Item -LiteralPath $src -Destination "$mix\dlssnr-amd\" }
-            $v = @{ MZ_RDNA2_CHECK = '0' }
-            foreach ($k in $Clean.Keys) { $v[$k] = $Clean[$k] }
-            $r = E2E "$($c.name).emulated" $c $QualityFrames $v $dir 'mixed' 9
-            $names = ($okRows | ForEach-Object { ($_.file -replace '^emulated\\', '' -replace '\.spv$', '') }) -join ', '
-            if (-not $r.ok) { Line "FAIL emulated: $($okRows.Count) of $($emu.Count) emulated shaders compiled, but the run failed: $($r.why)" }
-            else {
-                $same = if ($r.sha -eq $hash[$Emulated]) { 'IDENTICAL to the native output' } else {
-                    'DIFFERS from the native output: ' + (RunsDiff $r.bin "work\$Emulated.r1.bin" $c (Join-Path $dir 'runs_native_emulated.txt')) }
-                Line "EMULATED $($Emulated): $($okRows.Count) of $($emu.Count) emulated shaders in ($names): $same (sha $($r.sha))"
-            }
-            Remove-Item -LiteralPath $mix -Recurse -Force -ErrorAction SilentlyContinue
-        }
-    }
-}
-
-# 7. Summary and the zip.
-Write-Host '[7/7] Writing the result...'
+# 6. Summary and the zip.
+Write-Host '[6/6] Writing the result...'
 $card = if ($dev.Count) { $dev[0] -replace '^vulkan device \d+: ', '' } else { 'no AMD Vulkan device' }
 $short.Add("Card: $card")
 if ($notRdna2) { $short.Add('This card would not use the RX 6000 network, so the network was not tested. Please tell us which card this is.') }
@@ -430,8 +380,7 @@ $head = @("OpenNR RX 6000 test kit (mochizuki RDNA2 network), $((Get-Date).ToStr
 $tail = @('', "How to read this: PASS = every run within $PassDb dB PSNR of the RX 9070 XT reference, FAIL = not, or the run failed.",
           '"identical" means the same picture every run. SPEED is the network alone (status line), with the GPU clock while busy.',
           'STEPS: the per-shader times (NR_STEP_TIMES; the timestamps make the sum about 20% more than SPEED).',
-          'EMULATED: the slow emulated shaders swapped in where they compile; the picture must be identical.',
-          'Raw files: system.txt, pipecheck.txt, pipelines-by-time.txt, runtime-rdna2-check-*.txt, quality\, speed\, steps_*.txt, emulated\, console.txt.')
+          'Raw files: system.txt, pipecheck.txt, pipelines-by-time.txt, runtime-rdna2-check-*.txt, quality\, speed\, steps_*.txt, console.txt.')
 Set-Content -LiteralPath (Join-Path $result 'SUMMARY.txt') -Value ($head + $summary + $tail)
 foreach ($f in 'rdna2-check.txt', 'rdna2-check\pipelines.txt', 'rdna2-check\pipelines.log') {
     $p = Join-Path $files "dlssnr-amd\$f"

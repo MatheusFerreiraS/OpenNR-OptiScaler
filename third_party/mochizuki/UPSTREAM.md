@@ -389,9 +389,13 @@ block's pixel composition moved to `include/fswin_imgout.glsl`, which both bodie
 unchanged). Removing `NR_NATIVE=1` from a pipeline gives back its emulated kernel.
 
 The other hot pipelines have native bodies the same way, each in its own include with its own `main`, byte-identical
-to the emulated kernel: `gemm1x1.comp` -> `include/gemm_native.glsl` (`gemmproj`, `gemmprojc`, `gemmvact`,
-`gemmvqkvnorms`: a wave owns `NR_NG_TW` tokens read as uniform `uvec4` rows and 32 x `NR_NG_CL` channels, the
-workgroup `NR_NG_WAVES` waves over the emulated tile), `attn.comp` -> `include/attn_native.glsl` (the C=512 window
+to the emulated kernel: `gemm1x1.comp` -> `include/gemm_native.glsl` (every `gemm*` pipeline of the RDNA2 set:
+`gemmproj`, `gemmprojc`, `gemmprojt`, `gemmprojw`, `gemmpool`, `gemmnores`, `gemmvact`, `gemmvproj`, `gemmvnores`,
+`gemmvqkv`, `gemmvqkvs`, `gemmvqkvnorm`, `gemmvqkvnorms`; a wave owns `NR_NG_TW` tokens read as uniform `uvec4` rows
+and 32 x `NR_NG_CL` channels, the workgroup `NR_NG_WAVES` waves over the emulated tile; N-pair or tile-blocked
+weights; the tiled e4m3 epilogue with the `NR_OUT_PERM` raster copies and the 2x2 pool, or the plain FP16 one;
+`gemmvproj`, `gemmvnores` and `gemmvqkv` are never dispatched by this host but the pipeline check compiles them, and
+emulated each took 22-45 s on an RX 6600), `attn.comp` -> `include/attn_native.glsl` (the C=512 window
 attention: the QKV projection with scalar weights, then one query a lane against K and V broadcast from LDS),
 `ffwd3_t.comp` -> `include/ffwd_native.glsl` (`ffwd3`, `ffwd3w`: one lane a token, the group's matrices as scalar
 weights, the hidden units streamed) and `vit_attn.comp` -> `include/vit_native.glsl` (one lane a query, each key's K and

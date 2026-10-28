@@ -1,8 +1,9 @@
 // Native RDNA2 body of the pointwise GEMM (gemm1x1.comp): NR_NATIVE=1 in pipelines.json.
 //
 // Same bindings, push block, workgroup grid and tile (NR_MTILE tokens x NR_NTILE channels, NR_WAVES waves), the
-// same weights (the FP16 twin, N-pair packed), the same epilogues and the same tile-counter wait and signal as the
-// emulated kernel; only the inside of the tile changes.
+// same weights (the FP16 twin, N-pair packed or tile-blocked), the same epilogues (tiled e4m3 with the raster
+// copies of NR_OUT_PERM and the 2x2 pool, or plain FP16) and the same tile-counter wait and signal as the emulated
+// kernel; only the inside of the tile changes.
 //
 //   * A wave owns NR_NG_TW consecutive tokens and 32 x NR_NG_CL channels: lane l the channels 32c + l of its
 //     channel group. The tokens are the same for every lane, so an activation row (16 k values of one token, the
@@ -22,12 +23,16 @@
 #extension GL_KHR_shader_subgroup_shuffle : require
 #extension GL_EXT_control_flow_attributes : require
 
-#if !NR_USE_FRAGMENT_EPI || !defined(NR_PACKED_WEIGHT_N2) || !defined(NR_TILED_A) || !defined(NR_A_DIRECT) || \
-    !NR_KOFF_SPLIT || NR_ACC_F16 != 0 || NR_POOL || NR_OUT_PERM || NR_OUT_KPAIR || NR_XPIPE || NR_A_LDSV || \
-    NR_B_LDSV || NR_A_KPAIR || NR_DIAG_APAIR || NR_KPAIR_ABL || NR_I4_SIDE || defined(NR_I4) || defined(NR_I4_OUT) || \
-    defined(NR_EPILOGUE_NVIDIA) || defined(NR_OPERAND_F16) || NR_TC_WG_SIGNAL || NR_ABLATE_LOADS || NR_ABLATE_EPI || \
-    (!NR_QKV_FUSED_NORM && !(defined(NR_OUT_E4M3) && defined(NR_OUT_TILED)))
-#error "NR_NATIVE: the tiled e4m3 GEMMs (gemmproj, gemmprojc, gemmvact, gemmvqkvnorms) only"
+#if !NR_USE_FRAGMENT_EPI || !(defined(NR_PACKED_WEIGHT_N2) || (defined(NR_TILED_B) && defined(NR_B_DIRECT))) || \
+    !defined(NR_TILED_A) || !defined(NR_A_DIRECT) || !NR_KOFF_SPLIT || NR_ACC_F16 != 0 || NR_OUT_KPAIR || NR_XPIPE || \
+    NR_A_LDSV || NR_B_LDSV || NR_A_KPAIR || NR_DIAG_APAIR || NR_KPAIR_ABL || NR_I4_SIDE || defined(NR_I4) || \
+    defined(NR_I4_OUT) || defined(NR_EPILOGUE_NVIDIA) || defined(NR_OPERAND_F16) || NR_TC_WG_SIGNAL || NR_ABLATE_LOADS || \
+    NR_ABLATE_EPI || (!NR_QKV_FUSED_NORM && !(defined(NR_OUT_E4M3) && defined(NR_OUT_TILED)) && \
+                      !(!defined(NR_OUT_E4M3) && !defined(NR_OUT_TILED) && defined(NR_NO_RESIDUAL)))
+#error "NR_NATIVE: the tiled e4m3 GEMMs (+ raster copies, 2x2 pool) and the plain FP16 no-residual ones only"
+#endif
+#if NR_POOL && NR_NG_TW % 8
+#error "NR_NATIVE: the 2x2 pool needs NR_NG_TW a multiple of 8 (a block's four rows in one wave)"
 #endif
 #ifndef NR_NG_TW
 #error "NR_NATIVE: NR_NG_TW (tokens a wave) and NR_NG_CL (channels a lane) come from pipelines.json"
@@ -62,9 +67,18 @@ float ng_dot8(float s, uvec4 x0, uvec4 x1, uvec4 w0, uvec4 w1) {
     return s;
 }
 
+// A channel's k fragment in uvec4: k 0-7 at wq + kt * NG_WKT, k 8-15 NG_WHI further.
+#ifdef NR_PACKED_WEIGHT_N2
+#define NG_WKT 64u                              // N-pair records: 32 channels x 16 k a fragment
+#define NG_WHI 32u
+#else
+#define NG_WKT 32u                              // tile-blocked [N/16][K/16][16 n][16 k]
+#define NG_WHI 1u
+#endif
+
 // One k fragment, written out with literal indices (NR_FOR_*: coopmm.glsl) so every array stays in registers.
 // NG_WDST / NG_WSRC name the weight register set; ng_kt is the fragment.
-#define NG_WLOAD_C(c) NG_WDST[c][0] = ng_w4[wq[c] + ng_kt * 64u]; NG_WDST[c][1] = ng_w4[wq[c] + ng_kt * 64u + 32u];
+#define NG_WLOAD_C(c) NG_WDST[c][0] = ng_w4[wq[c] + ng_kt * NG_WKT]; NG_WDST[c][1] = ng_w4[wq[c] + ng_kt * NG_WKT + NG_WHI];
 #define NG_WLOAD NR_FOR_J(NR_NG_CL, NG_WLOAD_C)
 #define NG_XLOAD_T(i) ngx[i][0] = ng_x4[xq[i] + ng_kt * 32u]; ngx[i][1] = ng_x4[xq[i] + ng_kt * 32u + 1u];
 #define NG_PROD_C(c) acc[ng_i][c] = ng_dot8(acc[ng_i][c], ngx[ng_i][0], ngx[ng_i][1], NG_WSRC[c][0], NG_WSRC[c][1]);
@@ -106,10 +120,14 @@ void main() {
 
     // The emulated kernel skips the epilogue of a 16-token tile at or past M (and computes it anyway).
     if ((t0 & ~15u) < pc.M) {
-        // Weights: channel 32p + l of the N-pair record p, k fragment kt: uvec4 (k 0-7) and +32 (k 8-15).
+        // Weights: channel 32p + l of the N-pair record p (or row l % 16 of the channel tile), k fragment kt.
         uint wq[NR_NG_CL];
         [[unroll]] for (int c = 0; c < NR_NG_CL; ++c)
+#ifdef NR_PACKED_WEIGHT_N2
             wq[c] = pc.w_off / 8u + (nb / 32u + uint(c)) * KT * 64u + (lane & 15u) * 2u + (lane >> 4u);
+#else
+            wq[c] = pc.w_off / 8u + ((nb + 32u * uint(c) + lane) / 16u) * KT * 32u + (lane & 15u) * 2u;
+#endif
         // Activations: token t's 16 k values of fragment kt (tile-blocked [t/16][kt] 16x16 FP16 tiles).
         uint xq[NR_NG_TW];
         [[unroll]] for (int i = 0; i < NR_NG_TW; ++i) {
@@ -147,6 +165,9 @@ void main() {
 #if NR_QKV_FUSED_NORM
             const NR_F16 scale = NR_F16(qkv_scale[pc.r_off + hb / 32u]);
 #endif
+#if NR_POOL
+            float pv[NR_NG_TW];
+#endif
             [[unroll]] for (int i = 0; i < NR_NG_TW; ++i) {
                 const uint t = t0 + uint(i);
                 const uint e = ((t >> 4u) * (pc.N / 16u) + ch / 16u) * 256u + (t & 15u) * 16u + (ch & 15u);
@@ -175,9 +196,52 @@ void main() {
                 const NR_F16 r = act_e4m3[pc.r_off + e];
                 const NR_F16 v = NR_F16(NR_ACT_APPLY(raw + float(g) * float(r)));
 #endif
+#ifndef NR_OUT_E4M3
+                act_f16[pc.o_off + t * pc.N + ch] = v;                    // the plain [token][N] FP16 block
+#elif NR_OUT_PERM == 1
+                // raster token -> tile position instead of the tiled store (y < rows only)
+                const uint y = t / pc.W, x = t % pc.W;
+                const uint d = ((y / 4u) * (pc.W / 4u) + x / 4u) * 16u + (y % 4u) * 4u + x % 4u;
+                if (y < pc.rows)
+                    act_e4m3[pc.o_off + ((d / 16u) * (pc.N / 16u) + ch / 16u) * 256u + (d % 16u) * 16u + (ch & 15u)] =
+                        nr_quant_e4m3(v);
+#else
                 act_e4m3[pc.o_off + e] = nr_quant_e4m3(v);
+#if NR_OUT_PERM == 2
+                // and the raster copy at p_off (y < rows only)
+                const uint tt = t / 16u;
+                const uint y = (tt / (pc.W / 4u)) * 4u + (t % 16u) / 4u, x = (tt % (pc.W / 4u)) * 4u + t % 4u;
+                const uint d = y * pc.W + x;
+                if (y < pc.rows)
+                    act_e4m3[pc.p_off + ((d / 16u) * (pc.N / 16u) + ch / 16u) * 256u + (d % 16u) * 16u + (ch & 15u)] =
+                        nr_quant_e4m3(v);
+#endif
+#endif
+#if NR_POOL
+                pv[i] = float(v);
+#endif
 #endif
             }
+#if NR_POOL
+            // The 2x2 pool of the FP16 values: the block whose top-left row of a 16-token tile is r (0, 2, 8, 10)
+            // reads rows r, r + 1, r + 4, r + 5, all in this wave's eight-token run.
+            [[unroll]] for (int i = 0; i < NR_NG_TW; i += 2) if ((i & 4) == 0) {
+                const uint tok0 = (t0 + uint(i)) & ~15u, row = (t0 + uint(i)) & 15u;
+                const uint tiles_x = pc.W / 4u;
+                const uint tx = (tok0 / 16u) % tiles_x, ty = (tok0 / 16u) / tiles_x;
+                const uint ox = 2u * tx + (row % 4u) / 2u;
+                const uint oy = 2u * ty + (row / 4u) / 2u;
+                const uint ow = ((pc.W + 1u) / 2u + 3u) & ~3u;
+                const uint oh = ((pc.rows + 1u) / 2u + 3u) & ~3u;
+                if (pc.rows != 0u && oy >= oh) continue;
+                const uint otok = ((oy / 4u) * (ow / 4u) + ox / 4u) * 16u + 4u * (oy % 4u) + (ox % 4u);
+                const NR_F16 pa = NR_F16(pv[i] + pv[i + 1]);
+                const NR_F16 pc2 = NR_F16(pv[i + 4] + pv[i + 5]);
+                const NR_F16 p = NR_F16(NR_F16(pa + pc2) * NR_F16(0.25));
+                act_e4m3[pc.p_off + ((otok / 16u) * (pc.N / 16u) + ch / 16u) * 256u + (otok % 16u) * 16u + (ch & 15u)] =
+                    nr_quant_e4m3(p);
+            }
+#endif
         }
     }
     NR_OCC_USE(pc.K == 0u, act_f32[0] = 0.0)
@@ -190,7 +254,7 @@ void main() {
         barrier();
     }
 #endif
-    if (wave < uint(NR_WAVES)) nr_tchain_signal_wave(mg0 / 16u + (wave / uint(NR_WN)) * uint(NR_MFRAG), NR_MFRAG)
+    if (wave < uint(NR_WAVES)) { nr_tchain_signal_wave(mg0 / 16u + (wave / uint(NR_WN)) * uint(NR_MFRAG), NR_MFRAG) }
     NR_PROF_ITEM_END(pc.o_off | 0x80000000u, 0u)
     NR_PROF_END(pc.o_off)
 }

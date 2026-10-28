@@ -15,10 +15,6 @@ $Speed = @(
     @{ name = 'small_1920x1080'; model = 'small'; w = 1920; h = 1080 },
     @{ name = 'large_1280x720'; model = 'large'; w = 1280; h = 720 })
 $SpeedFrames = 40
-$Steps = @('small_1280x720', 'small_1920x1080')
+$Steps = @('small_1280x720', 'small_1920x1080', 'large_1280x720')
 $StepFrames = 30
 $StepCount = 20
-# Native against emulated (layer A): the emulated kernels of the pipelines the small model dispatches at 720p
-# (files\emulated), swapped in for the native ones wherever the driver compiles them in time; the output must stay
-# byte for byte the same.
-$Emulated = 'small_1280x720'
