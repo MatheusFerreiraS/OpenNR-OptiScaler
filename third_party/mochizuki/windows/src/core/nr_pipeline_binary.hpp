@@ -263,10 +263,49 @@ inline VkPipeline create(VkDevice device,const VkComputePipelineCreateInfo& ci,c
     if(!cache_file.empty())save_cached(cache_file,key,blob);
     return pipeline;
 }
+// The RDNA3 network's bundle (MochizukiNrRuntime.cpp: dlssnr-amd/aco-gfx11): ACO's gfx11 code, with a fallback.
+inline bool gfx11_bundle(const std::string& dir) {
+    const auto cut=dir.find_last_of("/\\");
+    return dir.substr(cut==std::string::npos?0:cut+1)=="aco-gfx11";
+}
+inline VkResult create_or_default_aco(VkDevice device,VkPipelineCache cache,const VkComputePipelineCreateInfo& ci,
+                                     const std::string& path,const uint32_t* code,size_t bytes,VkPipeline* out,
+                                     uint32_t push_bytes,const std::string& dir);
 inline VkResult create_or_default(VkDevice device,VkPipelineCache cache,const VkComputePipelineCreateInfo& ci,
                                  const std::string& path,const uint32_t* code,size_t bytes,VkPipeline* out,uint32_t push_bytes) {
     auto dir=directory();
     if(dir.empty() || !network_path(path))return vkCreateComputePipelines(device,cache,1,&ci,nullptr,out);
+    if(!gfx11_bundle(dir))return create_or_default_aco(device,cache,ci,path,code,bytes,out,push_bytes,dir);
+    // gfx11: a pipeline whose record is missing or does not import is compiled by the driver from its template
+    // (shaders-rdna3, the same kernel built for the driver), so one pipeline never takes the network down.
+    const auto name=path.substr(path.find_last_of("/\\")+1);
+    try {
+        const VkResult r=create_or_default_aco(device,cache,ci,path,code,bytes,out,push_bytes,dir);
+        nr::logf("[nr] ACO gfx11 %s: %s",name.c_str(),native_shell(name)?"driver (NR_ACO_NATIVE_KERNELS)":"imported");
+        return r;
+    } catch(const std::exception& e) {
+        std::string t;
+        for(const auto& d:shell_dirs()) {
+            std::ifstream probe(d+"/"+name,std::ios::binary);
+            if(probe) {t=d+"/"+name;break;}
+        }
+        nr::logf("[nr] ACO gfx11 %s: not imported (%s); %s",name.c_str(),e.what(),
+                 t.empty()?"no template to compile instead":"the driver compiles its template");
+        if(t.empty())throw;
+        auto shell=pal::load(t);
+        pal::require(shell.size()%4==0,"invalid shell SPIR-V size");
+        std::vector<uint32_t> words(shell.size()/4);std::memcpy(words.data(),shell.data(),shell.size());
+        VkShaderModuleCreateInfo sm{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};sm.codeSize=shell.size();sm.pCode=words.data();
+        VkShaderModule module{};check(vkCreateShaderModule(device,&sm,nullptr,&module),"create template module");
+        auto native_ci=ci;native_ci.stage.module=module;
+        const VkResult r=vkCreateComputePipelines(device,cache,1,&native_ci,nullptr,out);
+        vkDestroyShaderModule(device,module,nullptr);
+        return r;
+    }
+}
+inline VkResult create_or_default_aco(VkDevice device,VkPipelineCache cache,const VkComputePipelineCreateInfo& ci,
+                                     const std::string& path,const uint32_t* code,size_t bytes,VkPipeline* out,
+                                     uint32_t push_bytes,const std::string& dir) {
     pal::require(enabled(device),"binary mode was not enabled when this device was created");
     auto h=pal::hash(code,bytes);
     const auto record_bytes=pal::load(dir+"/records/"+keyname(h));
@@ -326,6 +365,7 @@ inline VkResult create_or_default(VkDevice device,VkPipelineCache cache,const Vk
         }catch(...){vkDestroyShaderModule(device,module,nullptr);throw;}
         vkDestroyShaderModule(device,module,nullptr);return VK_SUCCESS;
     }
+    pal::require(!gfx11_bundle(dir),"no gfx11 template (shaders-rdna3) for this kernel");
     *out=create(device,ci,record,push_bytes,workgroup);return VK_SUCCESS;
 }
 } // namespace nr::binary

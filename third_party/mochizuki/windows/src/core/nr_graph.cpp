@@ -4194,14 +4194,22 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
     //
     // Off for every flag that reasons per step: they dispatch, seed or time
     // individual layers and a merged run has no individual layers left.
+    //
+    // RDNA3 runs every layer as its own dispatch unless NR_RDNA3_PERSIST=1, as it keeps the barriers the tile
+    // counters would drop (tchain_active): its persistent runs share data between workgroups of one dispatch, and
+    // on the RX 7800 XT the network changed from run to run at every size; the 9070 XT forced onto that network
+    // runs out of its waits with the 310.8 model at 1600x900 and up (0.6 s a frame), and its output is the same
+    // without them wherever they finish.
     {
         // Never on RDNA2 (local patch): the persistent runs' waits are poll budgets sized for RDNA4's kernels
         // ("enough polls that a producer's whole dispatch fits inside one", below), and the emulated kernels are
         // tens of times slower, so waits ran out: the picture changed run to run (the 310.8 model at 720p, RX 9070
         // XT forced: 43.8 to 53.7 dB) or went wrong (at 1080p, its C=128 run claiming off the counter: 24 dB and
         // 1.2 s). Per layer, with the barriers, every run repeats byte for byte (42.5 to 56.4 dB).
+        const char* rdna3_persist = std::getenv("NR_RDNA3_PERSIST");
         const bool asked_off = flag(argc, argv, "--no-persist") ||
-            (std::getenv("NR_NO_PERSIST") && *std::getenv("NR_NO_PERSIST")) || g_rdna2;
+            (std::getenv("NR_NO_PERSIST") && *std::getenv("NR_NO_PERSIST")) || g_rdna2 ||
+            (g_fp16 && !g_rdna2 && !(rdna3_persist && std::atoi(rdna3_persist) != 0));
         const char* per_step_flags[] = {"--only", "--seed-dir", "--no-barrier-after",
                                         "--barrier-stride"};
         bool per_step = flag(argc, argv, "--oracle") || flag(argc, argv, "--no-barrier") ||
@@ -5596,6 +5604,16 @@ void NrSession::create_kernels(const std::string& spv_dir, const std::set<std::s
         }
         struct Tick { ~Tick() { ++nr::g_build_pipes_done; } } tick;
         std::string p = spv_dir + "/g_" + d.kern + ".spv";
+        // RX 7000 kits (local patches 22-24), diagnostic only: NR_RDNA3_ATTN / NR_RDNA3_VITATTN = <file>.spv runs that
+        // SPIR-V (same bindings and push block) in place of the shipped g_attn.spv / g_vitattn.spv.
+        if (ctx.arch == nr::Arch::rdna3 && (d.kern == "attn" || d.kern == "vitattn")) {
+            const char* e = std::getenv(d.kern == "attn" ? "NR_RDNA3_ATTN" : "NR_RDNA3_VITATTN");
+            const std::string mode = e ? e : "";
+            if (mode.size() > 4 && mode.compare(mode.size() - 4, 4, ".spv") == 0 && std::ifstream(mode).good()) {
+                p = mode;
+                nr::logf("[nr] RDNA3 %s: %s", d.kern.c_str(), p.c_str());
+            }
+        }
         // The Windows network's vitattn and residual GEMMs read through the arena's device
         // address (NR_VBDA, NR_RBDA); a device without bufferDeviceAddress runs the
         // storage-buffer build of the same kernel, g_<name>nobda.spv.

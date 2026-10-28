@@ -54,6 +54,9 @@ inline void check(VkResult r, const char* what) {
 }
 #define NRVK_CHECK(expr) ::nrvk::check((expr), #expr)
 
+// Every buffer Context::buffer made and its size, for MZ_KCAP (diagnostic, nr_runtime.cpp).
+inline std::map<VkBuffer, VkDeviceSize>& buffer_sizes() { static std::map<VkBuffer, VkDeviceSize> m; return m; }
+inline std::mutex& buffer_sizes_lock() { static std::mutex m; return m; }
 struct Buffer {
     VkBuffer handle{};
     VkDeviceMemory memory{};
@@ -554,6 +557,10 @@ struct Context {
                               (host_visible ? ", host visible" : ", device local") +
                               (device_address ? ", device address)" : ")")).c_str());
         NRVK_CHECK(vkBindBufferMemory(device, b.handle, b.memory, 0));
+        {   // MZ_KCAP (nr_runtime.cpp) copies whole bound buffers
+            std::lock_guard<std::mutex> guard(buffer_sizes_lock());
+            buffer_sizes()[b.handle] = bytes;
+        }
         if (device_address) {
             VkBufferDeviceAddressInfo ai{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
             ai.buffer = b.handle;
@@ -875,6 +882,7 @@ struct Context {
     }
 
     void destroy(Buffer& b) {
+        { std::lock_guard<std::mutex> guard(buffer_sizes_lock()); buffer_sizes().erase(b.handle); }
         if (b.mapped) vkUnmapMemory(device, b.memory);
         vkDestroyBuffer(device, b.handle, nullptr);
         vkFreeMemory(device, b.memory, nullptr);
@@ -987,6 +995,9 @@ struct Kernel {
     // context's twin map. A second descriptor set over this layout (nr_runtime.cpp kernel_set) has to
     // bind the same way `create` does, or the kernel reads and writes an arena in the wrong format.
     std::vector<uint32_t> twin_bindings, alias_bindings;
+    // MZ_KCAP (diagnostic): the SPIR-V file and what `create` bound, binding by binding.
+    std::string spirv;
+    std::vector<std::pair<uint32_t, VkBuffer>> bound_buffers;
     const std::map<VkBuffer, VkBuffer>* twin_map{};
     std::string name;   // the SPIR-V file's stem (NR_STEP_TIMES)
     void push_constants(VkCommandBuffer cmd, uint32_t bytes, const void* data) const {
@@ -1065,6 +1076,14 @@ struct Kernel {
         std::string key = std::to_string(reinterpret_cast<uintptr_t>(device)) + "|" + spirv_path + "|" +
                           std::to_string(push_bytes) + "|" + (ctx.pipeline_robustness ? "r" : "-") + "|";
         for (const auto& b : lb) key += char('0' + int(b.descriptorType));
+        // MZ_LOG_LAYOUT=1 (record making, tools/aco-records): each kernel's set layout and push range, which an ACO
+        // record's descriptor offsets have to be made with.
+        if (const char* ll = std::getenv("MZ_LOG_LAYOUT"); ll && *ll == '1') {
+            std::string s;
+            for (const auto& b : lb) s += " " + std::to_string(b.binding) + ":" + std::to_string(int(b.descriptorType));
+            nr::logf("[nr] layout %s push %u bindings%s", spirv_path.substr(spirv_path.find_last_of("/\\") + 1).c_str(),
+                     push_bytes, s.c_str());
+        }
         for (uint32_t i = 0; i < na; ++i) key += "|" + std::to_string(aliases[i].first);
         {
             std::lock_guard<std::mutex> guard(shared_pipelines_lock());
@@ -1082,6 +1101,10 @@ struct Kernel {
             if (!shared) { slot = made; shared = made; }
         }
         module = shared->module; dsl = shared->dsl; layout = shared->layout; pipeline = shared->pipeline;
+        spirv = spirv_path;
+        bound_buffers.clear();
+        for (uint32_t i = 0; i < nb; ++i) bound_buffers.push_back({i, bound[i]});
+        for (const auto& alias : aliases) bound_buffers.push_back(alias);
         if (ctx.pin) {   // a memory's runtimes are built on two threads (inside frames, in the background)
             std::lock_guard<std::mutex> guard(shared_pipelines_lock());
             if (std::find(ctx.pin->begin(), ctx.pin->end(), shared) == ctx.pin->end()) ctx.pin->push_back(shared);
