@@ -18,6 +18,7 @@
 static std::unordered_map<ffxContext, ffxCreateContextDescUpscale> _initParams;
 static std::unordered_map<ffxContext, NVSDK_NGX_Parameter*> _nvParams;
 static std::unordered_map<ffxContext, NVSDK_NGX_Handle*> _contexts;
+static std::unordered_set<ffxContext> _gameDenoiserContexts;
 static ID3D12Device* _d3d12Device = nullptr;
 static bool _nvnxgInited = false;
 static float qualityRatios[] = { 1.0f, 1.5f, 1.7f, 2.0f, 3.0f };
@@ -130,6 +131,15 @@ static bool CreateDLSSContext(ffxContext handle, const ffxDispatchDescUpscale* p
     return true;
 }
 
+// The game's own denoiser takes the game's denoiser calls and every call on a context it made
+static FfxModule* GameDenoiserFor(ffxContext* context, FFXStructType type)
+{
+    if (context != nullptr && *context != nullptr && _gameDenoiserContexts.contains(*context))
+        return FfxApiProxy::GameDenoiserDx12();
+
+    return type == FFXStructType::Denoiser ? FfxApiProxy::GameDenoiserDx12() : nullptr;
+}
+
 static std::optional<float> GetQualityOverrideRatioFfx(const uint32_t input)
 {
     std::optional<float> output;
@@ -204,6 +214,16 @@ ffxReturnCode_t ffxCreateContext_Dx12(ffxContext* context, ffxCreateContextDescH
 
     auto& state = State::Instance();
     auto type = FfxApiProxy::GetType(desc->type);
+
+    if (auto game = FfxApiProxy::GameDenoiserDx12(); game != nullptr && type == FFXStructType::Denoiser)
+    {
+        auto result = game->CreateContext(context, desc, memCb);
+
+        if (result == FFX_API_RETURN_OK && context != nullptr && *context != nullptr)
+            _gameDenoiserContexts.insert(*context);
+
+        return result;
+    }
 
     // Extra checks added for Silent Hill f
     // Game is creating FSR-FG swapchain and calling present twice per frame
@@ -307,6 +327,9 @@ ffxReturnCode_t ffxDestroyContext_Dx12(ffxContext* context, const ffxAllocationC
 
     LOG_DEBUG("context: {:X}", (size_t) *context);
 
+    if (_gameDenoiserContexts.erase(*context) != 0)
+        return FfxApiProxy::GameDenoiserDx12()->DestroyContext(context, memCb);
+
     if (*context == (void*) scContext || *context == (void*) fgContext)
     {
         auto result = ffxDestroyContext_Dx12FG(context, memCb);
@@ -365,6 +388,9 @@ ffxReturnCode_t ffxConfigure_Dx12(ffxContext* context, ffxConfigureDescHeader* d
     LOG_DEBUG("type: {}", FfxApiProxy::GetTypeName(desc->type));
 
     auto type = FfxApiProxy::GetType(desc->type);
+    if (auto game = GameDenoiserFor(context, type))
+        return game->Configure(context, desc);
+
     if (type == FFXStructType::SwapchainDX12 || type == FFXStructType::FG)
     {
         ffxReturnCode_t result = PASSTHRU_RETURN_CODE;
@@ -449,6 +475,9 @@ ffxReturnCode_t ffxQuery_Dx12(ffxContext* context, ffxQueryDescHeader* desc)
 
     auto type = FfxApiProxy::GetIndirectType(desc);
     LOG_DEBUG("Header type: {}, Indirect type: {}", FfxApiProxy::GetTypeName(desc->type), magic_enum::enum_name(type));
+
+    if (auto game = GameDenoiserFor(context, type))
+        return game->Query(context, desc);
 
     if (type == FFXStructType::SwapchainDX12 || type == FFXStructType::FG)
     {
@@ -612,6 +641,9 @@ ffxReturnCode_t ffxDispatch_Dx12(ffxContext* context, ffxDispatchDescHeader* des
     LOG_DEBUG("context: {:X}, type: {}", (size_t) *context, FfxApiProxy::GetTypeName(desc->type));
 
     auto type = FfxApiProxy::GetType(desc->type);
+    if (auto game = GameDenoiserFor(context, type))
+        return game->Dispatch(context, desc);
+
     if (type == FFXStructType::SwapchainDX12 || type == FFXStructType::FG)
     {
         ffxReturnCode_t result = PASSTHRU_RETURN_CODE;
