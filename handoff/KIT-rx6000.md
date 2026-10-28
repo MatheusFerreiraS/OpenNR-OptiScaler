@@ -1,14 +1,119 @@
-# RX 6000 test kit (mochizuki RDNA2 network, 2026-10-27)
+# RX 6000 test kit (mochizuki RDNA2 network, 2026-10-27/28)
 
 Worktree `wt-rdna2`, branch `mochizuki-rdna2`, local commit only (nothing pushed, uploaded or posted, no game folders
 touched). Plan section 9 item 6. Clean room kept: the GPL RDNA2 port was not opened, searched or fetched; the kit is
 built from this branch's own export and the RX 7000 kits' tools.
 
-Package (rebuilt 2026-10-27 23:3x, kit v3: the cheaper pre and post blocks below):
-`E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip`, 17,662,812 bytes (16.8 MB, 115 files, models not
-included), SHA-256 `D1FF3AF8E43E72A56CB975457B84683ADABF3F26C8232986E6098BAE196F97A1` (also in
-`rx6000-test-kit\SHA256.txt`). One `run-test.bat`, one result zip `OpenNR-RX6000-result-<date>.zip`. The zips in
-`rx6000-test-kit\send\` are older kits (v2: `OpenNR-RX6000-test-v2.zip`, 7A088A20...CCBFF4, the one the RX 6600 ran).
+Package (rebuilt 2026-10-28 12:2x, kit v4: the attention cache in every C=32 Swin body, attn with 12 KB of LDS, and a
+variant stage that times the C>=64 cache on the card; section below):
+`E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip`, 20,287,078 bytes (19.3 MB, 125 files, models not
+included), SHA-256 `EB909F1C11B414781A5E690303D8056456ACB303C7E252537C357F8C522233A0` (also in
+`rx6000-test-kit\SHA256.txt`), copied to `rx6000-test-kit\send\OpenNR-RX6000-test-v4.zip` (+ `.sha256.txt`). One
+`run-test.bat`, one result zip `OpenNR-RX6000-result-<date>.zip`. Older kits in `send\`: v2 (`OpenNR-RX6000-test-v2.zip`,
+7A088A20...CCBFF4, the one the RX 6600 ran) and `OpenNR-RX6000-test.zip` (from before the fswinds removal). Kit v3
+(D1FF3AF8...6F97A1) was never sent.
+
+## Swin attention cache everywhere, attn LDS (2026-10-28, kit v4)
+
+Plan item: `NV_PCACHE` (the round below) on every native Swin body. What the attention costs per body (dot2 a token,
+static count): C=32 ~6.1k in the projections and MLP against ~3.1k in the attention (~1/3, so the cache pays), C=64
+~22k vs 6.1k, C=128 ~80k vs 12k, C=256 ~310k vs 25k (7%). So the C>=64 head loops are GEMM-bound (their `NV_GEMM8`
+loop is 128 `v_dot2` in 178 instructions on gfx1030, 16 `s_buffer_load_dwordx4`, 8 `ds_read2_b32`), and the cache can
+win there only a fraction of 7-22%.
+
+Changes (`include/fswin_native.glsl`, `include/attn_native.glsl`; RDNA2 set only; output byte-identical):
+1. `NV_PCACHE` is the default of every C=32 body: `fswin32`, `fswin32nh`, `fswindsp32`, `fswindsp32nh`,
+   `fswinfusedup32`, `fswinfusedup32nh` (and the pre/post blocks as before).
+2. C>=64 (`fswin64/128/256`, `fswindsp64/128/256`, `fswinfusedup64/128/256`): left as they were (`NV_PCACHE` 0 for
+   `NR_HWAVES`). Tried: the cache with both attention calls inlined: gfx1030 .342 256 VGPRs + 3.9 KB scratch; with the
+   two tokens' attention in one rolled loop (one inlined body, uniform selects): gfx1030 188-192 VGPRs, 0 scratch,
+   occupancy unchanged (LDS-bound at 4 waves a SIMD, so up to 256 VGPRs are free), byte-identical, but gfx1201 (the
+   9070 XT that times the forced runs) 256 VGPRs + 8 KB scratch, 2-6x slower (Small 720p 27.2 -> 55.8 ms). It cannot be
+   timed here, so it is not the default; `NV_PCACHE=1` builds it (`build_network.py ... --define NV_PCACHE=1`) and kit
+   v4 runs it on the card as a variant (stage 6 below). Ship it only if the RX 6600 says so.
+3. `attn` (C=512 window attention): Q and K go to LDS in FP16 row pairs (one `ds_write_b32` a pair, the lane owns
+   both rows), each lane reads its token's rows into registers, one barrier, and the quantised q and k are stored over
+   them: LDS 20480 -> 12288 B. gfx1030: 163 VGPRs either way, so 3 waves a SIMD (LDS) -> 5 (VGPRs).
+4. The C=32 fused upsample (`NV_UPS32`) and the wide one (`NV_UPS`) read their blend gains as one dword a pair (as the
+   post block; `blend_g_off` is 16-byte aligned by `put_f16`, the channel pairs even). Byte-identical, no measurable
+   time change (kept: fewer loads, same bytes).
+5. Not done, item 3 of the plan (FP16 history, `NR_HIST16=1`): measured on the 9070 XT forced, Small 1080p, 2 rounds:
+   post block 4.44 / 4.46 ms (RGBA32F) against 4.45 / 4.48 (RGBA16F), pre block 5.06 / 5.08 against 5.16 (and one
+   7.81 outlier), status line 43.5 against 43.5 ms; 720p the same. No gain (the history is ~16 MB a frame at 1080p) and
+   it changes the output (E0D05B9B / 2C905370 instead of C9A4FB6E / FA35B425): dropped, no quality runs.
+
+| case (9070 XT forced, NR_STEP_TIMES=20, 30 frames, 2 rounds alternating, GPU lock held) | step sum | status line |
+|---|---|---|
+| Small 720p | 27.22 -> 26.39 | 26.81 -> 25.99 (-3.1%) |
+| Small 1080p | 46.39 -> 44.01 | 45.86 -> 43.34 (-5.5%) |
+| Small 1440p | 68.56 -> 65.23 | 68.00 -> 64.57 (-5.0%) |
+| 310.8 720p | 67.83 -> 64.69 | 66.24 -> 64.17 (-3.1%) |
+| 310.8 1080p | 103.83 -> 97.54 | 102.90 -> 95.95 (-6.8%) |
+
+| kernel, ms a frame | Small 720p | Small 1080p | Small 1440p | 310.8 720p | 310.8 1080p |
+|---|---|---|---|---|---|
+| attn | 1.94 -> 1.69 | 2.88 -> 1.69 | 4.09 -> 2.87 | 8.31 -> 7.32 | 12.69 -> 7.75 |
+| fswin32nh | 1.60 -> 1.24 | 3.11 -> 2.38 | 5.03 -> 3.86 | 3.37 -> 2.56 | 6.05 -> 4.73 |
+| fswin32 | | | | 1.79 -> 1.39 | 2.88 -> 2.20 |
+| fswinfusedup32 | 0.87 -> 0.68 | 1.64 -> 1.25 | 2.66 -> 2.03 | | |
+| fswindsp32nh | 0.81 -> 0.71 | 1.52 -> 1.36 | 2.41 -> 2.17 | 0.77 -> 0.68 | 1.39 -> 1.28 |
+| fswinfusedup32nh | | | | 1.00 -> 1.00 | 1.65 -> 1.70 |
+| fswin256 (unchanged) | 1.84 / 1.89 | 2.49 / 2.47 | 3.15 / 3.15 | 14.67 / 14.12 | 20.64 / 20.08 |
+| fswin128 (unchanged) | 1.16 / 1.16 | 2.08 / 2.09 | 3.31 / 3.28 | 7.51 / 7.18 | 11.45 / 11.89 |
+| fswin64 (unchanged) | 1.45 / 1.46 | 2.70 / 2.72 | 4.36 / 4.34 | 5.06 / 5.08 | 8.58 / 9.02 |
+| pre / post (unchanged) | 2.52 / 2.20 | 5.15 / 4.44 | 8.40 / 7.29 | 2.44 / 2.19 | 4.74 / 4.22 |
+
+(Unchanged kernels moved -4% to +5% between the sets: noise. Logs `exports\rdna2-work\p6\p6_base_r*` /
+`p6_pc4_r*`, `summary.txt`; `p6tab.py p6_base p6_pc4` prints the tables.)
+
+gfx1030 (vkisa, null NAVI21, amdvlk 9.2.10.342), before -> after: `fswin32`/`fswin32nh` 110 -> 119 VGPRs,
+`fswindsp32` 115 -> 116, `fswindsp32nh` 115 -> 122, `fswinfusedup32` 120 -> 120, `fswinfusedup32nh` 110 -> 119, all
+LDS 8 KB, 8 waves a SIMD before and after (<= 128 VGPRs); `attn` 163 VGPRs, LDS 20 -> 12 KB, 3 -> 5 waves;
+`fswinfusedup64/128/256` 155 VGPRs (unchanged); 0 scratch everywhere. Cold compile on the null device: the six C=32
+bodies 8-9 s (the unrolled pass 1, as the pre/post blocks), `attn` 3 s. gfx1201 (system driver): C=32 bodies 166-173
+VGPRs, `attn` 182 -> 159, no scratch.
+
+Checks: forced RDNA2, 1 frame, both models at 720p/1080p/1440p: E9F5E89BF57A08BA / D07096C4C35774C0 /
+EB2040C4FB5801C2 and D0A1B50ECEE12A7B / A5A0A39437A13D19 / 3AA32BB2BDFB26BF (unchanged; the `NV_PCACHE=1` variant
+too); normal mode 40 frames: FA35B425 / C9A4FB6E / FB987C4B, 188D4AAD / 44C578C4 / 3DD8A4A3 (unchanged). Rebuilt
+export: `shaders\`, `shaders-rdna3\`, `aco\` (and `int4`) byte-identical to the previous export, only 10 files of
+`shaders-rdna2` changed (`g_attn`, `g_fswin32`, `g_fswin32nh`, `g_fswindsp32`, `g_fswindsp32nh`, `g_fswinfusedup32`,
+`g_fswinfusedup32nh`, `g_fswinfusedup64/128/256`); the DLL is rebuilt from unchanged sources; RDNA4 `ab.ps1` (40
+frames): 258FEC01 / 01588CA6 / 2A308F2C / 04A421E7.
+
+RX 6600 estimate (not measured; kit v2 steps times this round's ratios, plus kit v3's pre/post): Small 720p 68 ->
+~61 ms, Small 1080p 145 -> ~131 ms, 310.8 720p 154 -> ~141 ms. attn may gain more there than here (gfx1030's
+occupancy goes 3 -> 5 waves; on gfx1201 the change is smaller).
+
+Kit stage 6 (new, `kit.ps1`): every `files\variant\<name>\` folder (a few `shaders-rdna2` files + `about.txt`) is
+compiled with pipecheck, swapped over the shipped set in `files\mixed\`, and run once clean (picture must be
+IDENTICAL to the stage-4 sha) and with `NR_STEP_TIMES` for `$VariantCases` (Small 720p, 310.8 720p):
+`steps_<variant>_<case>.txt`, `VARIANT ... STEPS` lines. Kit v4 ships `variant\pcache64` (the nine C>=64 Swin files
+built with `NV_PCACHE=1`). `build-kit.ps1` takes the variant folder as a 4th argument.
+
+Kit run 6 (forced, models pre-copied, cold for the 10 changed and 9 variant pipelines; `exports\rx6000-kit\run6.out`,
+`run6-result.zip`): 4.4 min; 86 of 86 pipelines (58 s, slowest `g_fswinfusedup128` 7.1 s, `g_attn` 6.3 s), runtime
+check 86 of 86 in 13.0 s on 8 threads (slowest `g_attn` 3.3 s), first build 30.5 s; PASS 47.79 / 52.92 / 49.72 dB
+with the hashes above, runs identical; SPEED 25.97 / 43.31 / 62.59 ms; STEPS Small 720p 26.4 ms, Small 1080p 43.9 ms,
+310.8 720p 65.0 ms (fswin256 14.2, attn 7.7, fswin128 6.8, ffwd3 6.4, fswin64 4.8, fswin32nh 2.5); variant pcache64:
+9 of 9 compiled, IDENTICAL pictures, steps 56.3 / 135.3 ms (the gfx1201 spill, see item 2). Run 7 (the packed kit,
+warm; `run7.out`, `run7-result.zip`): 1 min, same hashes and dB, SPEED 26.01 / 43.33 / 62.43 ms, STEPS 26.4 / 44.0 /
+63.7 ms, variant 56.5 / 135.7 ms. (Kit v3 run 5 for comparison: SPEED 27.42 / 43.67 / 57.20 ms, but its 310.8 SPEED
+57.2 was a low outlier against 59-61 ms in runs 3-4.)
+
+What to read in the RX 6600's v4 result: `VARIANT pcache64 STEPS` against `STEPS` for the same case. On gfx1030 the
+variant should not spill (.342: 188-192 VGPRs); if its fswin64/128/256 are lower than in STEPS, make `NV_PCACHE=1`
+the default for `NR_HWAVES` too (and drop the variant); if they are 2x higher like here, the card's compiler spills as
+gfx1201 does and it stays off.
+
+Files (outside git): `exports\rdna2-work\p6time.ps1` (step runs of `ab\<variant>` sets under the GPU lock),
+`p6tab.py`, `p6h16.ps1` (the `NR_HIST16` A/B), `p6\` (logs, `summary.txt`, `h16.txt`), `ab\p6_base` (previous set),
+`ab\p6_pc4` (this one), `ab\p6_pchw` (the variant), `ab\p6_r4` (RDNA4 check), `build-p6.log`;
+`exports\rx6000-kit\variant\pcache64\`, `run6.ps1`/`run7.ps1`. Scratch
+`C:\Users\matheus\AppData\Local\Temp\claude\E--Projetos-opti-rr-dlss5\795b344c-93eb-4227-8c2f-f4383752f0e5\scratchpad\rdna2-p6`:
+`sets\` (base, pc1-pc4, pchw, fin), `out\` (gfx1030 and `g12_*` gfx1201 ISA + stats), `scripts\` (`build.sh`,
+`isaset.sh`, `isa12.sh`, `isa.sh`), `prev\` (the previous export).
+
 
 ## Pre and post blocks (2026-10-27 late, kit v3)
 
@@ -145,7 +250,11 @@ dispatches (top: fswin256 13.9, attn 8.3, fswin128 6.4, ffwd3 5.2, fswin64 4.7).
    read-only, samples every 100 ms, median/min/max graphics clock, memory clock, temperature over samples with
    graphics activity >= 50%). Then `NR_STEP_TIMES=20` (30 frames) at small 720p, small 1080p and 310.8 720p
    (`large_1280x720`, new 2026-10-27): `steps_<case>.txt` with the full per-pipeline table.
-6. `SUMMARY.txt` (IN SHORT block, then every line), `console.txt`, logs, two pictures (diff x16 PNG, output JPG) a
+6. **Variants** (new in v4): each `files\variant\<name>\` (a few `shaders-rdna2` files + `about.txt`) is compiled
+   with pipecheck, laid over a copy of the set in `files\mixed\`, run once clean for `$VariantCases` (Small 720p,
+   310.8 720p; the sha must equal stage 4's) and with `NR_STEP_TIMES`: `VARIANT` lines, `steps_<name>_<case>.txt`.
+   v4 ships `pcache64` (the C>=64 attention cache).
+7. `SUMMARY.txt` (IN SHORT block, then every line), `console.txt`, logs, two pictures (diff x16 PNG, output JPG) a
    quality case; zipped next to `run-test.bat`.
 
 The earlier stage 6 (native against emulated: the emulated SPIR-V of 21 pipelines swapped in where they compiled
@@ -259,7 +368,7 @@ Compile and check times are warm-cache numbers; cold, the earlier 641 s compile 
 ```
 $k = 'E:\Projetos\opti_rr_dlss5\wt-rdna2\exports\rx6000-kit'
 tools\rx6000-kit\make-refs.ps1 $k\refwork $k\reference                     # FP8 refs + forced RDNA2 scores
-tools\rx6000-kit\build-kit.ps1 exports\mochizuki-rdna2 $k\reference $k\kit
+tools\rx6000-kit\build-kit.ps1 exports\mochizuki-rdna2 $k\reference $k\kit $k\variant   # variant: optional
 tools\rx6000-kit\pack-kit.ps1 $k\kit E:\Projetos\opti_rr_dlss5\rx6000-test-kit\OpenNR-RX6000-test.zip
 ```
 A new shaders-rdna2 needs new references only if the network's arithmetic changed (the references are the FP8

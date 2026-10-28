@@ -62,11 +62,11 @@ function ClearEnv($vars) { foreach ($k in $vars.Keys) { Remove-Item -Path "Env:$
 function Minutes() { [int]((Get-Date) - $t0).TotalMinutes }
 
 Write-Host ''
-Write-Host 'OpenNR RX 6000 test. This takes about 10 to 20 minutes. Please do not close this window.'
+Write-Host 'OpenNR RX 6000 test. This takes about 5 to 15 minutes. Please do not close this window.'
 Write-Host ''
 
 # 1. System and Vulkan.
-Write-Host '[1/6] System and Vulkan...'
+Write-Host '[1/7] System and Vulkan...'
 $sys = Join-Path $result 'system.txt'
 $code = Run 'vkprobe.exe' '--report' $sys 3
 $sysText = @(if (Test-Path -LiteralPath $sys) { Get-Content -LiteralPath $sys })
@@ -103,7 +103,7 @@ elseif ($notRdna2) { Line "SKIPPED the network tests: this card would not get th
 $have = @{}
 $modelFile = @{ small = 'dlssnr-small.bin'; large = 'dlssnr.bin' }
 if (-not $notRdna2) {
-    Write-Host '[2/6] Downloading the models (about 250 MB, once)...'
+    Write-Host '[2/7] Downloading the models (about 250 MB, once)...'
     $downloads = @(
         @{ name = 'dlssnr-small.bin'; size = 113917248; sha = '7e966e2639dbec6596aa0bac3b8761137d2c40ca8cb4aca30df7ca10043c6e33';
            url = 'https://huggingface.co/datasets/zmodelerlover/amd-nr/resolve/main/mochizuki/model-small-1/dlssnr-small.bin' },
@@ -158,7 +158,7 @@ function PipeRows($path) {
 # 3. Every RDNA2 pipeline compiled once, each in its own process with a time limit.
 $pipesOk = $false
 if (-not $notRdna2) {
-    Write-Host '[3/6] Compiling every shader once (each in its own process; the first time takes a few minutes)...'
+    Write-Host '[3/7] Compiling every shader once (each in its own process; the first time takes a few minutes)...'
     $env:PIPECHECK_COOP = '0'; $env:PIPECHECK_TIMEOUT_S = '300'; $env:PIPECHECK_BUDGET_S = '900'
     $pc = Join-Path $result 'pipecheck.txt'
     $all = @(Get-ChildItem -LiteralPath (Join-Path $files 'dlssnr-amd\shaders-rdna2'), (Join-Path $files 'dlssnr-amd\shaders\renodx') `
@@ -256,7 +256,7 @@ function RunsDiff($a, $b, $c, $out) {
 $pass = @(); $fail = @(); $vary = @(); $hash = @{}
 $stop = -not $run
 if ($run) {
-    Write-Host "[4/6] Picture check: $($Quality.Count) cases x $QualityRuns runs (the first one builds the network, a few minutes)..."
+    Write-Host "[4/7] Picture check: $($Quality.Count) cases x $QualityRuns runs (the first one builds the network, a few minutes)..."
     foreach ($c in $Quality) {
         if ($stop) { break }
         if (-not $have[$modelFile[$c.model]]) { Line "SKIPPED $($c.name): $($modelFile[$c.model]) missing"; continue }
@@ -316,7 +316,7 @@ if ($run) {
 # 5. Speed: normal runs with the GPU clock sampled alongside, then the per-pipeline times.
 $speedRows = @()
 if ($run -and -not $stop) {
-    Write-Host "[5/6] Speed: $($Speed.Count) cases, then the time of each shader..."
+    Write-Host "[5/7] Speed: $($Speed.Count) cases, then the time of each shader..."
     foreach ($c in $Speed) {
         if (-not $have[$modelFile[$c.model]]) { continue }
         Write-Host "    $($c.name) ..."
@@ -360,8 +360,73 @@ if ($run -and -not $stop) {
     }
 }
 
-# 6. Summary and the zip.
-Write-Host '[6/6] Writing the result...'
+# 6. Variants: files\variant\<name>\ holds a few shaders-rdna2 files built another way (about.txt says how), swapped
+# in over the shipped set in their own folder; the picture must stay identical, the steps say which is faster.
+if ($run -and -not $stop -and (Test-Path -LiteralPath (Join-Path $files 'variant'))) {
+    foreach ($vd in @(Get-ChildItem -LiteralPath (Join-Path $files 'variant') -Directory)) {
+        $vn = $vd.Name
+        Write-Host "[6/7] Variant $vn (a few minutes)..."
+        $about = First (Join-Path $vd.FullName 'about.txt') '.'
+        if ($about) { Line "INFO variant ${vn}: $about" }
+        $dir = Join-Path $result "variant\$vn"
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $alt = @(Get-ChildItem -LiteralPath $vd.FullName -Recurse -Filter *.spv)
+        $env:PIPECHECK_COOP = '0'; $env:PIPECHECK_TIMEOUT_S = '300'; $env:PIPECHECK_BUDGET_S = '600'
+        $pc = Join-Path $dir 'pipecheck.txt'
+        $null = Run 'pipecheck.exe' (($alt | ForEach-Object { '"' + $_.FullName.Substring($files.Length + 1) + '"' }) -join ' ') $pc 12
+        Remove-Item Env:PIPECHECK_COOP, Env:PIPECHECK_TIMEOUT_S, Env:PIPECHECK_BUDGET_S -ErrorAction SilentlyContinue
+        $rows = @(PipeRows $pc)
+        $bad = @($rows | Where-Object { $_.state -ne 'OK' })
+        $slow = ($rows | Sort-Object { -$_.ms } | Select-Object -First 3 | ForEach-Object { '{0} {1:N1} s' -f ($_.file -replace '^.*\\', ''), ($_.ms / 1000) }) -join ', '
+        if ($bad.Count -or $rows.Count -ne $alt.Count) {
+            Line "FAIL variant ${vn}: $(@($rows | Where-Object { $_.state -eq 'OK' }).Count) of $($alt.Count) shaders compiled"
+            foreach ($b in $bad) { Line "     $($b.state) $($b.file) $($b.text)" }
+            continue
+        }
+        Line ('PASS variant {0}: {1} of {1} shaders compiled; slowest {2}' -f $vn, $alt.Count, $slow)
+        $mix = Join-Path $files 'mixed'
+        Remove-Item -LiteralPath $mix -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path "$mix\dlssnr-amd\shaders" -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $files 'MochizukiNrRuntime.dll') -Destination $mix
+        Copy-Item -LiteralPath (Join-Path $files 'dlssnr-amd\shaders-rdna2') -Destination "$mix\dlssnr-amd\shaders-rdna2" -Recurse
+        Copy-Item -LiteralPath (Join-Path $files 'dlssnr-amd\shaders\renodx') -Destination "$mix\dlssnr-amd\shaders\renodx" -Recurse
+        foreach ($a in $alt) { Copy-Item -LiteralPath $a.FullName -Destination ("$mix\dlssnr-amd\shaders-rdna2\" + $a.FullName.Substring($vd.FullName.Length + 1)) -Force }
+        foreach ($m in $modelFile.Values) {
+            $src = Join-Path $files "dlssnr-amd\$m"
+            if (-not (Test-Path -LiteralPath $src)) { continue }
+            try { New-Item -ItemType HardLink -Path "$mix\dlssnr-amd\$m" -Target $src -ErrorAction Stop | Out-Null }
+            catch { Copy-Item -LiteralPath $src -Destination "$mix\dlssnr-amd\" }
+        }
+        $v = @{ MZ_RDNA2_CHECK = '0' }
+        foreach ($k in $Clean.Keys) { $v[$k] = $Clean[$k] }
+        foreach ($c in @($Quality | Where-Object { $VariantCases -contains $_.name })) {
+            if (-not $hash[$c.name]) { continue }
+            $r = E2E "$($c.name).$vn" $c $QualityFrames $v $dir 'mixed' 10
+            Remove-Item -LiteralPath (Join-Path $files $r.bin) -ErrorAction SilentlyContinue
+            if (-not $r.ok) { Line "FAIL variant $vn $($c.name): $($r.why)"; continue }
+            Line "VARIANT $vn $($c.name): $(if ($r.sha -eq $hash[$c.name]) { 'IDENTICAL picture' } else { 'DIFFERENT picture' }) (sha $($r.sha)); $(if ($r.build) { $r.build })"
+        }
+        foreach ($n in $VariantCases) {
+            $c = $Speed | Where-Object { $_.name -eq $n } | Select-Object -First 1
+            if (-not $c -or -not $have[$modelFile[$c.model]]) { continue }
+            $r = E2E "$n.$vn.steps" $c $StepFrames @{ NR_STEP_TIMES = "$StepCount"; MZ_RDNA2_CHECK = '0' } $dir 'mixed'
+            Remove-Item -LiteralPath (Join-Path $files $r.bin), (Join-Path $files "$($r.bin).prev") -ErrorAction SilentlyContinue
+            $lt = @(Get-Content -LiteralPath (Join-Path $dir "log_$n.$vn.steps.txt") -ErrorAction SilentlyContinue)
+            $i = -1
+            for ($j = 0; $j -lt $lt.Count; ++$j) { if ($lt[$j] -match 'NR_STEP_TIMES: \d+ frames') { $i = $j } }
+            if (-not $r.ok -or $i -lt 0) { Line "FAIL variant $vn steps ${n}: $(if ($r.why) { $r.why } else { 'no NR_STEP_TIMES table' })"; continue }
+            $tab = @($lt[$i] -replace '^.*NR_STEP_TIMES: ', '')
+            for ($j = $i + 1; $j -lt $lt.Count -and $lt[$j] -match '\[nr\]\s+\S+\.spv\s'; ++$j) { $tab += ($lt[$j] -replace '^.*\[nr\]\s+', '') }
+            Set-Content -LiteralPath (Join-Path $result "steps_${vn}_$n.txt") -Value $tab
+            $top = ($tab | Select-Object -Skip 1 -First 6 | ForEach-Object { if ($_ -match '^(\S+)\.spv\s+(\d+) x\s+([\d.]+) ms') { "$($Matches[1]) $($Matches[3])" } }) -join ', '
+            Line "VARIANT $vn STEPS ${n}: $($tab[0]); top: $top"
+        }
+        Remove-Item -LiteralPath $mix -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# 7. Summary and the zip.
+Write-Host '[7/7] Writing the result...'
 $card = if ($dev.Count) { $dev[0] -replace '^vulkan device \d+: ', '' } else { 'no AMD Vulkan device' }
 $short.Add("Card: $card")
 if ($notRdna2) { $short.Add('This card would not use the RX 6000 network, so the network was not tested. Please tell us which card this is.') }
@@ -380,7 +445,8 @@ $head = @("OpenNR RX 6000 test kit (mochizuki RDNA2 network), $((Get-Date).ToStr
 $tail = @('', "How to read this: PASS = every run within $PassDb dB PSNR of the RX 9070 XT reference, FAIL = not, or the run failed.",
           '"identical" means the same picture every run. SPEED is the network alone (status line), with the GPU clock while busy.',
           'STEPS: the per-shader times (NR_STEP_TIMES; the timestamps make the sum about 20% more than SPEED).',
-          'Raw files: system.txt, pipecheck.txt, pipelines-by-time.txt, runtime-rdna2-check-*.txt, quality\, speed\, steps_*.txt, console.txt.')
+          'VARIANT: a few shaders built another way swapped in; the picture must be IDENTICAL, its STEPS compare with the STEPS above.',
+          'Raw files: system.txt, pipecheck.txt, pipelines-by-time.txt, runtime-rdna2-check-*.txt, quality\, speed\, steps_*.txt, variant\, console.txt.')
 Set-Content -LiteralPath (Join-Path $result 'SUMMARY.txt') -Value ($head + $summary + $tail)
 foreach ($f in 'rdna2-check.txt', 'rdna2-check\pipelines.txt', 'rdna2-check\pipelines.log') {
     $p = Join-Path $files "dlssnr-amd\$f"

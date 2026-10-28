@@ -18,3 +18,5 @@ $SpeedFrames = 40
 $Steps = @('small_1280x720', 'small_1920x1080', 'large_1280x720')
 $StepFrames = 30
 $StepCount = 20
+# Variants (files\variant\<name>, kit.ps1 stage 6): one clean run and the steps of these cases each.
+$VariantCases = @('small_1280x720', 'large_1280x720')

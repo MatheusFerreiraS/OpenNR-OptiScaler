@@ -22,9 +22,9 @@ Everything stays inside this folder.
      the test cannot run. Allow the folder (or restore the file) and run it again, or just tell us.
      The test uses Windows' own rundll32.exe to compile the shaders in a separate process; some
      antivirus programs warn about that.
-4. Wait. It takes about 10 to 20 minutes. The first time it downloads the two model files (about
-   250 MB) from the same place the OpenNR installer uses, and the first run builds the network,
-   which takes a few minutes. The GPU fans may spin up; that is normal. Every step has a time
+4. Wait. It takes about 5 to 15 minutes (an RX 6600 took a few). The first time it downloads the
+   two model files (about 250 MB) from the same place the OpenNR installer uses, and the first run
+   builds the network, which takes a minute or two. The GPU fans may spin up; that is normal. Every step has a time
    limit, so a step that hangs is stopped and the test goes on. Please leave the window open.
 5. When it says "Done", send us the one file it names:
    OpenNR-RX6000-result-<date>.zip (next to run-test.bat; the folder opens by itself).
