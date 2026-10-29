@@ -35,7 +35,10 @@ else {
     Copy-Item "$Dll\MochizukiNrRuntime.dll" $run
     foreach ($s in 'shaders', 'shaders-rdna3') { Copy-Item -Recurse "$Dll\dlssnr-amd\$s" "$run\dlssnr-amd\$s" }
     Copy-Item -Recurse $Shaders "$run\dlssnr-amd\shaders-rdna2"
-    foreach ($m in 'dlssnr.bin', 'dlssnr-small.bin') { New-Item -ItemType HardLink -Path "$run\dlssnr-amd\$m" -Target "$Kit\refwork\dlssnr-amd\$m" | Out-Null }
+    foreach ($m in 'dlssnr.bin', 'dlssnr-small.bin') {
+        try { New-Item -ItemType HardLink -Path "$run\dlssnr-amd\$m" -Target "$Kit\refwork\dlssnr-amd\$m" | Out-Null }
+        catch { Copy-Item "$Kit\refwork\dlssnr-amd\$m" "$run\dlssnr-amd\$m" }   # another drive
+    }
     Copy-Item $E2E $run
     Copy-Item "$Kit\OpenNR-RX7000-test\files\test.png" $run
     $lock = 'E:\Projetos\opti_rr_dlss5\gpu-timing.lock'
