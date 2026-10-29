@@ -2,7 +2,8 @@
 
     produce.py <family> <shaders dir> <out dir> [--all] [--jobs N]
 
-family is RADV's name (navi31, navi32, navi33, phoenix, navi21, navi22, navi23, navi24, gfx1201).
+family is RADV's name (navi31, navi32, navi33, phoenix, navi21, navi22, navi23, navi24, vangogh, rembrandt,
+raphael_mendocino, gfx1201).
 Writes <out>/records/<fnv64 of the SPIR-V>.nrp and <out>/produce-log.txt. Only the files the runtime takes
 records for (g_*, temporal_pre_fp32*, temporal_post_fp32*, as nr_pipeline_binary.hpp network_path) unless
 --all. Needs the patched Mesa build (aco-tools/build/radv) and nr_aco_capture.exe.
@@ -15,6 +16,10 @@ import make_record
 TOOLS = os.environ.get('NR_ACO_TOOLS', r'E:\Projetos\opti_rr_dlss5\aco-tools')
 RADV = os.path.join(TOOLS, 'build', 'radv', 'src', 'amd', 'vulkan', 'vulkan_radeon.dll')
 CAPTURE = os.path.join(TOOLS, 'producer', 'nr_aco_capture.exe')
+
+
+# RADV's gfx10.3 families (no cooperative matrices): one navi21 set serves them all (HANDOFF-rdna2-aco.md).
+GFX103 = ('navi21', 'navi22', 'navi23', 'navi24', 'vangogh', 'rembrandt', 'raphael_mendocino')
 
 
 def network_path(name):
@@ -56,7 +61,7 @@ def capture(family, spv, prefix, sentinel):
         raise make_record.Reject('not in the runtime layout log (not used by the network)')
     if family.lower().startswith('gfx12'):
         env['NR_CAPTURE_FP8'] = '1'
-    if family.lower().startswith('navi2'):
+    if family.lower() in GFX103:
         env['NR_CAPTURE_NO_COOP'] = '1'
     r = subprocess.run([CAPTURE, RADV, spv, prefix], env=env, capture_output=True, timeout=1800)
     open(prefix + '.err', 'wb').write(r.stderr)
@@ -68,7 +73,7 @@ def stats(family, spv, prefix):
     """ACO's VGPRs and scratch for a kernel refused before its capture (layout), with its own reflected layout."""
     env = dict(os.environ, RADV_FORCE_FAMILY=family, NR_ADDR32_HI='0x%x' % make_record.SENT_A, NR_RECORD_OUT=prefix,
                MESA_SHADER_CACHE_DISABLE='true')
-    if family.lower().startswith('navi2'):
+    if family.lower() in GFX103:
         env['NR_CAPTURE_NO_COOP'] = '1'
     try:
         subprocess.run([CAPTURE, RADV, spv, prefix], env=env, capture_output=True, timeout=1800)
