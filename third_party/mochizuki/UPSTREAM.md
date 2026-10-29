@@ -430,6 +430,12 @@ Local patches:
     machine and key size, and the container is synthesized (no template compile); `aco-gfx103x` bundles fall back
     per pipeline like `aco-gfx11` (log `[nr] ACO gfx103x <name>: ...`). gfx12 and gfx11 splices and prologues are
     byte-identical to the patch-25 adapter (`test_pal_prologue.cpp`, `--probe2`).
+27. ACO for the RDNA2 network (branch rdna2-aco): with ACO asked for, the host (`MochizukiNrRuntime.cpp` Rdna2Aco)
+    takes `dlssnr-amd/aco-gfx103x` (`shaders/` = shaders-rdna2's SPIR-V as it is, `records/` one gfx1030 record per
+    kernel, `tools/aco-records/produce-rdna2.ps1`) when both folders are there, with shaders-rdna2 as the templates
+    of the per-pipeline fallback, and skips the startup pipeline check as the RDNA3 ACO network does; `nr_runtime.cpp`
+    lets the RDNA2 network run that bundle only. Without the bundle the RDNA2 network is compiled by the driver as
+    before. Not shipped in the product build yet.
 
 The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
 OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;

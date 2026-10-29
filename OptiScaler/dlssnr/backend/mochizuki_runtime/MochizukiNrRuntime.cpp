@@ -768,6 +768,7 @@ struct Vulkan
     // rdna2, with no matrices (its fragments emulated in ALU).
     nr::Arch arch = nr::Arch::rdna4;
     bool rdna3Aco = false; // the RDNA3 network as ACO's gfx11 machine code (Rdna3Aco)
+    bool rdna2Aco = false; // the RDNA2 network as ACO's gfx10.3 machine code (Rdna2Aco)
     uint32_t deviceId = 0, driverVersion = 0; // as AMD's driver reports them: the key of the FP16 networks' verdicts
     bool Fp16() const { return nr::fp16_network(arch); }
     VkPhysicalDeviceMemoryProperties memory {};
@@ -1113,7 +1114,7 @@ struct Vulkan
             chain = &f11;
             nr::logf("[mochizuki] the RDNA2 network, its matrices emulated in ALU (FP16 products, FP32 sums): %s",
                      fp16Why.c_str());
-            nr::binary::disable("the RDNA2 network has no ACO records");
+            Rdna2Aco();
         }
         else
             nr::logf("[mochizuki] the FP8 network (VK_EXT_shader_float8)");
@@ -1200,6 +1201,34 @@ struct Vulkan
                               nr::binary::cache_dir(), {});
         rdna3Aco = true;
         nr::logf("[mochizuki] ACO: the RDNA3 network runs ACO's gfx11 machine code from %s", bundle.c_str());
+    }
+
+    // ACO for the RDNA2 network, when it was asked for: the network as Mesa ACO gfx10.3 machine code in
+    // dlssnr-amd\aco-gfx103x\ (shaders\ = shaders-rdna2's SPIR-V as it is, records\ named by its hash;
+    // tools\aco-records\produce-rdna2.ps1 makes both). One gfx1030 record set serves every RDNA2 GPU: the PAL container
+    // is built with the GPU's own machine (nr_pal_binary.hpp synthesize). A pipeline whose record is missing or does
+    // not import is compiled by the driver from shaders-rdna2 (nr_pipeline_binary.hpp).
+    void Rdna2Aco()
+    {
+        if (nr::binary::directory().empty())
+        {
+            nr::binary::disable("the RDNA2 network has no ACO records");
+            return;
+        }
+        const std::string data = RootUtf8(DataDirectory()) + "\\dlssnr-amd";
+        const std::string bundle = data + "\\aco-gfx103x";
+        if (GetFileAttributesA((bundle + "\\records").c_str()) == INVALID_FILE_ATTRIBUTES ||
+            GetFileAttributesA((bundle + "\\shaders").c_str()) == INVALID_FILE_ATTRIBUTES)
+        {
+            const char* why = "no gfx10.3 ACO records (dlssnr-amd\\aco-gfx103x\\records\\)";
+            nr::logf("[mochizuki] ACO off for the RDNA2 network: %s; the driver compiles it", why);
+            nr::binary::disable(std::string("the RDNA2 network: ") + why);
+            return;
+        }
+        nr::binary::configure(bundle, { data + "\\shaders-rdna2", data + "\\shaders-rdna2\\temporal" },
+                              nr::binary::cache_dir(), {});
+        rdna2Aco = true;
+        nr::logf("[mochizuki] ACO: the RDNA2 network runs ACO's gfx10.3 machine code from %s", bundle.c_str());
     }
 
     // An FP16 network's checks: the pipeline check's verdict when it failed before on this driver and, for the RDNA3
@@ -3539,7 +3568,7 @@ struct Session
         NrError::Kind kind = NrError::Other;
         try
         {
-            if (vk.Fp16() && !vk.rdna3Aco)
+            if (vk.Fp16() && !vk.rdna3Aco && !vk.rdna2Aco)
                 Fp16Pipelines();
             // One core build at a time in the process, waited for in steps so that Destroy can end the wait.
             std::unique_lock core(CoreBuildMutex(), std::defer_lock);
