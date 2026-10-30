@@ -993,15 +993,17 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
 
             // Native lists: the between slot executes them on the raw queue.
             DlssNr::Submission::SuppressProxyWrap native;
+            // One allocator takes one recording list at a time: the producer is closed before the consumer is made.
             for (auto& s : d.slots)
             {
                 if (FAILED(Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&s.allocator))) ||
                     FAILED(Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, s.allocator, nullptr,
-                                                     IID_PPV_ARGS(&s.producer))) ||
-                    FAILED(Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, s.allocator, nullptr,
-                                                     IID_PPV_ARGS(&s.consumer))))
+                                                     IID_PPV_ARGS(&s.producer))))
                     throw std::runtime_error("command lists");
                 s.producer->Close();
+                if (FAILED(Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, s.allocator, nullptr,
+                                                     IID_PPV_ARGS(&s.consumer))))
+                    throw std::runtime_error("command lists");
                 s.consumer->Close();
             }
         }
