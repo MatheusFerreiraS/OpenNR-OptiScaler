@@ -3499,6 +3499,23 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             ShowTooltip("Fast: fp32 accumulation.\nFaithful: fp16 accumulation, as the reference GPU does.\n"
                         "Applies once the kernels of that mode are built.");
 
+            const char* nrModes[] = { "Off", "In the loop", "Display only" };
+            const auto nrMode = config->OpenNrRrNrOnDenoised.value_or_default();
+            int nr = nrMode == "loop" ? 1 : nrMode == "display" ? 2 : 0;
+
+            ImGui::PushItemWidth(150.0f * menuResScale);
+            if (ImGui::Combo("NR on denoised image", &nr, nrModes, 3))
+                config->OpenNrRrNrOnDenoised = nr == 1 ? "loop" : nr == 2 ? "display" : "off";
+            ImGui::PopItemWidth();
+            ShowTooltip("mochizuki NR (NrBackend=mochizuki and its settings) on the denoised render-size image,\n"
+                        "before the temporal accumulation and the upscale.\n"
+                        "In the loop: the accumulated history takes the NR as well.\n"
+                        "Display only: the history stays the network's own and only the shown blend takes the NR,\n"
+                        "so it is weaker where the history weighs more.");
+
+            if (const auto nrStatus = OpenNrRr::DenoisedNrStatus(); !nrStatus.empty())
+                ImGui::TextWrapped("NR: %s", nrStatus.c_str());
+
             if (OnrRrInfo info {}; OpenNrRr::Info(info))
             {
                 const char* stateName = info.state == ONR_RR_STATE_READY      ? "ready"

@@ -648,10 +648,18 @@ bool LmxxfBackend::RecordConsumer(ID3D12GraphicsCommandList* consumer)
     return false;
 }
 
-void LmxxfBackend::SubmitOwnLists(ID3D12CommandQueue* q, ID3D12CommandList* producer, ID3D12CommandList* consumer)
+void LmxxfBackend::SubmitOwnLists(ID3D12CommandQueue* q, ID3D12CommandList* producer, ID3D12CommandList* consumer,
+                                  ExecFn exec)
 {
     std::lock_guard lock(jobMutex);
-    q->ExecuteCommandLists(1, &producer);
+    const auto run = [&](ID3D12CommandList* list)
+    {
+        if (exec)
+            exec(q, 1, &list);
+        else
+            q->ExecuteCommandLists(1, &list);
+    };
+    run(producer);
     if (pendingJobInfo.job)
     {
         // The network waits for the producer on this queue and the consumer waits for the network; a failed enqueue
@@ -663,9 +671,17 @@ void LmxxfBackend::SubmitOwnLists(ID3D12CommandQueue* q, ID3D12CommandList* prod
             SetStatus((std::string("lmxxf: EnqueueHip failed: ") + err).c_str());
         }
     }
-    q->ExecuteCommandLists(1, &consumer);
+    run(consumer);
     if (pendingJobInfo.job)
         api->table.Retire(session, pendingJobInfo.job);
+    pendingJobInfo = {};
+}
+
+void LmxxfBackend::CancelOwnLists()
+{
+    std::lock_guard lock(jobMutex);
+    if (pendingJobInfo.job && session)
+        api->table.CancelUnsubmitted(session, pendingJobInfo.job);
     pendingJobInfo = {};
 }
 

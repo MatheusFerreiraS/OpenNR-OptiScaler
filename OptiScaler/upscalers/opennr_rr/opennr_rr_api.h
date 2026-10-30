@@ -12,6 +12,18 @@
 //   RecordOutput(ctx, job, list)           on the second half: copies the result into frame.output
 // Cancel(ctx, job) drops a job whose list will not run (reset or released unexecuted).
 //
+// ABI 2 (OnrRrGetApi(2, &api2.v1), OnrRrApi2) adds a hop for the host on the denoised image:
+//   PrepareDenoised(ctx, job, edit, &image)     after RecordInputs: asks for the hop and names the shared buffer
+//                                               the image will be in, so the host can record its lists now
+//   between the halves, in place of Enqueue:
+//   EnqueueNetwork(ctx, job, queue, &exported)  runs the network; for a prepared job it stops at the denoised
+//                                               render-size image, leaves it in image.buffer (colour / exposure,
+//                                               the game's colour space) and sets exported; the queue waits for it
+//   the host edits the image on the same queue (its own lists), writing the result back into image.buffer
+//   EnqueuePost(ctx, job, queue, format)        reads the edit back (format = what the host wrote, 0 = no edit)
+//                                               and runs the temporal post and the downsample; the queue waits
+// Without PrepareDenoised (or exported = 0) EnqueueNetwork is Enqueue and EnqueuePost a no-op.
+//
 // Create returns at once; the weights and the kernels are built on a background thread. Until they are ready
 // (and after a failure) frames still go through Enqueue/RecordOutput and the output is the colour, scaled
 // bilinearly. GetInfo says which state the runtime is in and why.
@@ -24,6 +36,7 @@ extern "C" {
 #endif
 
 #define ONR_RR_ABI_VERSION 1
+#define ONR_RR_ABI_VERSION_2 2
 
 enum OnrRrResult {
     ONR_RR_OK = 0,
@@ -122,6 +135,35 @@ typedef struct OnrRrApi {
     int32_t (*GetLastError)(char* buffer, uint32_t chars);   // this thread's last error, UTF-8
 } OnrRrApi;
 
+// What the post does with the host's edit of the denoised image.
+enum OnrRrEdit {
+    ONR_RR_EDIT_OFF = 0,
+    ONR_RR_EDIT_LOOP = 1,      // the edit replaces the network's image: history and display both take it
+    ONR_RR_EDIT_DISPLAY = 2,   // history from the network's own image, only the displayed blend takes the edit
+};
+
+// The denoised image of one frame. buffer: ID3D12Resource* (a buffer in D3D12_RESOURCE_STATE_COMMON, left there),
+// the image at offset 0 as a placed footprint of format / width / height / row_pitch. The host writes its edit back
+// at offset 0 in a format of its choice with row pitch = width * texel bytes rounded up to 256 (no wider than the
+// export's texel). buffer is null when there is no hop for this job (edit OFF, network not ready).
+typedef struct OnrRrDenoisedImage {
+    uint32_t size;                 // sizeof(OnrRrDenoisedImage)
+    void* buffer;
+    uint32_t format;               // DXGI_FORMAT: R32G32B32A32_FLOAT
+    uint32_t width, height;        // this frame's render extent
+    uint32_t row_pitch;
+} OnrRrDenoisedImage;
+
+typedef struct OnrRrApi2 {
+    OnrRrApi v1;                   // abi_version = 2
+    int32_t (*PrepareDenoised)(void* context, void* job, uint32_t edit, OnrRrDenoisedImage* image);
+    // exported: 1 when the image is in the buffer and EnqueuePost runs the rest, 0 when the frame ran whole
+    int32_t (*EnqueueNetwork)(void* context, void* job, void* command_queue, uint32_t* exported);
+    // format: the DXGI_FORMAT of the edit in image.buffer, 0 when the host wrote none (the network's image is used)
+    int32_t (*EnqueuePost)(void* context, void* job, void* command_queue, uint32_t format);
+} OnrRrApi2;
+
+// abi_version 1 fills an OnrRrApi; 2 fills the OnrRrApi2 that api points to.
 typedef int32_t (*PFN_OnrRrGetApi)(uint32_t abi_version, OnrRrApi* api);
 // exported by OpenNrRrRuntime.dll
 #ifdef ONR_RR_BUILDING

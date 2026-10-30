@@ -131,6 +131,12 @@ class LmxxfBackend final : public Host
     // list and records only the inputs; RecordConsumer adds the outputs to a second list, and SubmitOwnLists executes
     // the producer, runs the network after it on the queue, then executes the consumer and retires the job.
     bool RecordConsumer(ID3D12GraphicsCommandList* consumer);
-    void SubmitOwnLists(ID3D12CommandQueue* q, ID3D12CommandList* producer, ID3D12CommandList* consumer);
+    // exec: how the lists reach the queue, for a caller inside a submission (the between slot holds the queue hook,
+    // so it passes the raw ExecuteCommandLists); null = the queue's own.
+    using ExecFn = void(WINAPI*)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
+    void SubmitOwnLists(ID3D12CommandQueue* q, ID3D12CommandList* producer, ID3D12CommandList* consumer,
+                        ExecFn exec = nullptr);
+    // Own lists that will not be submitted: the job recorded into them is dropped.
+    void CancelOwnLists();
 };
 } // namespace DlssNr::Backend

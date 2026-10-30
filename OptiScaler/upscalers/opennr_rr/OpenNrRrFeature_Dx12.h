@@ -19,6 +19,8 @@ bool Info(OnrRrInfo& info);
 // Whether the game's lists are OptiScaler's split proxies, set up at launch when an NR runtime that splits them or
 // OpenNR RR was enabled.
 bool SplitReady();
+// NrOnDenoised: what mochizuki on the denoised image is doing, or why it is not running. Empty while it is off.
+std::string DenoisedNrStatus();
 } // namespace OpenNrRr
 
 class OpenNrRrFeatureDx12 : public IFeature_Dx12
@@ -52,4 +54,7 @@ class OpenNrRrFeatureDx12 : public IFeature_Dx12
     void DropStaleJob();
     bool FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFrame& frame);
     void FallBack(const std::string& why);
+    // NrOnDenoised: mochizuki's lists for this job, run by the between slot from EnqueueNetwork to EnqueuePost
+    void RecordDenoisedNr(const NVSDK_NGX_Parameter& params, const OnrRrFrame& frame, void* job);
+    static int32_t Between(void* feature, void* job, void* queue);
 };

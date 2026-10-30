@@ -8,6 +8,10 @@
 #include <misc/IdentifyGpu.h>
 #include <imgui/ImGuiNotify.hpp>
 #include <dlssnr/backend/LmxxfEvaluateCut.h>
+#include <dlssnr/backend/LmxxfBackend.h>
+#include <dlssnr/backend/Selector.h>
+#include <dlssnr/amd/AmdPreSr.h>
+#include <dlssnr/submission/SubmissionTls.h>
 
 #include <atomic>
 #include <cmath>
@@ -22,6 +26,8 @@ namespace
 std::mutex s_mutex;
 HMODULE s_module = nullptr;
 OnrRrApi s_api {};
+// ABI 2 entry points (the denoised-image hop); null with a runtime that offers only ABI 1
+OnrRrApi2 s_api2 {};
 bool s_loadTried = false;
 bool s_checked = false;
 bool s_usable = false;
@@ -46,12 +52,98 @@ std::string RuntimeError()
     return text;
 }
 
-int32_t EnqueueThunk(void* context, void* job, void* queue)
+// mochizuki on the denoised image (NrOnDenoised): a session of its own on OptiScaler's lists, run between the
+// network and the post at the list's one split. Process lifetime, so a recreated feature keeps the network built.
+struct DenoisedNr
 {
-    const int32_t rc = s_api.Enqueue(context, job, queue);
-    if (rc != ONR_RR_OK)
-        s_enqueueRc.store(rc, std::memory_order_release);
-    return rc;
+    static constexpr int kSlots = 3;
+    struct Slot
+    {
+        ID3D12CommandAllocator* allocator = nullptr;
+        ID3D12GraphicsCommandList* producer = nullptr; // the image into `colour`, then mochizuki's inputs
+        ID3D12GraphicsCommandList* consumer = nullptr; // mochizuki's output back into the runtime's buffer
+        std::atomic<uint64_t> busy { 0 };              // fence value that frees the allocator
+    };
+
+    std::mutex mutex; // the armed job, between the render thread and the between slot
+    DlssNr::Backend::LmxxfBackend* mz = nullptr; // never destroyed, as the bridge's backend
+    bool broken = false;
+    ID3D12Device* device = nullptr;
+    ID3D12Fence* fence = nullptr;
+    HANDLE event = nullptr;
+    std::atomic<uint64_t> value { 0 };
+    Slot slots[kSlots];
+    int next = 0;
+    ID3D12Resource* colour = nullptr; // RGBA32F, render extent, what mochizuki reads
+    UINT width = 0, height = 0;
+    std::atomic<ID3D12CommandQueue*> queue { nullptr }; // the game's queue, learnt from the between slot
+    void* armedJob = nullptr;
+    int armedSlot = -1;
+    uint32_t armedFormat = 0;
+    std::string status;
+
+    bool Wait(uint64_t v)
+    {
+        if (v == 0 || fence->GetCompletedValue() >= v)
+            return true;
+        fence->SetEventOnCompletion(v, event);
+        return WaitForSingleObject(event, 2000) == WAIT_OBJECT_0;
+    }
+
+    void SetStatus(std::string s)
+    {
+        std::lock_guard lock(mutex);
+        status = std::move(s);
+    }
+};
+
+DenoisedNr& Denoised()
+{
+    static auto* d = new DenoisedNr();
+    return *d;
+}
+
+uint32_t EditFromConfig(std::string* why)
+{
+    const auto& cfg = *Config::Instance();
+    const auto mode = cfg.OpenNrRrNrOnDenoised.value_or_default();
+    const uint32_t edit = _stricmp(mode.c_str(), "loop") == 0      ? ONR_RR_EDIT_LOOP
+                          : _stricmp(mode.c_str(), "display") == 0 ? ONR_RR_EDIT_DISPLAY
+                                                                   : ONR_RR_EDIT_OFF;
+    why->clear();
+    if (edit == ONR_RR_EDIT_OFF)
+        return edit;
+    if (s_api2.PrepareDenoised == nullptr)
+        *why = "OpenNrRrRuntime.dll is too old for it (ABI 1)";
+    else if (DlssNr::Backend::ActiveKindFromConfig() != DlssNr::Backend::Kind::Mochizuki)
+        *why = "needs NrBackend=mochizuki";
+    else if (!cfg.DlssNrEnabled.value_or_default())
+        *why = "NR is off";
+    else if (DlssNr::Submission::g_rawExecuteCommandLists == nullptr)
+        *why = "the submission hooks are not armed";
+    return why->empty() ? edit : ONR_RR_EDIT_OFF;
+}
+
+void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
+                D3D12_RESOURCE_STATES after)
+{
+    D3D12_RESOURCE_BARRIER b {};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition = { resource, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, before, after };
+    list->ResourceBarrier(1, &b);
+}
+
+UINT TexelBytes(DXGI_FORMAT format)
+{
+    switch (format)
+    {
+    case DXGI_FORMAT_R32G32B32A32_FLOAT:
+        return 16;
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        return 8;
+    default:
+        return 4;
+    }
 }
 
 // Caller holds s_mutex.
@@ -82,10 +174,19 @@ bool Load()
     }
 
     auto getApi = reinterpret_cast<PFN_OnrRrGetApi>(GetProcAddress(module, "OnrRrGetApi"));
-    OnrRrApi api {};
-    const int32_t rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION, &api) : ONR_RR_FAILED;
+    OnrRrApi2 api2 {};
+    OnrRrApi& api = api2.v1;
+    // ABI 2 when the runtime has it, otherwise 1 (no NrOnDenoised)
+    int32_t rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION_2, &api) : ONR_RR_FAILED;
+    if (rc != ONR_RR_OK || api.abi_version != ONR_RR_ABI_VERSION_2 || !api2.PrepareDenoised || !api2.EnqueueNetwork ||
+        !api2.EnqueuePost)
+    {
+        api2 = {};
+        rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION, &api) : ONR_RR_FAILED;
+    }
 
-    if (rc != ONR_RR_OK || api.abi_version != ONR_RR_ABI_VERSION || !api.Check || !api.Create || !api.Destroy ||
+    if (rc != ONR_RR_OK || (api.abi_version != ONR_RR_ABI_VERSION && api.abi_version != ONR_RR_ABI_VERSION_2) ||
+        !api.Check || !api.Create || !api.Destroy ||
         !api.SetMode || !api.RecordInputs || !api.Enqueue || !api.RecordOutput || !api.Cancel || !api.GetInfo ||
         !api.GetLastError)
     {
@@ -98,7 +199,8 @@ bool Load()
 
     s_module = module;
     s_api = api;
-    LOG_INFO("OpenNR RR: runtime loaded from {}", wstring_to_string(path.wstring()));
+    s_api2 = api2;
+    LOG_INFO("OpenNR RR: runtime loaded from {} (ABI {})", wstring_to_string(path.wstring()), api.abi_version);
     return true;
 }
 
@@ -309,6 +411,19 @@ bool SplitReady()
     return DlssNr::Backend::SubmissionHooksWanted() && DlssNr::Submission::Hooks::IsArmed() &&
            DlssNr::Submission::Hooks::ProxyWrapEnabled();
 }
+
+std::string DenoisedNrStatus()
+{
+    std::string why;
+    const auto mode = Config::Instance()->OpenNrRrNrOnDenoised.value_or_default();
+    if (_stricmp(mode.c_str(), "loop") != 0 && _stricmp(mode.c_str(), "display") != 0)
+        return {};
+    if (EditFromConfig(&why) == ONR_RR_EDIT_OFF)
+        return "not running: " + why;
+    auto& d = Denoised();
+    std::lock_guard lock(d.mutex);
+    return d.status;
+}
 } // namespace OpenNrRr
 
 OpenNrRrFeatureDx12::OpenNrRrFeatureDx12(unsigned int InHandleId, NVSDK_NGX_Parameter* InParameters)
@@ -443,7 +558,7 @@ void OpenNrRrFeatureDx12::DropStaleJob()
     {
         auto& pending = LmxxfCut::Pending();
         std::lock_guard lock(pending.mutex);
-        if (pending.job == _job && pending.session == _context && pending.targetList == _jobList)
+        if (pending.job == _job && pending.session == this && pending.targetList == _jobList)
         {
             stillArmed = true;
             pending.session = nullptr;
@@ -458,6 +573,19 @@ void OpenNrRrFeatureDx12::DropStaleJob()
     if (stillArmed)
     {
         s_api.Cancel(_context, _job);
+
+        auto& d = Denoised();
+        bool hop = false;
+        {
+            std::lock_guard lock(d.mutex);
+            if (d.armedJob == _job)
+            {
+                hop = true;
+                d.armedJob = nullptr;
+            }
+        }
+        if (hop)
+            d.mz->CancelOwnLists();
 
         static uint32_t dropped = 0;
         if (++dropped <= 10 || dropped % 300 == 0)
@@ -739,7 +867,10 @@ bool OpenNrRrFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandL
         return false;
     }
 
-    LmxxfCut::SetPendingEnqueue(_context, job, &EnqueueThunk, s_api.GetLastError, list);
+    if (s_api2.PrepareDenoised != nullptr)
+        RecordDenoisedNr(*InParameters, frame, job);
+
+    LmxxfCut::SetPendingEnqueue(this, job, &OpenNrRrFeatureDx12::Between, s_api.GetLastError, list);
     LmxxfCut::ArmBetweenSlot();
     _job = job;
     _jobList = list;
@@ -750,4 +881,292 @@ bool OpenNrRrFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandL
     _hasOutput = true;
     _frameCount++;
     return true;
+}
+
+// The between slot (submit thread). With ABI 2 the network may stop at the denoised image: mochizuki's lists run
+// there on the raw queue (this is inside the queue hook), then the post.
+int32_t OpenNrRrFeatureDx12::Between(void* feature, void* job, void* queue)
+{
+    auto* self = static_cast<OpenNrRrFeatureDx12*>(feature);
+    auto* q = static_cast<ID3D12CommandQueue*>(queue);
+    int32_t rc;
+
+    if (s_api2.EnqueueNetwork == nullptr)
+    {
+        rc = s_api.Enqueue(self->_context, job, queue);
+    }
+    else
+    {
+        auto& d = Denoised();
+        if (d.queue.load(std::memory_order_acquire) == nullptr)
+        {
+            q->AddRef();
+            ID3D12CommandQueue* none = nullptr;
+            if (!d.queue.compare_exchange_strong(none, q))
+                q->Release();
+        }
+
+        int slot = -1;
+        uint32_t format = 0;
+        {
+            std::lock_guard lock(d.mutex);
+            if (d.armedJob == job)
+            {
+                slot = d.armedSlot;
+                format = d.armedFormat;
+                d.armedJob = nullptr;
+            }
+        }
+
+        uint32_t exported = 0;
+        rc = s_api2.EnqueueNetwork(self->_context, job, queue, &exported);
+        uint32_t edited = 0;
+
+        if (slot >= 0)
+        {
+            auto& s = d.slots[slot];
+            if (rc == ONR_RR_OK && exported)
+            {
+                d.mz->SubmitOwnLists(q, s.producer, s.consumer, DlssNr::Submission::g_rawExecuteCommandLists);
+                const uint64_t v = d.value.fetch_add(1) + 1;
+                q->Signal(d.fence, v);
+                s.busy.store(v, std::memory_order_release);
+                edited = format;
+            }
+            else
+            {
+                d.mz->CancelOwnLists();
+            }
+        }
+
+        if (rc == ONR_RR_OK)
+            rc = s_api2.EnqueuePost(self->_context, job, queue, edited);
+    }
+
+    if (rc != ONR_RR_OK)
+        s_enqueueRc.store(rc, std::memory_order_release);
+    return rc;
+}
+
+// NrOnDenoised (render thread): asks the runtime for the denoised image of this job and records mochizuki on it into
+// OptiScaler's own lists: the image into a texture, mochizuki's inputs (producer), and its output back into the
+// runtime's buffer (consumer). The between slot runs them. Any refusal leaves the frame with the network's image.
+void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, const OnrRrFrame& frame, void* job)
+{
+    auto& d = Denoised();
+    std::string why;
+    const uint32_t edit = EditFromConfig(&why);
+
+    static uint32_t loggedEdit = ONR_RR_EDIT_OFF;
+    static std::string loggedWhy;
+    if (edit != loggedEdit || why != loggedWhy)
+    {
+        loggedEdit = edit;
+        loggedWhy = why;
+        if (edit != ONR_RR_EDIT_OFF)
+            LOG_INFO("OpenNR RR: mochizuki on the denoised image, mode {}",
+                     edit == ONR_RR_EDIT_LOOP ? "loop" : "display");
+        else if (!why.empty())
+            LOG_INFO("OpenNR RR: mochizuki on the denoised image is not running: {}", why);
+    }
+
+    if (edit == ONR_RR_EDIT_OFF || d.broken)
+        return;
+
+    if (d.mz == nullptr)
+    {
+        // Its session is made on the queue that runs the game's list, known after the first between slot.
+        ID3D12CommandQueue* q = d.queue.load(std::memory_order_acquire);
+        if (q == nullptr)
+        {
+            d.SetStatus("waiting for the game's queue");
+            return;
+        }
+
+        try
+        {
+            d.device = Device;
+            d.device->AddRef();
+            if (FAILED(Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&d.fence))))
+                throw std::runtime_error("CreateFence");
+            d.event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+
+            // Native lists: the between slot executes them on the raw queue.
+            DlssNr::Submission::SuppressProxyWrap native;
+            for (auto& s : d.slots)
+            {
+                if (FAILED(Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&s.allocator))) ||
+                    FAILED(Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, s.allocator, nullptr,
+                                                     IID_PPV_ARGS(&s.producer))) ||
+                    FAILED(Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, s.allocator, nullptr,
+                                                     IID_PPV_ARGS(&s.consumer))))
+                    throw std::runtime_error("command lists");
+                s.producer->Close();
+                s.consumer->Close();
+            }
+        }
+        catch (const std::exception& e)
+        {
+            LOG_ERROR("OpenNR RR: mochizuki on the denoised image: {} failed", e.what());
+            d.SetStatus(std::string("failed: ") + e.what());
+            d.broken = true;
+            return;
+        }
+
+        d.mz = new DlssNr::Backend::LmxxfBackend(d.device, q, Util::DllPath().parent_path(), L"MochizukiNrRuntime.dll",
+                                                 true);
+        LOG_INFO("OpenNR RR: mochizuki session for the denoised image on queue {:p}", (void*) q);
+    }
+    else if (d.device != Device)
+    {
+        d.SetStatus("the game's device changed; restart the game");
+        return;
+    }
+
+    OnrRrDenoisedImage image {};
+    image.size = sizeof(image);
+
+    if (s_api2.PrepareDenoised(_context, job, edit, &image) != ONR_RR_OK || image.buffer == nullptr)
+    {
+        d.SetStatus("waiting for the network");
+        return;
+    }
+
+    auto* buffer = static_cast<ID3D12Resource*>(image.buffer);
+    const int slotIndex = d.next;
+    auto& slot = d.slots[slotIndex];
+
+    if (!d.Wait(slot.busy.load(std::memory_order_acquire)))
+    {
+        d.SetStatus("the previous frames' lists are still running; frame skipped");
+        return;
+    }
+
+    if (d.colour == nullptr || d.width != image.width || d.height != image.height)
+    {
+        for (auto& s : d.slots)
+        {
+            if (!d.Wait(s.busy.load(std::memory_order_acquire)))
+            {
+                d.SetStatus("the previous frames' lists are still running; frame skipped");
+                return;
+            }
+        }
+
+        if (d.colour != nullptr)
+            d.colour->Release();
+        d.colour = nullptr;
+
+        D3D12_HEAP_PROPERTIES heap {};
+        heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC desc {};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width = image.width;
+        desc.Height = image.height;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT(image.format);
+        desc.SampleDesc.Count = 1;
+
+        if (FAILED(Device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr,
+                                                   IID_PPV_ARGS(&d.colour))))
+        {
+            d.SetStatus("the colour texture could not be made");
+            return;
+        }
+
+        d.width = image.width;
+        d.height = image.height;
+    }
+
+    D3D12_TEXTURE_COPY_LOCATION bufferLoc { buffer, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
+    bufferLoc.PlacedFootprint = { 0, { DXGI_FORMAT(image.format), image.width, image.height, 1, image.row_pitch } };
+    D3D12_TEXTURE_COPY_LOCATION colourLoc { d.colour, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
+
+    slot.allocator->Reset();
+    slot.producer->Reset(slot.allocator, nullptr);
+    Transition(slot.producer, buffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Transition(slot.producer, d.colour, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+    slot.producer->CopyTextureRegion(&colourLoc, 0, 0, 0, &bufferLoc, nullptr);
+    Transition(slot.producer, d.colour, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Transition(slot.producer, buffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+
+    // The denoised image stands where the game's colour would before Super Resolution: same grid, same jitter, same
+    // colour space; the guides are the game's.
+    AmdPreSr::Frame f {};
+    f.colour = d.colour;
+    f.colourState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    f.width = image.width;
+    f.height = image.height;
+    f.motion = static_cast<ID3D12Resource*>(frame.motion.resource);
+    f.motionState = D3D12_RESOURCE_STATES(frame.motion.state);
+    f.motionScaleX = frame.mv_scale_x;
+    f.motionScaleY = frame.mv_scale_y;
+    if (!LowResMV())
+    {
+        f.motionWidth = DisplayWidth();
+        f.motionHeight = DisplayHeight();
+    }
+    f.depth = static_cast<ID3D12Resource*>(frame.depth.resource);
+    f.depthState = D3D12_RESOURCE_STATES(frame.depth.state);
+    f.depthInverted = DepthInverted();
+    f.jitterX = frame.jitter_x;
+    f.jitterY = frame.jitter_y;
+    f.reset = (frame.flags & ONR_RR_FRAME_RESET) != 0;
+
+    // NGX applies the exposure texture to HDR input only; the image keeps the game's input's encoding.
+    if (IsHdr())
+    {
+        ID3D12Resource* exposure = nullptr;
+        if (TryGetNGXVoidPointer(params, NVSDK_NGX_Parameter_ExposureTexture, exposure))
+        {
+            f.exposure = exposure;
+            const auto& cfg = *Config::Instance();
+            if (cfg.ExposureResourceBarrier.has_value())
+                f.exposureState = D3D12_RESOURCE_STATES(cfg.ExposureResourceBarrier.value());
+            params.Get(NVSDK_NGX_Parameter_DLSS_Pre_Exposure, &f.preExposure);
+            params.Get(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, &f.exposureScale);
+        }
+    }
+
+    ID3D12Resource* result = d.mz->Record(slot.producer, f, AmdPreSr::Settings {});
+    slot.producer->Close();
+
+    if (result == nullptr)
+    {
+        d.SetStatus(d.mz->Status());
+        return;
+    }
+
+    slot.consumer->Reset(slot.allocator, nullptr);
+    if (!d.mz->RecordConsumer(slot.consumer))
+    {
+        slot.consumer->Close();
+        d.SetStatus(d.mz->Status());
+        return;
+    }
+
+    // mochizuki's output (the colour's format) back into the buffer, at offset 0 with the pitch the runtime expects
+    const DXGI_FORMAT format = result->GetDesc().Format;
+    D3D12_TEXTURE_COPY_LOCATION outLoc { buffer, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
+    outLoc.PlacedFootprint = { 0,
+                               { format, image.width, image.height, 1, (image.width * TexelBytes(format) + 255) & ~255u } };
+    D3D12_TEXTURE_COPY_LOCATION resultLoc { result, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
+    const D3D12_BOX box { 0, 0, 0, image.width, image.height, 1 };
+    Transition(slot.consumer, result, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    Transition(slot.consumer, buffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+    slot.consumer->CopyTextureRegion(&outLoc, 0, 0, 0, &resultLoc, &box);
+    Transition(slot.consumer, buffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+    Transition(slot.consumer, result, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    slot.consumer->Close();
+
+    {
+        std::lock_guard lock(d.mutex);
+        d.armedJob = job;
+        d.armedSlot = slotIndex;
+        d.armedFormat = uint32_t(format);
+        d.status = std::string(edit == ONR_RR_EDIT_LOOP ? "loop" : "display") + ": " + d.mz->Status();
+    }
+    d.next = (d.next + 1) % DenoisedNr::kSlots;
 }
