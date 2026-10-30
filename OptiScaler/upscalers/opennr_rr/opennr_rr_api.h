@@ -124,6 +124,9 @@ typedef struct OnrRrApi {
 
 typedef int32_t (*PFN_OnrRrGetApi)(uint32_t abi_version, OnrRrApi* api);
 // exported by OpenNrRrRuntime.dll
+#ifdef ONR_RR_BUILDING
+__declspec(dllexport)
+#endif
 int32_t OnrRrGetApi(uint32_t abi_version, OnrRrApi* api);
 
 #ifdef __cplusplus
