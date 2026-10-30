@@ -56,5 +56,7 @@ class OpenNrRrFeatureDx12 : public IFeature_Dx12
     void FallBack(const std::string& why);
     // NrOnDenoised: mochizuki's lists for this job, run by the between slot from EnqueueNetwork to EnqueuePost
     void RecordDenoisedNr(const NVSDK_NGX_Parameter& params, const OnrRrFrame& frame, void* job);
+    // the hop's GPU timeline of a timed frame of this slot into the log (render thread)
+    void LogHopTiming(int slotIndex);
     static int32_t Between(void* feature, void* job, void* queue);
 };

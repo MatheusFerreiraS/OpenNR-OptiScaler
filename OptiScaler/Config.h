@@ -1093,7 +1093,7 @@ class Config
     CustomOptional<bool> OpenNrRrEnabled { false };
     CustomOptional<std::string> OpenNrRrMode { "fast" }; // fast or faithful
     // mochizuki NR on the denoised render-size image, between the network and its temporal post: off, loop (the
-    // history takes the NR) or display (the network keeps its own history, the shown image has one with the NR)
+    // history takes the NR) or display (the network keeps its own history, the shown image adds the NR as a delta)
     CustomOptional<std::string> OpenNrRrNrOnDenoised { "off" };
 
     // FSR-RR

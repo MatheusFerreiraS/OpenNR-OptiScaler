@@ -24,6 +24,9 @@
 //                                               and runs the temporal post and the downsample; the queue waits
 // Without PrepareDenoised (or exported = 0) EnqueueNetwork is Enqueue and EnqueuePost a no-op.
 //
+// ABI 3 (OnrRrGetApi(3, &api3.v2.v1), OnrRrApi3) adds GetHopTiming: when the network and the post of a hop ran on the
+// GPU, in QueryPerformanceCounter ticks, so the host can place its own work between them.
+//
 // Create returns at once; the weights and the kernels are built on a background thread. Until they are ready
 // (and after a failure) frames still go through Enqueue/RecordOutput and the output is the colour, scaled
 // bilinearly. GetInfo says which state the runtime is in and why.
@@ -37,6 +40,7 @@ extern "C" {
 
 #define ONR_RR_ABI_VERSION 1
 #define ONR_RR_ABI_VERSION_2 2
+#define ONR_RR_ABI_VERSION_3 3
 
 enum OnrRrResult {
     ONR_RR_OK = 0,
@@ -139,17 +143,19 @@ typedef struct OnrRrApi {
 enum OnrRrEdit {
     ONR_RR_EDIT_OFF = 0,
     ONR_RR_EDIT_LOOP = 1,      // the edit replaces the network's image: history and display both take it
-    ONR_RR_EDIT_DISPLAY = 2,   // history from the network's own image, only the displayed blend takes the edit
+    ONR_RR_EDIT_DISPLAY = 2,   // the network keeps its own history; the shown image adds the edit (a delta with a fast history)
 };
 
 // The denoised image of one frame. buffer: ID3D12Resource* (a buffer in D3D12_RESOURCE_STATE_COMMON, left there),
 // the image at offset 0 as a placed footprint of format / width / height / row_pitch. The host writes its edit back
 // at offset 0 in a format of its choice with row pitch = width * texel bytes rounded up to 256 (no wider than the
 // export's texel). buffer is null when there is no hop for this job (edit OFF, network not ready).
+// format on the way in: DXGI_FORMAT_R16G16B16A16_FLOAT asks for a half-float export (half the bytes to copy; the
+// colour over the exposure saturates at 65504); anything else gets R32G32B32A32_FLOAT.
 typedef struct OnrRrDenoisedImage {
     uint32_t size;                 // sizeof(OnrRrDenoisedImage)
     void* buffer;
-    uint32_t format;               // DXGI_FORMAT: R32G32B32A32_FLOAT
+    uint32_t format;               // DXGI_FORMAT: R32G32B32A32_FLOAT, or R16G16B16A16_FLOAT when asked for
     uint32_t width, height;        // this frame's render extent
     uint32_t row_pitch;
 } OnrRrDenoisedImage;
@@ -163,7 +169,24 @@ typedef struct OnrRrApi2 {
     int32_t (*EnqueuePost)(void* context, void* job, void* command_queue, uint32_t format);
 } OnrRrApi2;
 
-// abi_version 1 fills an OnrRrApi; 2 fills the OnrRrApi2 that api points to.
+// GPU timing of one hop. hop: 1 for the first EnqueuePost that ran a post after an export, 2 for the next, and so on.
+// The times are QueryPerformanceCounter ticks: the first dispatch's start and the last dispatch's end of the
+// network's submit and of the post's (the waits on the shared fence before them not included).
+typedef struct OnrRrHopTiming {
+    uint32_t size;                 // sizeof(OnrRrHopTiming)
+    uint32_t reserved;
+    uint64_t hop;
+    uint64_t net_begin, net_end, post_begin, post_end;
+} OnrRrHopTiming;
+
+typedef struct OnrRrApi3 {
+    OnrRrApi2 v2;                  // v2.v1.abi_version = 3
+    // the timing of hop hop once both its submits finished and were read back (a few frames later): ONR_RR_OK;
+    // ONR_RR_FAILED while it is not known (yet, or any more: the last 16 are kept, or no calibrated clock)
+    int32_t (*GetHopTiming)(void* context, uint64_t hop, OnrRrHopTiming* timing);
+} OnrRrApi3;
+
+// abi_version 1 fills an OnrRrApi; 2 fills the OnrRrApi2 that api points to; 3 the OnrRrApi3.
 typedef int32_t (*PFN_OnrRrGetApi)(uint32_t abi_version, OnrRrApi* api);
 // exported by OpenNrRrRuntime.dll
 #ifdef ONR_RR_BUILDING

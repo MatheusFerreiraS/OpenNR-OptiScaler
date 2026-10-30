@@ -9,6 +9,7 @@
 #include <imgui/ImGuiNotify.hpp>
 #include <dlssnr/backend/LmxxfEvaluateCut.h>
 #include <dlssnr/backend/LmxxfBackend.h>
+#include <dlssnr/backend/mochizuki_runtime/MochizukiNrControls.h>
 #include <dlssnr/backend/Selector.h>
 #include <dlssnr/amd/AmdPreSr.h>
 #include <dlssnr/submission/SubmissionTls.h>
@@ -28,6 +29,8 @@ HMODULE s_module = nullptr;
 OnrRrApi s_api {};
 // ABI 2 entry points (the denoised-image hop); null with a runtime that offers only ABI 1
 OnrRrApi2 s_api2 {};
+// ABI 3: the hop's GPU timing; null with an older runtime
+decltype(OnrRrApi3::GetHopTiming) s_getHopTiming = nullptr;
 bool s_loadTried = false;
 bool s_checked = false;
 bool s_usable = false;
@@ -62,7 +65,24 @@ struct DenoisedNr
         ID3D12CommandAllocator* allocator = nullptr;
         ID3D12GraphicsCommandList* producer = nullptr; // the image into `colour`, then mochizuki's inputs
         ID3D12GraphicsCommandList* consumer = nullptr; // mochizuki's output back into the runtime's buffer
+        // a timestamp before EnqueueNetwork and one after EnqueuePost (with the slot's readback), on timed frames
+        ID3D12GraphicsCommandList* stampPre = nullptr;
+        ID3D12GraphicsCommandList* stampPost = nullptr;
         std::atomic<uint64_t> busy { 0 };              // fence value that frees the allocator
+        bool timed = false;
+        uint64_t hop = 0; // the runtime's hop number of the timed frame, 0 until the between slot ran it
+    };
+
+    // The hop's timeline on the GPU, every kTimedEvery frames, logged every kTimedLog of them: D3D12 timestamps around
+    // OptiScaler's lists (queries kStamps per slot: before EnqueueNetwork, producer start / end, consumer start / end,
+    // after EnqueuePost) and the runtime's own (ABI 3), all in QueryPerformanceCounter ticks.
+    static constexpr int kStamps = 6;
+    static constexpr int kTimedEvery = 16;
+    static constexpr int kTimedLog = 20;
+    struct Sample
+    {
+        uint64_t hop = 0;
+        uint64_t qpc[kStamps] {};
     };
 
     std::mutex mutex; // the armed job, between the render thread and the between slot
@@ -81,6 +101,15 @@ struct DenoisedNr
     int armedSlot = -1;
     uint32_t armedFormat = 0;
     std::string status;
+    ID3D12QueryHeap* stamps = nullptr;
+    ID3D12Resource* readback = nullptr;
+    std::atomic<uint64_t> hops { 0 };          // exported hops, counted as the runtime context counts them
+    std::atomic<void*> hopContext { nullptr }; // the context they count for
+    uint64_t frames = 0;
+    std::vector<Sample> pending; // read back, waiting for the runtime's half (render thread)
+    double sum[10] {};
+    int summed = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
 
     bool Wait(uint64_t v)
     {
@@ -174,18 +203,26 @@ bool Load()
     }
 
     auto getApi = reinterpret_cast<PFN_OnrRrGetApi>(GetProcAddress(module, "OnrRrGetApi"));
-    OnrRrApi2 api2 {};
+    OnrRrApi3 api3 {};
+    OnrRrApi2& api2 = api3.v2;
     OnrRrApi& api = api2.v1;
-    // ABI 2 when the runtime has it, otherwise 1 (no NrOnDenoised)
-    int32_t rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION_2, &api) : ONR_RR_FAILED;
-    if (rc != ONR_RR_OK || api.abi_version != ONR_RR_ABI_VERSION_2 || !api2.PrepareDenoised || !api2.EnqueueNetwork ||
+    // ABI 3 or 2 when the runtime has it, otherwise 1 (no NrOnDenoised)
+    int32_t rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION_3, &api) : ONR_RR_FAILED;
+    if (rc != ONR_RR_OK || api.abi_version != ONR_RR_ABI_VERSION_3 || !api3.GetHopTiming)
+    {
+        api3 = {};
+        rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION_2, &api) : ONR_RR_FAILED;
+    }
+    if (rc != ONR_RR_OK || api.abi_version < ONR_RR_ABI_VERSION_2 || !api2.PrepareDenoised || !api2.EnqueueNetwork ||
         !api2.EnqueuePost)
     {
-        api2 = {};
+        api3 = {};
         rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION, &api) : ONR_RR_FAILED;
     }
 
-    if (rc != ONR_RR_OK || (api.abi_version != ONR_RR_ABI_VERSION && api.abi_version != ONR_RR_ABI_VERSION_2) ||
+    if (rc != ONR_RR_OK ||
+        (api.abi_version != ONR_RR_ABI_VERSION && api.abi_version != ONR_RR_ABI_VERSION_2 &&
+         api.abi_version != ONR_RR_ABI_VERSION_3) ||
         !api.Check || !api.Create || !api.Destroy ||
         !api.SetMode || !api.RecordInputs || !api.Enqueue || !api.RecordOutput || !api.Cancel || !api.GetInfo ||
         !api.GetLastError)
@@ -200,6 +237,7 @@ bool Load()
     s_module = module;
     s_api = api;
     s_api2 = api2;
+    s_getHopTiming = api3.GetHopTiming;
     LOG_INFO("OpenNR RR: runtime loaded from {} (ABI {})", wstring_to_string(path.wstring()), api.abi_version);
     return true;
 }
@@ -918,20 +956,33 @@ int32_t OpenNrRrFeatureDx12::Between(void* feature, void* job, void* queue)
             }
         }
 
+        const auto exec = DlssNr::Submission::g_rawExecuteCommandLists;
+        const auto run = [&](ID3D12GraphicsCommandList* list)
+        {
+            ID3D12CommandList* l = list;
+            exec(q, 1, &l);
+        };
+        auto* s = slot >= 0 ? &d.slots[slot] : nullptr;
+        const bool timed = s != nullptr && s->timed;
+        if (timed)
+            run(s->stampPre);
+
         uint32_t exported = 0;
         rc = s_api2.EnqueueNetwork(self->_context, job, queue, &exported);
         uint32_t edited = 0;
+        if (d.hopContext.exchange(self->_context) != self->_context)
+            d.hops = 0;
+        if (rc == ONR_RR_OK && exported)
+            ++d.hops; // the runtime numbers the hops its EnqueuePost runs the same way
 
-        if (slot >= 0)
+        bool ran = false;
+        if (s != nullptr)
         {
-            auto& s = d.slots[slot];
             if (rc == ONR_RR_OK && exported)
             {
-                d.mz->SubmitOwnLists(q, s.producer, s.consumer, DlssNr::Submission::g_rawExecuteCommandLists);
-                const uint64_t v = d.value.fetch_add(1) + 1;
-                q->Signal(d.fence, v);
-                s.busy.store(v, std::memory_order_release);
+                d.mz->SubmitOwnLists(q, s->producer, s->consumer, exec);
                 edited = format;
+                ran = true;
             }
             else
             {
@@ -941,11 +992,125 @@ int32_t OpenNrRrFeatureDx12::Between(void* feature, void* job, void* queue)
 
         if (rc == ONR_RR_OK)
             rc = s_api2.EnqueuePost(self->_context, job, queue, edited);
+
+        // the allocator is free once whatever of the slot ran is done
+        if (ran || timed)
+        {
+            if (ran && timed)
+            {
+                run(s->stampPost);
+                s->hop = d.hops;
+            }
+            const uint64_t v = d.value.fetch_add(1) + 1;
+            q->Signal(d.fence, v);
+            s->busy.store(v, std::memory_order_release);
+        }
     }
 
     if (rc != ONR_RR_OK)
         s_enqueueRc.store(rc, std::memory_order_release);
     return rc;
+}
+
+// A timed frame of this slot, its lists done (render thread): its timestamps into QueryPerformanceCounter ticks, then
+// with the runtime's half (a few frames later, ABI 3) into the sums; every kTimedLog frames a line in the log.
+void OpenNrRrFeatureDx12::LogHopTiming(int slotIndex)
+{
+    auto& d = Denoised();
+    auto& slot = d.slots[slotIndex];
+    ID3D12CommandQueue* q = d.queue.load(std::memory_order_acquire);
+
+    if (slot.timed && slot.hop != 0 && q != nullptr)
+    {
+        UINT64 frequency = 0, gpu = 0, cpu = 0;
+        LARGE_INTEGER qpf {};
+        uint64_t* ts = nullptr;
+        const D3D12_RANGE range { slotIndex * DenoisedNr::kStamps * sizeof(uint64_t),
+                                  (slotIndex + 1) * DenoisedNr::kStamps * sizeof(uint64_t) };
+
+        if (SUCCEEDED(q->GetTimestampFrequency(&frequency)) && SUCCEEDED(q->GetClockCalibration(&gpu, &cpu)) &&
+            QueryPerformanceFrequency(&qpf) && SUCCEEDED(d.readback->Map(0, &range, reinterpret_cast<void**>(&ts))))
+        {
+            DenoisedNr::Sample sample { slot.hop };
+            const double k = double(qpf.QuadPart) / double(frequency);
+            for (int i = 0; i < DenoisedNr::kStamps; ++i)
+            {
+                const uint64_t t = ts[slotIndex * DenoisedNr::kStamps + i];
+                sample.qpc[i] = uint64_t(int64_t(cpu) + int64_t(double(int64_t(t - gpu)) * k));
+            }
+            const D3D12_RANGE none { 0, 0 };
+            d.readback->Unmap(0, &none);
+            d.pending.push_back(sample);
+        }
+    }
+    slot.timed = false;
+    if (d.hopContext.load() != _context)
+        d.pending.clear();
+
+    LARGE_INTEGER qpf {};
+    QueryPerformanceFrequency(&qpf);
+    const double ms = 1000.0 / double(qpf.QuadPart);
+    auto at = [&](uint64_t a, uint64_t b) { return double(int64_t(b - a)) * ms; };
+
+    for (auto it = d.pending.begin(); it != d.pending.end();)
+    {
+        const uint64_t* t = it->qpc;
+        OnrRrHopTiming h {};
+        h.size = sizeof(h);
+        const bool runtime = s_getHopTiming != nullptr && s_getHopTiming(_context, it->hop, &h) == ONR_RR_OK;
+
+        if (!runtime && s_getHopTiming != nullptr)
+        {
+            // not read back by the runtime yet; dropped once it never will be
+            if (it->hop + 12 > d.hops)
+                ++it;
+            else
+                it = d.pending.erase(it);
+            continue;
+        }
+
+        if (runtime)
+        {
+            // queue -> network, network, -> producer, producer, mochizuki, consumer, -> post, post, -> queue
+            const double v[9] = { at(t[0], h.net_begin),  at(h.net_begin, h.net_end),   at(h.net_end, t[1]),
+                                  at(t[1], t[2]),         at(t[2], t[3]),               at(t[3], t[4]),
+                                  at(t[4], h.post_begin), at(h.post_begin, h.post_end), at(h.post_end, t[5]) };
+            for (int i = 0; i < 9; ++i)
+                d.sum[i] += v[i];
+        }
+        else
+        {
+            // without ABI 3: the runtime's halves with their hops, from the D3D12 side
+            const double v[9] = { 0, at(t[0], t[1]), 0, at(t[1], t[2]), at(t[2], t[3]), at(t[3], t[4]), 0, at(t[4], t[5]),
+                                  0 };
+            for (int i = 0; i < 9; ++i)
+                d.sum[i] += v[i];
+        }
+        d.sum[9] += at(t[0], t[5]);
+        ++d.summed;
+        it = d.pending.erase(it);
+    }
+
+    if (d.summed < DenoisedNr::kTimedLog)
+        return;
+
+    const double n = d.summed;
+    MochizukiNrInfo mz {};
+    const bool mzInfo = DlssNr::Backend::LmxxfBackend::MochizukiInfo(mz);
+    if (s_getHopTiming != nullptr)
+        LOG_INFO("OpenNR RR: hop timeline on the GPU, mean of {} frames (ms): queue -> network {:.3f} | network {:.3f} | "
+                 "-> producer {:.3f} | producer {:.3f} | mochizuki {:.3f} (its network {:.3f}) | consumer {:.3f} | -> post "
+                 "{:.3f} | post {:.3f} | -> queue {:.3f} | total {:.3f}",
+                 d.summed, d.sum[0] / n, d.sum[1] / n, d.sum[2] / n, d.sum[3] / n, d.sum[4] / n,
+                 mzInfo ? mz.gpu_ms_median : 0.f, d.sum[5] / n, d.sum[6] / n, d.sum[7] / n, d.sum[8] / n, d.sum[9] / n);
+    else
+        LOG_INFO("OpenNR RR: hop timeline on the GPU, mean of {} frames (ms; a runtime without ABI 3, its halves with "
+                 "their hops): network {:.3f} | producer {:.3f} | mochizuki {:.3f} (its network {:.3f}) | consumer {:.3f} "
+                 "| post {:.3f} | total {:.3f}",
+                 d.summed, d.sum[1] / n, d.sum[3] / n, d.sum[4] / n, mzInfo ? mz.gpu_ms_median : 0.f, d.sum[5] / n,
+                 d.sum[7] / n, d.sum[9] / n);
+    std::fill(std::begin(d.sum), std::end(d.sum), 0.0);
+    d.summed = 0;
 }
 
 // NrOnDenoised (render thread): asks the runtime for the denoised image of this job and records mochizuki on it into
@@ -1005,7 +1170,27 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
                                                      IID_PPV_ARGS(&s.consumer))))
                     throw std::runtime_error("command lists");
                 s.consumer->Close();
+                for (auto** l : { &s.stampPre, &s.stampPost })
+                {
+                    if (FAILED(Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, s.allocator, nullptr,
+                                                         IID_PPV_ARGS(l))))
+                        throw std::runtime_error("command lists");
+                    (*l)->Close();
+                }
             }
+
+            D3D12_QUERY_HEAP_DESC qd { D3D12_QUERY_HEAP_TYPE_TIMESTAMP, DenoisedNr::kSlots * DenoisedNr::kStamps, 0 };
+            D3D12_HEAP_PROPERTIES rh { D3D12_HEAP_TYPE_READBACK };
+            D3D12_RESOURCE_DESC rd {};
+            rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            rd.Width = DenoisedNr::kSlots * DenoisedNr::kStamps * sizeof(uint64_t);
+            rd.Height = rd.DepthOrArraySize = rd.MipLevels = 1;
+            rd.SampleDesc.Count = 1;
+            rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            if (FAILED(Device->CreateQueryHeap(&qd, IID_PPV_ARGS(&d.stamps))) ||
+                FAILED(Device->CreateCommittedResource(&rh, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                       nullptr, IID_PPV_ARGS(&d.readback))))
+                throw std::runtime_error("timestamp queries");
         }
         catch (const std::exception& e)
         {
@@ -1027,6 +1212,8 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
 
     OnrRrDenoisedImage image {};
     image.size = sizeof(image);
+    // Half floats: half the bytes for every copy of the hop, and a format mochizuki takes as a game's colour.
+    image.format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
     if (s_api2.PrepareDenoised(_context, job, edit, &image) != ONR_RR_OK || image.buffer == nullptr)
     {
@@ -1043,8 +1230,9 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
         d.SetStatus("the previous frames' lists are still running; frame skipped");
         return;
     }
+    LogHopTiming(slotIndex);
 
-    if (d.colour == nullptr || d.width != image.width || d.height != image.height)
+    if (d.colour == nullptr || d.width != image.width || d.height != image.height || d.format != DXGI_FORMAT(image.format))
     {
         for (auto& s : d.slots)
         {
@@ -1080,6 +1268,7 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
 
         d.width = image.width;
         d.height = image.height;
+        d.format = DXGI_FORMAT(image.format);
     }
 
     D3D12_TEXTURE_COPY_LOCATION bufferLoc { buffer, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
@@ -1087,7 +1276,12 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
     D3D12_TEXTURE_COPY_LOCATION colourLoc { d.colour, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
 
     slot.allocator->Reset();
+    slot.timed = d.queue.load(std::memory_order_acquire) != nullptr && ++d.frames % DenoisedNr::kTimedEvery == 0;
+    slot.hop = 0;
+    const UINT stamp = UINT(slotIndex * DenoisedNr::kStamps);
     slot.producer->Reset(slot.allocator, nullptr);
+    if (slot.timed)
+        slot.producer->EndQuery(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, stamp + 1);
     Transition(slot.producer, buffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
     Transition(slot.producer, d.colour, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
     slot.producer->CopyTextureRegion(&colourLoc, 0, 0, 0, &bufferLoc, nullptr);
@@ -1133,6 +1327,8 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
     }
 
     ID3D12Resource* result = d.mz->Record(slot.producer, f, AmdPreSr::Settings {});
+    if (slot.timed)
+        slot.producer->EndQuery(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, stamp + 2);
     slot.producer->Close();
 
     if (result == nullptr)
@@ -1142,6 +1338,8 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
     }
 
     slot.consumer->Reset(slot.allocator, nullptr);
+    if (slot.timed)
+        slot.consumer->EndQuery(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, stamp + 3);
     if (!d.mz->RecordConsumer(slot.consumer))
     {
         slot.consumer->Close();
@@ -1161,7 +1359,21 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
     slot.consumer->CopyTextureRegion(&outLoc, 0, 0, 0, &resultLoc, &box);
     Transition(slot.consumer, buffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
     Transition(slot.consumer, result, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    if (slot.timed)
+        slot.consumer->EndQuery(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, stamp + 4);
     slot.consumer->Close();
+
+    if (slot.timed)
+    {
+        slot.stampPre->Reset(slot.allocator, nullptr);
+        slot.stampPre->EndQuery(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, stamp);
+        slot.stampPre->Close();
+        slot.stampPost->Reset(slot.allocator, nullptr);
+        slot.stampPost->EndQuery(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, stamp + 5);
+        slot.stampPost->ResolveQueryData(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, stamp, DenoisedNr::kStamps, d.readback,
+                                         stamp * sizeof(uint64_t));
+        slot.stampPost->Close();
+    }
 
     {
         std::lock_guard lock(d.mutex);

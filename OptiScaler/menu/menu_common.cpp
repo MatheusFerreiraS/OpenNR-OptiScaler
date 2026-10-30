@@ -3510,7 +3510,8 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             ShowTooltip("mochizuki NR (NrBackend=mochizuki and its settings) on the denoised render-size image,\n"
                         "before the temporal accumulation and the upscale.\n"
                         "In the loop: the accumulated history takes the NR as well; may flicker with strong NR models.\n"
-                        "Display only: NR at full strength on the shown image; the RR keeps its own history.");
+                        "Display only: the NR goes onto the shown image, following it from the first frame; the RR keeps\n"
+                        "its own history.");
 
             if (const auto nrStatus = OpenNrRr::DenoisedNrStatus(); !nrStatus.empty())
                 ImGui::TextWrapped("NR: %s", nrStatus.c_str());
