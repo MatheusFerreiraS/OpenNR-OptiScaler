@@ -452,6 +452,9 @@ bool Config::Reload(std::filesystem::path iniPath)
                 FfxDenoiserFloorEnvelopeBias.set_from_config(readFloat("FSR-RR", "FloorEnvelopeBias"));
                 FfxDenoiserFloorSoftMin.set_from_config(readFloat("FSR-RR", "FloorSoftMin"));
             }
+
+            OpenNrRrEnabled.set_from_config(readBool("OpenNR-RR", "Enabled"));
+            OpenNrRrMode.set_from_config(readString("OpenNR-RR", "Mode", true));
         }
 
         // XeSS
@@ -1690,6 +1693,9 @@ bool Config::SaveIni()
             ini.SetValue("FSR-RR", "FloorSoftMin",
                          GetFloatValue(Instance()->FfxDenoiserFloorSoftMin.value_for_config()).c_str());
         }
+
+        ini.SetValue("OpenNR-RR", "Enabled", GetBoolValue(Instance()->OpenNrRrEnabled.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "Mode", Instance()->OpenNrRrMode.value_for_config().value_or("auto").c_str());
     }
 
     // XeSS

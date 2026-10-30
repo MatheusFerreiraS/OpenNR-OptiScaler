@@ -1089,6 +1089,10 @@ class Config
     CustomOptional<float> FsrAccAddPerFrame { 0.333f };
     CustomOptional<float> FsrMinDisOccAcc { -0.333f };
 
+    // OpenNR RR: Ray Reconstruction on the DLSS-RR network (OpenNrRrRuntime.dll), D3D12, RDNA4
+    CustomOptional<bool> OpenNrRrEnabled { false };
+    CustomOptional<std::string> OpenNrRrMode { "fast" }; // fast or faithful
+
     // FSR-RR
     CustomOptional<int> FfxDenoiserIndex { 0 };
     CustomOptional<uint64_t> FfxDenoiserDebugMode { 0 };

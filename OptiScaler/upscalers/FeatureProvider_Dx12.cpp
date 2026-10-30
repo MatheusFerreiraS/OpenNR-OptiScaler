@@ -12,6 +12,7 @@
 #include "upscalers/fsr2_212/FSR2Feature_Dx12_212.h"
 #include "upscalers/ffx/FFXFeature_Dx12.h"
 #include "upscalers/fsr31/FSRDFeature_Dx12.h"
+#include "upscalers/opennr_rr/OpenNrRrFeature_Dx12.h"
 #include "upscalers/xess/XeSSFeature_Dx12.h"
 #include "FeatureProvider_Dx11.h"
 #include <proxies/FfxApi_Proxy.h>
@@ -71,6 +72,15 @@ bool FeatureProvider_Dx12::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NG
             upscaler = Upscaler::FSR21;
             break;
         }
+
+    case Upscaler::OpenNrRr:
+        *feature = std::make_unique<OpenNrRrFeatureDx12>(handleId, parameters);
+
+        if ((*feature)->ModuleLoaded())
+            break;
+
+        upscaler = Upscaler::FSR_RR;
+        [[fallthrough]];
 
     case Upscaler::FSR_RR:
         if (FfxApiProxy::IsDenoiserApiImplementedDx12())
@@ -139,7 +149,8 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
 
     const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && !state.NeuralHubArmOk
                                   && (state.newBackend == Upscaler::DLSS || state.newBackend == Upscaler::DLSSD);
-    if (state.newBackend == Upscaler::Reset || dlssOnNonCapable)
+    const bool recreate = state.newBackend == Upscaler::Reset;
+    if (recreate || dlssOnNonCapable)
         state.newBackend = cfg.Dx12Upscaler.value_or_default();
 
     if (contextData->featureID == NVSDK_NGX_Feature_RayReconstruction)
@@ -149,6 +160,8 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
             (primaryGpu.dlssCapable || state.NeuralHubArmOk) && state.NVNGX_DLSSD_Path.has_value();
         const bool fsrRrCapable =
             primaryGpu.vendorId != VendorId::Nvidia && FfxApiProxy::IsDenoiserApiImplementedDx12();
+        const bool openNrRrCapable =
+            state.newBackend == Upscaler::OpenNrRr && device != nullptr && OpenNrRr::Usable(device->GetAdapterLuid());
 
         if ((state.newBackend == Upscaler::DLSS || state.newBackend == Upscaler::DLSSD) && dlssdCapable)
         {
@@ -160,10 +173,32 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
             state.newBackend = Upscaler::FSR_RR;
             contextData->featureKey = Upscaler::FSR_RR;
         }
+        else if (openNrRrCapable)
+        {
+            contextData->featureKey = Upscaler::OpenNrRr;
+        }
+        else if (contextData->featureKey == Upscaler::OpenNrRr)
+        {
+            // Leaving OpenNR RR, by choice or after a failure: the provider Ray Reconstruction had before it.
+            state.newBackend = fsrRrCapable ? Upscaler::FSR_RR : dlssdCapable ? Upscaler::DLSSD : Upscaler::FSR21;
+            contextData->featureKey = state.newBackend;
+        }
         else if (state.newBackend != contextData->featureKey)
         {
             state.newBackend = contextData->featureKey;
         }
+    }
+    else if (state.newBackend == Upscaler::OpenNrRr)
+    {
+        // OpenNR RR is for Ray Reconstruction only. A Super Resolution feature recreated while the config names it
+        // runs FFX; one asked to switch to it keeps what it runs.
+        if (!recreate)
+        {
+            state.changeBackend[handleId] = false;
+            return false;
+        }
+
+        state.newBackend = Upscaler::FFX;
     }
 
     contextData->changeBackendCounter++;
@@ -269,7 +304,13 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
         {
             LOG_ERROR("init failed with {0} feature", UpscalerDisplayName(state.newBackend));
 
-            if (state.newBackend != Upscaler::DLSSD)
+            if (state.newBackend == Upscaler::OpenNrRr)
+            {
+                OpenNrRr::Block("it did not initialise");
+                state.newBackend = FfxApiProxy::IsDenoiserApiImplementedDx12() ? Upscaler::FSR_RR : Upscaler::FSR21;
+                ImGui::InsertNotification({ ImGuiToastType::Warning, 10000, "OpenNR RR did not start, see the log" });
+            }
+            else if (state.newBackend != Upscaler::DLSSD)
             {
                 if (cfg.Dx12Upscaler == Upscaler::DLSS)
                 {

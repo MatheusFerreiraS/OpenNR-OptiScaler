@@ -24,6 +24,7 @@
 #include <proxies/XeFG_Proxy.h>
 #include <proxies/FfxApi_Proxy.h>
 #include <upscalers/ffx/FFXFeature.h>
+#include <upscalers/opennr_rr/OpenNrRrFeature_Dx12.h>
 #include <fsr4/FSR4Models.h>
 #include <fsr4/FSR4Presets.h>
 #include <fsr4/FSR4DriverProviderVk.h>
@@ -1039,10 +1040,33 @@ void MenuCommon::AddDx11Backends(Upscaler upscaler)
                           Upscaler::FSR22_on12, Upscaler::FFX_on12, Upscaler::DLSS, Upscaler::DLSS_on12 });
 }
 
+// Whether OpenNR RR can take over this game's Ray Reconstruction; reason says why not. Asks the runtime once.
+static bool OpenNrRrOffered(std::string* reason)
+{
+    if (!OpenNrRr::SplitReady())
+    {
+        *reason = "set Enabled=true under [OpenNR-RR] and restart the game";
+        return false;
+    }
+
+    if (!OpenNrRr::Checked())
+        OpenNrRr::Usable(IdentifyGpu::getPrimaryGpu().luid);
+
+    *reason = OpenNrRr::Reason();
+    return reason->empty();
+}
+
 void MenuCommon::AddDx12Backends(Upscaler upscaler)
 {
-    RenderUpscalerCombo(API::DX12, upscaler,
-                        { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::DLSS });
+    std::vector<Upscaler> options { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::DLSS };
+    std::string reason;
+
+    // Ray Reconstruction is running: OpenNR RR is one more provider for it
+    if ((upscaler == Upscaler::FSR_RR || upscaler == Upscaler::DLSSD || upscaler == Upscaler::OpenNrRr) &&
+        OpenNrRrOffered(&reason))
+        options.push_back(Upscaler::OpenNrRr);
+
+    RenderUpscalerCombo(API::DX12, upscaler, options);
 }
 
 void MenuCommon::AddVulkanBackends(Upscaler upscaler)
@@ -3281,9 +3305,14 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
     ImGui::PushItemWidth(150.0f * menuResScale);
 
     const bool usesDlssd = currentFeature->GetUpscalerType() == Upscaler::DLSSD;
-    // FSR-RR on DX12 can take over from DLSSD on a non-Nvidia GPU
-    const bool canSwitchRrOnDx12 =
-        state.api == DX12 && primaryGpu.vendorId != VendorId::Nvidia && FfxApiProxy::IsDenoiserApiImplementedDx12();
+    const bool usesRr = usesDlssd || currentFeature->GetUpscalerType() == Upscaler::FSR_RR ||
+                        currentFeature->GetUpscalerType() == Upscaler::OpenNrRr;
+    std::string openNrRrReason;
+    const bool openNrRrOffered =
+        state.api == DX12 && usesRr && primaryGpu.vendorId != VendorId::Nvidia && OpenNrRrOffered(&openNrRrReason);
+    // FSR-RR or OpenNR RR on DX12 can take over from DLSSD on a non-Nvidia GPU
+    const bool canSwitchRrOnDx12 = state.api == DX12 && primaryGpu.vendorId != VendorId::Nvidia &&
+                                   (FfxApiProxy::IsDenoiserApiImplementedDx12() || openNrRrOffered);
 
     // DLSSD can't be switched to another upscaler
     if (usesDlssd && !canSwitchRrOnDx12)
@@ -3332,8 +3361,19 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                 config->DlssReactiveMaskBias.reset();
             }
 
+            // The Ray Reconstruction provider picked here is the one the next launch starts with
+            if (usesRr && state.api == DX12 &&
+                (state.newBackend == Upscaler::OpenNrRr || currentBackend == Upscaler::OpenNrRr))
+                config->OpenNrRrEnabled = state.newBackend == Upscaler::OpenNrRr;
+
             MARK_ALL_BACKENDS_CHANGED();
         }
+    }
+
+    if (state.api == DX12 && usesRr && primaryGpu.vendorId != VendorId::Nvidia && !openNrRrOffered)
+    {
+        ImGui::Spacing();
+        ImGui::TextDisabled("OpenNR RR: %s", openNrRrReason.c_str());
     }
 
     if (primaryGpu.dlssCapable && !state.NVNGX_DLSS_Path.has_value())
@@ -3434,6 +3474,43 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             }
 
             ImGui::PopItemWidth();
+
+            ImGui::Spacing();
+            ImGui::Spacing();
+        }
+    }
+
+    // OpenNR RR -----------------------------
+    if (currentFeature->GetUpscalerType() == Upscaler::OpenNrRr)
+    {
+        ImGui::Spacing();
+        if (auto ch = ScopedCollapsingHeader("OpenNR RR"); ch.IsHeaderOpen())
+        {
+            ScopedIndent indent {};
+            ImGui::Spacing();
+
+            const char* modes[] = { "Fast", "Faithful" };
+            int mode = config->OpenNrRrMode.value_or_default() == "faithful" ? 1 : 0;
+
+            ImGui::PushItemWidth(150.0f * menuResScale);
+            if (ImGui::Combo("Mode", &mode, modes, 2))
+                config->OpenNrRrMode = mode == 1 ? "faithful" : "fast";
+            ImGui::PopItemWidth();
+            ShowTooltip("Fast: fp32 accumulation.\nFaithful: fp16 accumulation, as the reference GPU does.\n"
+                        "Applies once the kernels of that mode are built.");
+
+            if (OnrRrInfo info {}; OpenNrRr::Info(info))
+            {
+                const char* stateName = info.state == ONR_RR_STATE_READY      ? "ready"
+                                        : info.state == ONR_RR_STATE_BUILDING ? "building"
+                                                                              : "failed";
+                ImGui::Text("State: %s, GPU %.2f ms (average)", stateName, info.gpu_ms_average);
+
+                if (info.message[0] != 0)
+                    ImGui::TextWrapped("%s", info.message);
+
+                ImGui::TextDisabled("Weights: %s", info.weights_source);
+            }
 
             ImGui::Spacing();
             ImGui::Spacing();
