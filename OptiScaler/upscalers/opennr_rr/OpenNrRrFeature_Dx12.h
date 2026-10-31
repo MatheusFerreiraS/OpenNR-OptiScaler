@@ -54,9 +54,14 @@ class OpenNrRrFeatureDx12 : public IFeature_Dx12
     void DropStaleJob();
     bool FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFrame& frame);
     void FallBack(const std::string& why);
-    // NrOnDenoised: mochizuki's lists for this job, run by the between slot from EnqueueNetwork to EnqueuePost
-    void RecordDenoisedNr(const NVSDK_NGX_Parameter& params, const OnrRrFrame& frame, void* job);
+    // NrOnDenoised: mochizuki's lists for this job, run by the between slot from EnqueueNetwork to EnqueuePost (D3D12:
+    // between the halves of the game's list); image: the one Record gave (D3D12), null to ask PrepareDenoised. The
+    // DXGI format the lists write back into the image, 0 when none were armed.
+    uint32_t RecordDenoisedNr(const NVSDK_NGX_Parameter& params, const OnrRrFrame& frame, void* job, const OnrRrDenoisedImage* image);
     // the hop's GPU timeline of a timed frame of this slot into the log (render thread)
     void LogHopTiming(int slotIndex);
     static int32_t Between(void* feature, void* job, void* queue);
+    // D3D12 backend: the frame recorded into the game's list (Record / RecordPost)
+    bool EvaluateD3d12(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters);
+    static int32_t BetweenD3d12(void* feature, void* job, void* queue);
 };

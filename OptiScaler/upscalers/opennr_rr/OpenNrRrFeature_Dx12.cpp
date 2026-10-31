@@ -31,6 +31,10 @@ OnrRrApi s_api {};
 OnrRrApi2 s_api2 {};
 // ABI 3: the hop's GPU timing; null with an older runtime
 decltype(OnrRrApi3::GetHopTiming) s_getHopTiming = nullptr;
+// ABI 4: the D3D12 backend (Record / RecordPost into the game's list); null with an older runtime
+decltype(OnrRrApi4::GetBackend) s_getBackend = nullptr;
+decltype(OnrRrApi4::Record) s_record = nullptr;
+decltype(OnrRrApi4::RecordPost) s_recordPost = nullptr;
 bool s_loadTried = false;
 bool s_checked = false;
 bool s_usable = false;
@@ -203,26 +207,31 @@ bool Load()
     }
 
     auto getApi = reinterpret_cast<PFN_OnrRrGetApi>(GetProcAddress(module, "OnrRrGetApi"));
-    OnrRrApi3 api3 {};
+    OnrRrApi4 api4 {};
+    OnrRrApi3& api3 = api4.v3;
     OnrRrApi2& api2 = api3.v2;
     OnrRrApi& api = api2.v1;
-    // ABI 3 or 2 when the runtime has it, otherwise 1 (no NrOnDenoised)
-    int32_t rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION_3, &api) : ONR_RR_FAILED;
-    if (rc != ONR_RR_OK || api.abi_version != ONR_RR_ABI_VERSION_3 || !api3.GetHopTiming)
+    // ABI 4, 3 or 2 when the runtime has it, otherwise 1 (no NrOnDenoised)
+    int32_t rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION_4, &api) : ONR_RR_FAILED;
+    if (rc != ONR_RR_OK || api.abi_version != ONR_RR_ABI_VERSION_4 || !api4.GetBackend || !api4.Record || !api4.RecordPost)
     {
-        api3 = {};
+        api4 = {};
+        rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION_3, &api) : ONR_RR_FAILED;
+    }
+    if (rc != ONR_RR_OK || api.abi_version < ONR_RR_ABI_VERSION_3 || !api3.GetHopTiming)
+    {
+        api4 = {};
         rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION_2, &api) : ONR_RR_FAILED;
     }
     if (rc != ONR_RR_OK || api.abi_version < ONR_RR_ABI_VERSION_2 || !api2.PrepareDenoised || !api2.EnqueueNetwork ||
         !api2.EnqueuePost)
     {
-        api3 = {};
+        api4 = {};
         rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION, &api) : ONR_RR_FAILED;
     }
 
     if (rc != ONR_RR_OK ||
-        (api.abi_version != ONR_RR_ABI_VERSION && api.abi_version != ONR_RR_ABI_VERSION_2 &&
-         api.abi_version != ONR_RR_ABI_VERSION_3) ||
+        api.abi_version < ONR_RR_ABI_VERSION || api.abi_version > ONR_RR_ABI_VERSION_4 ||
         !api.Check || !api.Create || !api.Destroy ||
         !api.SetMode || !api.RecordInputs || !api.Enqueue || !api.RecordOutput || !api.Cancel || !api.GetInfo ||
         !api.GetLastError)
@@ -238,6 +247,9 @@ bool Load()
     s_api = api;
     s_api2 = api2;
     s_getHopTiming = api3.GetHopTiming;
+    s_getBackend = api4.GetBackend;
+    s_record = api4.Record;
+    s_recordPost = api4.RecordPost;
     LOG_INFO("OpenNR RR: runtime loaded from {} (ABI {})", wstring_to_string(path.wstring()), api.abi_version);
     return true;
 }
@@ -617,6 +629,10 @@ bool OpenNrRrFeatureDx12::InitInternal(ID3D12GraphicsCommandList* InCommandList,
     info.output_height = DisplayHeight();
     info.dlssd_path = dlssd.c_str();
     info.data_dir = dataDir.c_str();
+    const auto backend = Config::Instance()->OpenNrRrBackend.value_or_default();
+    info.backend = _stricmp(backend.c_str(), "vulkan") == 0  ? ONR_RR_BACKEND_CHOICE_VULKAN
+                   : _stricmp(backend.c_str(), "d3d12") == 0 ? ONR_RR_BACKEND_CHOICE_D3D12
+                                                             : ONR_RR_BACKEND_CHOICE_AUTO;
 
     int32_t rc;
     {
@@ -640,8 +656,12 @@ bool OpenNrRrFeatureDx12::InitInternal(ID3D12GraphicsCommandList* InCommandList,
         s_infoContext = _context;
     }
 
-    LOG_INFO("OpenNR RR: created, render {}x{} -> output {}x{}, mode {}, weights from {}", _maxRenderWidth,
-             _maxRenderHeight, DisplayWidth(), DisplayHeight(), ModeName(_mode), wstring_to_string(dlssd));
+    uint32_t running = ONR_RR_BACKEND_VULKAN;
+    if (s_getBackend != nullptr)
+        s_getBackend(_context, &running);
+    LOG_INFO("OpenNR RR: created, render {}x{} -> output {}x{}, mode {}, backend {} (asked: {}), weights from {}",
+             _maxRenderWidth, _maxRenderHeight, DisplayWidth(), DisplayHeight(), ModeName(_mode),
+             running == ONR_RR_BACKEND_D3D12 ? "D3D12" : "Vulkan", backend, wstring_to_string(dlssd));
 
     if (!LowResMV())
         LOG_WARN("OpenNR RR: the game declares display-size motion vectors; the runtime reads them at render size");
@@ -924,6 +944,11 @@ bool OpenNrRrFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandL
         }
     }
 
+    // D3D12 backend: the frame goes straight into the game's list, no split (a hop for NrOnDenoised still splits it)
+    if (uint32_t backend = ONR_RR_BACKEND_VULKAN; s_getBackend != nullptr &&
+                                                  s_getBackend(_context, &backend) == ONR_RR_OK && backend == ONR_RR_BACKEND_D3D12)
+        return EvaluateD3d12(InCommandList, InParameters);
+
     // The proxy under any layer that wraps the game's list (ReShade as dxgi.dll): the split and the between slot
     // know only that one.
     DlssNr::Submission::ILogicalCommandList* logical = nullptr;
@@ -984,7 +1009,7 @@ bool OpenNrRrFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandL
     }
 
     if (s_api2.PrepareDenoised != nullptr)
-        RecordDenoisedNr(*InParameters, frame, job);
+        RecordDenoisedNr(*InParameters, frame, job, nullptr);
 
     LmxxfCut::SetPendingEnqueue(this, job, &OpenNrRrFeatureDx12::Between, s_api.GetLastError, list);
     LmxxfCut::ArmBetweenSlot();
@@ -997,6 +1022,137 @@ bool OpenNrRrFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandL
     _hasOutput = true;
     _frameCount++;
     return true;
+}
+
+// D3D12 backend (ABI 4): Record puts the whole frame into the game's list. With NrOnDenoised it stops at the denoised
+// image; the list is split there, mochizuki's lists run at the split (BetweenD3d12) and RecordPost puts the rest
+// into the second half. Without the split the hop is skipped and the frame is done on the same list.
+bool OpenNrRrFeatureDx12::EvaluateD3d12(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters)
+{
+    OnrRrFrame frame {};
+
+    if (!FillFrame(*InParameters, frame))
+        return false;
+
+    std::string why;
+    uint32_t edit = s_api2.PrepareDenoised != nullptr ? EditFromConfig(&why) : ONR_RR_EDIT_OFF;
+    ID3D12GraphicsCommandList* list = InCommandList;
+    DlssNr::Submission::ILogicalCommandList* logical = nullptr;
+
+    if (edit != ONR_RR_EDIT_OFF)
+    {
+        // the split and the between slot know only OptiScaler's proxy, under any layer that wraps the list
+        ID3D12GraphicsCommandList* proxied = nullptr;
+        if (SUCCEEDED(InCommandList->QueryInterface(__uuidof(DlssNr::Submission::ILogicalCommandList),
+                                                    reinterpret_cast<void**>(&logical))) &&
+            logical != nullptr && !logical->IsSplitIneligible() &&
+            SUCCEEDED(logical->QueryInterface(IID_PPV_ARGS(&proxied))) && proxied != nullptr)
+        {
+            proxied->Release(); // the game holds the list for this evaluate
+            list = proxied;
+        }
+        else
+        {
+            edit = ONR_RR_EDIT_OFF;
+        }
+
+        if (logical != nullptr)
+            logical->Release();
+    }
+
+    OnrRrDenoisedImage image {};
+    image.size = sizeof(image);
+    // Half floats: half the bytes for every copy of the hop, and a format mochizuki takes as a game's colour.
+    image.format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    void* job = nullptr;
+
+    if (const int32_t rc = s_record(_context, &frame, list, edit, edit != ONR_RR_EDIT_OFF ? &image : nullptr, &job);
+        rc != ONR_RR_OK)
+    {
+        FallBack(std::format("Record rc={}: {}", rc, RuntimeError()));
+        return false;
+    }
+
+    if (job != nullptr)
+    {
+        uint32_t format = 0;
+        const HRESULT hr = LmxxfCut::TrySplitAtEvaluate(list);
+        const bool split = SUCCEEDED(hr) && hr != S_FALSE;
+
+        if (split)
+            format = RecordDenoisedNr(*InParameters, frame, job, &image);
+        else
+            LOG_WARN("OpenNR RR: the split for the denoised image was refused (hr {:#x}); frame without NR", (uint32_t) hr);
+
+        if (const int32_t rc = s_recordPost(_context, job, list, format); rc != ONR_RR_OK)
+        {
+            FallBack(std::format("RecordPost rc={}: {}", rc, RuntimeError()));
+            return false;
+        }
+
+        if (split)
+        {
+            // the between slot runs mochizuki's lists (and learns the game's queue on the first frames)
+            LmxxfCut::SetPendingEnqueue(this, job, &OpenNrRrFeatureDx12::BetweenD3d12, s_api.GetLastError, list);
+            LmxxfCut::ArmBetweenSlot();
+            _job = job;
+            _jobList = list;
+        }
+    }
+
+    _hasColor = true;
+    _hasDepth = true;
+    _hasMV = true;
+    _hasOutput = true;
+    _frameCount++;
+    return true;
+}
+
+namespace
+{
+// the game's queue, from the first between slot: mochizuki's session for the denoised image is made on it
+void LearnQueue(ID3D12CommandQueue* q)
+{
+    auto& d = Denoised();
+    if (d.queue.load(std::memory_order_acquire) == nullptr)
+    {
+        q->AddRef();
+        ID3D12CommandQueue* none = nullptr;
+        if (!d.queue.compare_exchange_strong(none, q))
+            q->Release();
+    }
+}
+} // namespace
+
+// The between slot of a D3D12 hop (submit thread): only mochizuki's lists, the network and the post are in the
+// game's two halves already.
+int32_t OpenNrRrFeatureDx12::BetweenD3d12(void* feature, void* job, void* queue)
+{
+    (void) feature;
+    auto* q = static_cast<ID3D12CommandQueue*>(queue);
+    LearnQueue(q);
+
+    auto& d = Denoised();
+    int slot = -1;
+    {
+        std::lock_guard lock(d.mutex);
+        if (d.armedJob == job)
+        {
+            slot = d.armedSlot;
+            d.armedJob = nullptr;
+        }
+    }
+
+    if (slot >= 0)
+    {
+        auto& s = d.slots[slot];
+        d.mz->SubmitOwnLists(q, s.producer, s.consumer, DlssNr::Submission::g_rawExecuteCommandLists);
+        const uint64_t v = d.value.fetch_add(1) + 1;
+        q->Signal(d.fence, v);
+        s.busy.store(v, std::memory_order_release);
+    }
+
+    return ONR_RR_OK;
 }
 
 // The between slot (submit thread). With ABI 2 the network may stop at the denoised image: mochizuki's lists run
@@ -1014,13 +1170,7 @@ int32_t OpenNrRrFeatureDx12::Between(void* feature, void* job, void* queue)
     else
     {
         auto& d = Denoised();
-        if (d.queue.load(std::memory_order_acquire) == nullptr)
-        {
-            q->AddRef();
-            ID3D12CommandQueue* none = nullptr;
-            if (!d.queue.compare_exchange_strong(none, q))
-                q->Release();
-        }
+        LearnQueue(q);
 
         int slot = -1;
         uint32_t format = 0;
@@ -1194,7 +1344,8 @@ void OpenNrRrFeatureDx12::LogHopTiming(int slotIndex)
 // NrOnDenoised (render thread): asks the runtime for the denoised image of this job and records mochizuki on it into
 // OptiScaler's own lists: the image into a texture, mochizuki's inputs (producer), and its output back into the
 // runtime's buffer (consumer). The between slot runs them. Any refusal leaves the frame with the network's image.
-void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, const OnrRrFrame& frame, void* job)
+uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, const OnrRrFrame& frame, void* job,
+                                                const OnrRrDenoisedImage* given)
 {
     auto& d = Denoised();
     std::string why;
@@ -1214,7 +1365,7 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
     }
 
     if (edit == ONR_RR_EDIT_OFF || d.broken)
-        return;
+        return 0;
 
     if (d.mz == nullptr)
     {
@@ -1223,7 +1374,7 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
         if (q == nullptr)
         {
             d.SetStatus("waiting for the game's queue");
-            return;
+            return 0;
         }
 
         try
@@ -1275,7 +1426,7 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
             LOG_ERROR("OpenNR RR: mochizuki on the denoised image: {} failed", e.what());
             d.SetStatus(std::string("failed: ") + e.what());
             d.broken = true;
-            return;
+            return 0;
         }
 
         d.mz = new DlssNr::Backend::LmxxfBackend(d.device, q, Util::DllPath().parent_path(), L"MochizukiNrRuntime.dll",
@@ -1285,18 +1436,20 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
     else if (d.device != Device)
     {
         d.SetStatus("the game's device changed; restart the game");
-        return;
+        return 0;
     }
 
     OnrRrDenoisedImage image {};
     image.size = sizeof(image);
     // Half floats: half the bytes for every copy of the hop, and a format mochizuki takes as a game's colour.
     image.format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    if (given != nullptr)
+        image = *given;
 
-    if (s_api2.PrepareDenoised(_context, job, edit, &image) != ONR_RR_OK || image.buffer == nullptr)
+    if ((given == nullptr && s_api2.PrepareDenoised(_context, job, edit, &image) != ONR_RR_OK) || image.buffer == nullptr)
     {
         d.SetStatus("waiting for the network");
-        return;
+        return 0;
     }
 
     auto* buffer = static_cast<ID3D12Resource*>(image.buffer);
@@ -1306,7 +1459,7 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
     if (!d.Wait(slot.busy.load(std::memory_order_acquire)))
     {
         d.SetStatus("the previous frames' lists are still running; frame skipped");
-        return;
+        return 0;
     }
     LogHopTiming(slotIndex);
 
@@ -1317,7 +1470,7 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
             if (!d.Wait(s.busy.load(std::memory_order_acquire)))
             {
                 d.SetStatus("the previous frames' lists are still running; frame skipped");
-                return;
+                return 0;
             }
         }
 
@@ -1341,7 +1494,7 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
                                                    IID_PPV_ARGS(&d.colour))))
         {
             d.SetStatus("the colour texture could not be made");
-            return;
+            return 0;
         }
 
         d.width = image.width;
@@ -1354,7 +1507,8 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
     D3D12_TEXTURE_COPY_LOCATION colourLoc { d.colour, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
 
     slot.allocator->Reset();
-    slot.timed = d.queue.load(std::memory_order_acquire) != nullptr && ++d.frames % DenoisedNr::kTimedEvery == 0;
+    // the hop's timeline needs the runtime's half (ABI 3), which only the Vulkan backend has
+    slot.timed = given == nullptr && d.queue.load(std::memory_order_acquire) != nullptr && ++d.frames % DenoisedNr::kTimedEvery == 0;
     slot.hop = 0;
     const UINT stamp = UINT(slotIndex * DenoisedNr::kStamps);
     slot.producer->Reset(slot.allocator, nullptr);
@@ -1412,7 +1566,7 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
     if (result == nullptr)
     {
         d.SetStatus(d.mz->Status());
-        return;
+        return 0;
     }
 
     slot.consumer->Reset(slot.allocator, nullptr);
@@ -1422,7 +1576,7 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
     {
         slot.consumer->Close();
         d.SetStatus(d.mz->Status());
-        return;
+        return 0;
     }
 
     // mochizuki's output (the colour's format) back into the buffer, at offset 0 with the pitch the runtime expects
@@ -1461,4 +1615,5 @@ void OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, co
         d.status = std::string(edit == ONR_RR_EDIT_LOOP ? "loop" : "display") + ": " + d.mz->Status();
     }
     d.next = (d.next + 1) % DenoisedNr::kSlots;
+    return uint32_t(format);
 }

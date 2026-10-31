@@ -3513,6 +3513,25 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                         "Display only: the NR goes onto the shown image, following it from the first frame; the RR keeps\n"
                         "its own history.");
 
+            const char* backends[] = { "Auto", "D3D12", "Vulkan" };
+            const auto backendName = config->OpenNrRrBackend.value_or_default();
+            int backend = backendName == "d3d12" ? 1 : backendName == "vulkan" ? 2 : 0;
+
+            ImGui::PushItemWidth(150.0f * menuResScale);
+            if (ImGui::Combo("Backend", &backend, backends, 3))
+            {
+                config->OpenNrRrBackend = backend == 1 ? "d3d12" : backend == 2 ? "vulkan" : "auto";
+                // the runtime picks its backend at creation
+                state.newBackend = currentBackend;
+                MARK_ALL_BACKENDS_CHANGED();
+            }
+            ImGui::PopItemWidth();
+            ShowTooltip("D3D12: the network runs on the game's own device, recorded into its command list\n"
+                        "(no second device, no copies through shared memory, no queue crossings).\n"
+                        "Vulkan: the network runs on a Vulkan device of its own beside the game.\n"
+                        "Auto: D3D12 when the runtime's check on this GPU and driver passes, otherwise Vulkan.\n"
+                        "Changing it recreates OpenNR RR.");
+
             if (const auto nrStatus = OpenNrRr::DenoisedNrStatus(); !nrStatus.empty())
                 ImGui::TextWrapped("NR: %s", nrStatus.c_str());
 
@@ -3522,6 +3541,9 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                                         : info.state == ONR_RR_STATE_BUILDING ? "building"
                                                                               : "failed";
                 ImGui::Text("State: %s, GPU %.2f ms (average)", stateName, info.gpu_ms_average);
+                ImGui::Text("Running on: %s", info.backend == ONR_RR_BACKEND_D3D12 ? "D3D12 (the game's command list)" : "Vulkan");
+                if (info.backend != ONR_RR_BACKEND_D3D12 && info.backend_message[0] != 0)
+                    ImGui::TextWrapped("D3D12 not used: %s", info.backend_message);
 
                 if (info.message[0] != 0)
                     ImGui::TextWrapped("%s", info.message);

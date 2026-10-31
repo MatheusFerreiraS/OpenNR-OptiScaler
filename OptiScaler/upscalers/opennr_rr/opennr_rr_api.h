@@ -27,6 +27,18 @@
 // ABI 3 (OnrRrGetApi(3, &api3.v2.v1), OnrRrApi3) adds GetHopTiming: when the network and the post of a hop ran on the
 // GPU, in QueryPerformanceCounter ticks, so the host can place its own work between them.
 //
+// ABI 4 (OnrRrGetApi(4, &api4.v3.v2.v1), OnrRrApi4) adds the D3D12 backend: the kernels run on the game's own device
+// and are recorded straight into the game's command list at the evaluate point, with no queue of their own, no
+// fence and no split of the list:
+//   Record(ctx, frame, list, edit, &image, &job)   the whole frame (inputs, network, post, output) into list; with an
+//                                                  edit it stops at the denoised image in image.buffer (job set)
+//   the host splits the list there, edits the image on the queue between the halves, then on the second half
+//   RecordPost(ctx, job, list, format)             the edit back in, the post, the output
+// The backend is picked at Create (OnrRrCreateInfo.backend; a host that does not set it gets Vulkan) after a check on
+// the GPU; GetBackend says which one runs. It can change from D3D12 to Vulkan once, while the network is being built
+// (a kernel the D3D12 driver did not take), so a host asks every frame. With the Vulkan backend the frame goes
+// through RecordInputs / Enqueue / RecordOutput as before; with D3D12 those return ONR_RR_UNSUPPORTED.
+//
 // Create returns at once; the weights and the kernels are built on a background thread. Until they are ready
 // (and after a failure) frames still go through Enqueue/RecordOutput and the output is the colour, scaled
 // bilinearly. GetInfo says which state the runtime is in and why.
@@ -42,6 +54,7 @@ extern "C" {
 #define ONR_RR_ABI_VERSION 1
 #define ONR_RR_ABI_VERSION_2 2
 #define ONR_RR_ABI_VERSION_3 3
+#define ONR_RR_ABI_VERSION_4 4
 
 enum OnrRrResult {
     ONR_RR_OK = 0,
@@ -60,6 +73,19 @@ enum OnrRrState {
     ONR_RR_STATE_BUILDING = 0, // weights / kernels being built: frames get the scaled colour
     ONR_RR_STATE_READY = 1,
     ONR_RR_STATE_FAILED = 2,   // frames get the scaled colour; message says why
+};
+
+// What runs the kernels (ABI 4).
+enum OnrRrBackend {
+    ONR_RR_BACKEND_VULKAN = 0,     // a Vulkan device of the runtime's own, shared buffers and fences (RecordInputs...)
+    ONR_RR_BACKEND_D3D12 = 1,      // the game's D3D12 device, recorded into the game's list (Record / RecordPost)
+};
+
+// OnrRrCreateInfo.backend: which one the host wants.
+enum OnrRrBackendChoice {
+    ONR_RR_BACKEND_CHOICE_AUTO = 0,   // D3D12 when the GPU check at Create passes, otherwise Vulkan
+    ONR_RR_BACKEND_CHOICE_D3D12 = 1,  // the same, logged as asked for
+    ONR_RR_BACKEND_CHOICE_VULKAN = 2,
 };
 
 enum OnrRrFrameFlags {
@@ -90,7 +116,11 @@ typedef struct OnrRrCreateInfo {
     const wchar_t* cache_dir;      // built weights and pipeline cache; null: %LOCALAPPDATA%\OpenNR\rr
     const wchar_t* data_dir;       // folder holding shaders\; null: <runtime DLL folder>\opennr-rr
     const wchar_t* log_path;       // null: <runtime DLL folder>\opennr_rr.log
+    // Optional tail (size may be ONR_RR_CREATE_INFO_SIZE_V1 without it: Vulkan backend)
+    uint32_t backend;              // OnrRrBackendChoice
 } OnrRrCreateInfo;
+
+#define ONR_RR_CREATE_INFO_SIZE_V1 ((uint32_t)offsetof(OnrRrCreateInfo, backend))
 
 typedef struct OnrRrFrame {
     uint32_t size;                 // sizeof(OnrRrFrame)
@@ -130,7 +160,12 @@ typedef struct OnrRrInfo {
     uint32_t render_width, render_height, output_width, output_height;
     char weights_source[260];      // UTF-8 path of the nvngx_dlssd.dll the weights came from
     char message[256];             // UTF-8: what it is doing or why it failed
+    // Optional tail (size may be ONR_RR_INFO_SIZE_V1; older runtimes leave it as it was)
+    uint32_t backend;              // OnrRrBackend running now
+    char backend_message[124];     // UTF-8: why D3D12 is not used (empty when it is, or when it was not asked for)
 } OnrRrInfo;
+
+#define ONR_RR_INFO_SIZE_V1 ((uint32_t)offsetof(OnrRrInfo, backend))
 
 typedef struct OnrRrApi {
     uint32_t abi_version;
@@ -195,7 +230,21 @@ typedef struct OnrRrApi3 {
     int32_t (*GetHopTiming)(void* context, uint64_t hop, OnrRrHopTiming* timing);
 } OnrRrApi3;
 
-// abi_version 1 fills an OnrRrApi; 2 fills the OnrRrApi2 that api points to; 3 the OnrRrApi3.
+typedef struct OnrRrApi4 {
+    OnrRrApi3 v3;                  // v3.v2.v1.abi_version = 4
+    int32_t (*GetBackend)(void* context, uint32_t* backend);   // OnrRrBackend
+    // D3D12 backend: the frame into command_list (the game's, at the evaluate point; the textures are left in the
+    // states the frame gives, the list's compute root signature and pipeline are not restored). edit (OnrRrEdit) and
+    // image as PrepareDenoised: with a hop the network stops at the denoised image and *job is set for RecordPost;
+    // without one *job is null and the frame is done. image may be null when edit is ONR_RR_EDIT_OFF.
+    int32_t (*Record)(void* context, const OnrRrFrame* frame, void* command_list, uint32_t edit, OnrRrDenoisedImage* image,
+                      void** job);
+    // the rest of a job Record stopped at the image: format as EnqueuePost (0 = no edit). Cancel drops one that will
+    // not run.
+    int32_t (*RecordPost)(void* context, void* job, void* command_list, uint32_t format);
+} OnrRrApi4;
+
+// abi_version 1 fills an OnrRrApi; 2 fills the OnrRrApi2 that api points to; 3 the OnrRrApi3; 4 the OnrRrApi4.
 typedef int32_t (*PFN_OnrRrGetApi)(uint32_t abi_version, OnrRrApi* api);
 // exported by OpenNrRrRuntime.dll
 #ifdef ONR_RR_BUILDING

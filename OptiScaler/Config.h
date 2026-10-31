@@ -1095,6 +1095,9 @@ class Config
     // mochizuki NR on the denoised render-size image, between the network and its temporal post: off, loop (the
     // history takes the NR) or display (the network keeps its own history, the shown image adds the NR as a delta)
     CustomOptional<std::string> OpenNrRrNrOnDenoised { "off" };
+    // what runs the network: auto (D3D12 in the game's own command list when the runtime's check passes, otherwise
+    // Vulkan), d3d12 or vulkan; read when the runtime is created
+    CustomOptional<std::string> OpenNrRrBackend { "auto" };
 
     // FSR-RR
     CustomOptional<int> FfxDenoiserIndex { 0 };
