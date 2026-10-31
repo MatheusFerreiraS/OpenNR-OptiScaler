@@ -31,6 +31,7 @@
 // (and after a failure) frames still go through Enqueue/RecordOutput and the output is the colour, scaled
 // bilinearly. GetInfo says which state the runtime is in and why.
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 #include <wchar.h>
 
@@ -109,7 +110,15 @@ typedef struct OnrRrFrame {
     OnrRrTexture specular_hit_distance;
     OnrRrTexture specular_ray_direction_hit_distance;   // .w used when specular_hit_distance is absent
     OnrRrTexture output;           // output extent, written by RecordOutput
+    // Optional tail (size may be ONR_RR_FRAME_SIZE_V1 without it; older runtimes ignore it): the transparency layer
+    // NGX composites over the output (premultiplied RGBA at the render extent: DLSS.TransparencyLayer, or
+    // DLSSD.ColorBeforeParticles, which NGX takes for it), and its separate opacity (DLSS.TransparencyLayerOpacity;
+    // not read yet).
+    OnrRrTexture transparency_layer;
+    OnrRrTexture transparency_opacity;
 } OnrRrFrame;
+
+#define ONR_RR_FRAME_SIZE_V1 ((uint32_t)offsetof(OnrRrFrame, transparency_layer))
 
 typedef struct OnrRrInfo {
     uint32_t size;                 // sizeof(OnrRrInfo)

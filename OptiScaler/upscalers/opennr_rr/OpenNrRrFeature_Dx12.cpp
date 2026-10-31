@@ -329,6 +329,71 @@ void ReadMatrix(const NVSDK_NGX_Parameter& params, const char* key, float (&out)
     memcpy(out, matrix, sizeof(out));
 }
 
+// The DLSS-D inputs nvngx_dlssd.dll 310.9.1 reads as textures (its parameter table), for the inventory in the log.
+constexpr const char* kNgxTextures[] = {
+    "Color", "Output", "Depth", "MotionVectors", "ExposureTexture", "TransparencyMask", "GBuffer.Normals",
+    "GBuffer.Roughness", "DLSS.Input.DiffuseAlbedo", "DLSS.Input.SpecularAlbedo", "DLSSD.Alpha", "DLSSD.OutputAlpha",
+    "DLSSD.ReflectedAlbedo", "DLSSD.ColorBeforeParticles", "DLSSD.ColorAfterParticles", "DLSSD.ColorBeforeTransparency",
+    "DLSSD.ColorAfterTransparency", "DLSSD.ColorBeforeFog", "DLSSD.ColorAfterFog",
+    "DLSSD.ScreenSpaceSubsurfaceScatteringGuide", "DLSSD.DepthOfFieldGuide", "DLSSD.DiffuseHitDistance",
+    "DLSSD.SpecularHitDistance", "DLSSD.DiffuseRayDirection", "DLSSD.SpecularRayDirection",
+    "DLSSD.DiffuseRayDirectionHitDistance", "DLSSD.SpecularRayDirectionHitDistance", "DLSS.TransparencyLayer",
+    "DLSS.TransparencyLayerOpacity", "DLSS.TransparencyLayerMvecs", "DLSS.DisocclusionMask", "DLSSD.ResponsivityMask",
+    "GBuffer.IndirectAlbedo", "GBuffer.SpecularMvec", "GBuffer.Emissive", "MotionVectors3D", "IsParticleMask",
+    "AnimatedTextureMask", "DepthHighRes", "Position.ViewSpace", "RayTracingHitDistance", "MotionVectorsReflection",
+    "DLSS.Input.Reduce.Ghost.Mask", "DLSS.Input.Bias.Current.Color.Mask",
+};
+
+constexpr const char* kNgxScalars[] = {
+    "DLSS.Pre.Exposure", "DLSS.Exposure.Scale", "MV.Scale.X", "MV.Scale.Y", "Jitter.Offset.X", "Jitter.Offset.Y",
+    "DLSS.Input.Bias.Current.Color.Subrect.Base.X", "DLSS.Input.Bias.Current.Color.Subrect.Base.Y",
+    "DLSS.TransparencyLayer.Subrect.Base.X", "DLSS.TransparencyLayer.Subrect.Base.Y", "TonemapperType",
+};
+
+// Which DLSS-D inputs the game passes: the first frame, then whenever the set changes (at most 20 times), with each
+// texture's size and format, and every 3000 frames how often the transparency layer was there.
+void LogNgxInputs(const NVSDK_NGX_Parameter& params, ID3D12Resource* layer)
+{
+    static std::string lastSet;
+    static uint32_t logs = 0;
+    static uint64_t frames = 0, withLayer = 0;
+
+    ++frames;
+    withLayer += layer != nullptr;
+    if (frames % 3000 == 0)
+        LOG_INFO("OpenNR RR: transparency layer in {} of the last 3000 frames", std::exchange(withLayer, 0));
+
+    std::string set;
+    std::vector<std::string> lines;
+    for (const char* key : kNgxTextures)
+    {
+        ID3D12Resource* resource = nullptr;
+        if (!TryGetNGXVoidPointer(params, key, resource) || resource == nullptr)
+            continue;
+        set += key;
+        set += ';';
+        const D3D12_RESOURCE_DESC desc = resource->GetDesc();
+        lines.push_back(std::format("{} {:p} {}x{} format {} flags {:#x}", key, (void*) resource, desc.Width,
+                                    desc.Height, (int) desc.Format, (uint32_t) desc.Flags));
+    }
+
+    if (set == lastSet || logs >= 20)
+        return;
+
+    lastSet = set;
+    ++logs;
+    LOG_INFO("OpenNR RR: DLSS-D inputs at frame {} ({} textures):", frames, lines.size());
+    for (const auto& line : lines)
+        LOG_INFO("OpenNR RR:   {}", line);
+    for (const char* key : kNgxScalars)
+    {
+        if (float value = 0; params.Get(key, &value) == NVSDK_NGX_Result_Success)
+            LOG_INFO("OpenNR RR:   {} = {}", key, value);
+        else if (int ivalue = 0; params.Get(key, &ivalue) == NVSDK_NGX_Result_Success)
+            LOG_INFO("OpenNR RR:   {} = {}", key, ivalue);
+    }
+}
+
 uint32_t ModeFromConfig()
 {
     const auto mode = Config::Instance()->OpenNrRrMode.value_or_default();
@@ -739,6 +804,18 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
                 NVSDK_NGX_Parameter_DLSSD_SpecularRayDirectionHitDistance_Subrect_Base_Y, read);
     // Output may be OptiScaler's own buffer ahead of RCAS or output scaling, so it is written from its origin.
     frame.output = texture(NVSDK_NGX_Parameter_Output, nullptr, nullptr, outputState);
+    // The transparency layer NGX composites over its output; nvngx_dlssd.dll takes ColorBeforeParticles for it when
+    // given (Cyberpunk's particles and other transparent effects), and the layer's subrect for both.
+    frame.transparency_layer =
+        texture(NVSDK_NGX_Parameter_DLSSD_ColorBeforeParticles, "DLSS.TransparencyLayer.Subrect.Base.X",
+                "DLSS.TransparencyLayer.Subrect.Base.Y", read);
+    if (frame.transparency_layer.resource == nullptr)
+        frame.transparency_layer = texture("DLSS.TransparencyLayer", "DLSS.TransparencyLayer.Subrect.Base.X",
+                                           "DLSS.TransparencyLayer.Subrect.Base.Y", read);
+    frame.transparency_opacity =
+        texture("DLSS.TransparencyLayerOpacity", "DLSS.TransparencyLayerOpacity.Subrect.Base.X",
+                "DLSS.TransparencyLayerOpacity.Subrect.Base.Y", read);
+    LogNgxInputs(params, static_cast<ID3D12Resource*>(frame.transparency_layer.resource));
 
     if (frame.color.resource == nullptr || frame.depth.resource == nullptr || frame.motion.resource == nullptr ||
         frame.output.resource == nullptr)
@@ -755,11 +832,12 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
     {
         guidesLogged = true;
         LOG_INFO("OpenNR RR: guides diffuse albedo {}, specular albedo {}, normals {}, roughness {}, specular hit "
-                 "distance {}, ray direction + hit distance {}",
+                 "distance {}, ray direction + hit distance {}, transparency layer {}, its opacity {}",
                  frame.diffuse_albedo.resource != nullptr, frame.specular_albedo.resource != nullptr,
                  frame.normals.resource != nullptr, frame.roughness.resource != nullptr,
                  frame.specular_hit_distance.resource != nullptr,
-                 frame.specular_ray_direction_hit_distance.resource != nullptr);
+                 frame.specular_ray_direction_hit_distance.resource != nullptr,
+                 frame.transparency_layer.resource != nullptr, frame.transparency_opacity.resource != nullptr);
     }
 
     // Without the create-time mode, the first frame settles it: no roughness texture means it rides in normals.w.
