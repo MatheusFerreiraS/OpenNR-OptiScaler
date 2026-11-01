@@ -49,6 +49,7 @@ class OpenNrRrFeatureDx12 : public IFeature_Dx12
     bool _hasNGXDepthType = false;
     int _roughnessPacked = -1; // -1 until the create params or the first frame settle it
     int _loggedHWDepth = -1;
+    int _loggedSwitches = -1;   // the diagnostic switches last logged
     bool _fellBack = false;
 
     void DropStaleJob();

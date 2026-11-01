@@ -3532,6 +3532,24 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                         "Auto: D3D12 when the runtime's check on this GPU and driver passes, otherwise Vulkan.\n"
                         "Changing it recreates OpenNR RR.");
 
+            if (bool useMask = config->OpenNrRrUseDisocclusionMask.value_or_default();
+                ImGui::Checkbox("Use disocclusion mask", &useMask))
+                config->OpenNrRrUseDisocclusionMask = useMask;
+            ShowTooltip("Feeds the game's DLSS.DisocclusionMask to the network, as DLSS-RR does.\n"
+                        "Diagnostic: turn it off to see whether trails or ghosting change.");
+
+            if (bool invertMask = config->OpenNrRrInvertDisocclusionMask.value_or_default();
+                ImGui::Checkbox("Invert disocclusion mask", &invertMask))
+                config->OpenNrRrInvertDisocclusionMask = invertMask;
+            ShowTooltip("Diagnostic: reads the mask as 1 - mask (DLSS-RR takes it as it is).\n"
+                        "Only does something while the mask is in use.");
+
+            if (bool useSss = config->OpenNrRrUseSssGuide.value_or_default(); ImGui::Checkbox("Use SSS guide", &useSss))
+                config->OpenNrRrUseSssGuide = useSss;
+            ShowTooltip("Feeds the game's subsurface scattering guide (or ColorBeforeFog) to the network, as DLSS-RR does.\n"
+                        "Diagnostic: turn it off to see whether skin or trails change.\n"
+                        "opennr_rr.log gets a summary of what the game puts in the mask and the guide every 3 s.");
+
             if (const auto nrStatus = OpenNrRr::DenoisedNrStatus(); !nrStatus.empty())
                 ImGui::TextWrapped("NR: %s", nrStatus.c_str());
 

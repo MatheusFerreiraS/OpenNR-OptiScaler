@@ -457,6 +457,9 @@ bool Config::Reload(std::filesystem::path iniPath)
             OpenNrRrMode.set_from_config(readString("OpenNR-RR", "Mode", true));
             OpenNrRrNrOnDenoised.set_from_config(readString("OpenNR-RR", "NrOnDenoised", true));
             OpenNrRrBackend.set_from_config(readString("OpenNR-RR", "Backend", true));
+            OpenNrRrUseDisocclusionMask.set_from_config(readBool("OpenNR-RR", "UseDisocclusionMask"));
+            OpenNrRrUseSssGuide.set_from_config(readBool("OpenNR-RR", "UseSssGuide"));
+            OpenNrRrInvertDisocclusionMask.set_from_config(readBool("OpenNR-RR", "InvertDisocclusionMask"));
         }
 
         // XeSS
@@ -1701,6 +1704,11 @@ bool Config::SaveIni()
         ini.SetValue("OpenNR-RR", "NrOnDenoised",
                      Instance()->OpenNrRrNrOnDenoised.value_for_config().value_or("auto").c_str());
         ini.SetValue("OpenNR-RR", "Backend", Instance()->OpenNrRrBackend.value_for_config().value_or("auto").c_str());
+        ini.SetValue("OpenNR-RR", "UseDisocclusionMask",
+                     GetBoolValue(Instance()->OpenNrRrUseDisocclusionMask.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "UseSssGuide", GetBoolValue(Instance()->OpenNrRrUseSssGuide.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "InvertDisocclusionMask",
+                     GetBoolValue(Instance()->OpenNrRrInvertDisocclusionMask.value_for_config()).c_str());
     }
 
     // XeSS

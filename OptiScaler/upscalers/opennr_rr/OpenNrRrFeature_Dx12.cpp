@@ -844,6 +844,19 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
         frame.sss_guide = texture("DLSSD.ScreenSpaceSubsurfaceScatteringGuide", nullptr, nullptr, read);
     frame.sss_guide.x = frame.color.x;
     frame.sss_guide.y = frame.color.y;
+    // diagnostic switches from the menu, applied on this frame
+    const bool useMask = cfg.OpenNrRrUseDisocclusionMask.value_or_default();
+    const bool useSss = cfg.OpenNrRrUseSssGuide.value_or_default();
+    const bool invertMask = cfg.OpenNrRrInvertDisocclusionMask.value_or_default();
+    if (const int switches = int(useMask) | int(useSss) << 1 | int(invertMask) << 2; switches != _loggedSwitches)
+    {
+        _loggedSwitches = switches;
+        LOG_INFO("OpenNR RR: use disocclusion mask {}, invert it {}, use SSS guide {}", useMask, invertMask, useSss);
+    }
+    if (!useMask)
+        frame.disocclusion_mask = {};
+    if (!useSss)
+        frame.sss_guide = {};
     LogNgxInputs(params, static_cast<ID3D12Resource*>(frame.transparency_layer.resource));
 
     if (frame.color.resource == nullptr || frame.depth.resource == nullptr || frame.motion.resource == nullptr ||
@@ -910,6 +923,8 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
         frame.flags |= ONR_RR_FRAME_MV_JITTERED;
     if (_roughnessPacked == 1)
         frame.flags |= ONR_RR_FRAME_ROUGHNESS_PACKED;
+    if (invertMask)
+        frame.flags |= ONR_RR_FRAME_DM_INVERT;
 
     return true;
 }

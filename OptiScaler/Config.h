@@ -1098,6 +1098,11 @@ class Config
     // what runs the network: auto (D3D12 in the game's own command list when the runtime's check passes, otherwise
     // Vulkan), d3d12 or vulkan; read when the runtime is created
     CustomOptional<std::string> OpenNrRrBackend { "auto" };
+    // diagnostics (RE Requiem's rain): feed DLSS.DisocclusionMask and the SSS guide (or ColorBeforeFog) to the
+    // network, and read the mask as 1 - mask; applied on the next frame
+    CustomOptional<bool> OpenNrRrUseDisocclusionMask { true };
+    CustomOptional<bool> OpenNrRrUseSssGuide { true };
+    CustomOptional<bool> OpenNrRrInvertDisocclusionMask { false };
 
     // FSR-RR
     CustomOptional<int> FfxDenoiserIndex { 0 };

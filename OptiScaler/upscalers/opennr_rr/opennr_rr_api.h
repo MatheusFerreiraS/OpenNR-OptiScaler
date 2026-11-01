@@ -96,6 +96,7 @@ enum OnrRrFrameFlags {
     ONR_RR_FRAME_ROUGHNESS_PACKED = 1u << 4, // roughness is normals.w (roughness texture ignored)
     ONR_RR_FRAME_NORMALS_UNPACK = 1u << 5, // normals are stored as n * 0.5 + 0.5 (the runtime also assumes it for
                                            // UNORM formats)
+    ONR_RR_FRAME_DM_INVERT = 1u << 6,      // diagnostic: the disocclusion mask goes in as 1 - mask (NGX takes it as is)
 };
 
 // A texture of the frame: null resource = absent. state = the D3D12_RESOURCE_STATES it is in when the frame is
