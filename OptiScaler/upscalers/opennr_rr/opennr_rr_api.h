@@ -97,6 +97,8 @@ enum OnrRrFrameFlags {
     ONR_RR_FRAME_NORMALS_UNPACK = 1u << 5, // normals are stored as n * 0.5 + 0.5 (the runtime also assumes it for
                                            // UNORM formats)
     ONR_RR_FRAME_DM_INVERT = 1u << 6,      // diagnostic: the disocclusion mask goes in as 1 - mask (NGX takes it as is)
+    ONR_RR_FRAME_DM_CLAMP = 1u << 7,       // the disocclusion mask (after the scale and DM_INVERT) is clamped to 0..1
+                                           // (NGX takes it as is)
 };
 
 // A texture of the frame: null resource = absent. state = the D3D12_RESOURCE_STATES it is in when the frame is
@@ -153,10 +155,14 @@ typedef struct OnrRrFrame {
     // the colour's subrect: pass the colour's x, y).
     OnrRrTexture disocclusion_mask;
     OnrRrTexture sss_guide;
+    // Optional tail (size may be ONR_RR_FRAME_SIZE_V3 without it): the disocclusion mask is multiplied by this before
+    // DM_INVERT and DM_CLAMP; 0 or absent = 1 (NGX takes the mask as is)
+    float disocclusion_mask_scale;
 } OnrRrFrame;
 
 #define ONR_RR_FRAME_SIZE_V1 ((uint32_t)offsetof(OnrRrFrame, transparency_layer))
 #define ONR_RR_FRAME_SIZE_V2 ((uint32_t)offsetof(OnrRrFrame, disocclusion_mask))
+#define ONR_RR_FRAME_SIZE_V3 ((uint32_t)offsetof(OnrRrFrame, disocclusion_mask_scale))
 
 typedef struct OnrRrInfo {
     uint32_t size;                 // sizeof(OnrRrInfo)

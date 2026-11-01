@@ -460,6 +460,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             OpenNrRrUseDisocclusionMask.set_from_config(readBool("OpenNR-RR", "UseDisocclusionMask"));
             OpenNrRrUseSssGuide.set_from_config(readBool("OpenNR-RR", "UseSssGuide"));
             OpenNrRrInvertDisocclusionMask.set_from_config(readBool("OpenNR-RR", "InvertDisocclusionMask"));
+            OpenNrRrClampDisocclusionMask.set_from_config(readBool("OpenNR-RR", "ClampDisocclusionMask"));
+            OpenNrRrDisocclusionMaskScale.set_from_config(readFloat("OpenNR-RR", "DisocclusionMaskScale"));
         }
 
         // XeSS
@@ -1709,6 +1711,10 @@ bool Config::SaveIni()
         ini.SetValue("OpenNR-RR", "UseSssGuide", GetBoolValue(Instance()->OpenNrRrUseSssGuide.value_for_config()).c_str());
         ini.SetValue("OpenNR-RR", "InvertDisocclusionMask",
                      GetBoolValue(Instance()->OpenNrRrInvertDisocclusionMask.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "ClampDisocclusionMask",
+                     GetBoolValue(Instance()->OpenNrRrClampDisocclusionMask.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "DisocclusionMaskScale",
+                     GetFloatValue(Instance()->OpenNrRrDisocclusionMaskScale.value_for_config()).c_str());
     }
 
     // XeSS

@@ -3544,6 +3544,31 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             ShowTooltip("Diagnostic: reads the mask as 1 - mask (DLSS-RR takes it as it is).\n"
                         "Only does something while the mask is in use.");
 
+            if (bool clampMask = config->OpenNrRrClampDisocclusionMask.value_or_default();
+                ImGui::Checkbox("Clamp disocclusion mask to 0..1", &clampMask))
+                config->OpenNrRrClampDisocclusionMask = clampMask;
+            ShowTooltip("Keeps the mask in 0..1 before the network sees it (after the invert).\n"
+                        "Some games (Resident Evil Requiem) write values up to 3000, which DLSS-RR takes as they are\n"
+                        "and which leave trails and shimmering here. Only does something while the mask is in use.");
+
+            if (float maskScale = config->OpenNrRrDisocclusionMaskScale.value_or_default();
+                ImGui::SliderFloat("Mask scale", &maskScale, 1e-4f, 1.0f, "%.6f", ImGuiSliderFlags_Logarithmic))
+                config->OpenNrRrDisocclusionMaskScale = maskScale;
+            ShowTooltip("Multiplies the disocclusion mask before the invert and the clamp (1 = as the game gives it).\n"
+                        "Lower it until thin moving objects stay solid without rain trails.\n"
+                        "Ctrl+click to type a value.");
+            const std::pair<const char*, float> scalePresets[] = { { "1", 1.0f },
+                                                                   { "0.1", 0.1f },
+                                                                   { "0.01", 0.01f },
+                                                                   { "1/3000", 1.0f / 3000.0f } };
+            for (int i = 0; i < 4; i++)
+            {
+                if (i)
+                    ImGui::SameLine();
+                if (ImGui::SmallButton(scalePresets[i].first))
+                    config->OpenNrRrDisocclusionMaskScale = scalePresets[i].second;
+            }
+
             if (bool useSss = config->OpenNrRrUseSssGuide.value_or_default(); ImGui::Checkbox("Use SSS guide", &useSss))
                 config->OpenNrRrUseSssGuide = useSss;
             ShowTooltip("Feeds the game's subsurface scattering guide (or ColorBeforeFog) to the network, as DLSS-RR does.\n"

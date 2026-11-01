@@ -848,11 +848,17 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
     const bool useMask = cfg.OpenNrRrUseDisocclusionMask.value_or_default();
     const bool useSss = cfg.OpenNrRrUseSssGuide.value_or_default();
     const bool invertMask = cfg.OpenNrRrInvertDisocclusionMask.value_or_default();
-    if (const int switches = int(useMask) | int(useSss) << 1 | int(invertMask) << 2; switches != _loggedSwitches)
+    const bool clampMask = cfg.OpenNrRrClampDisocclusionMask.value_or_default();
+    const float maskScale = cfg.OpenNrRrDisocclusionMaskScale.value_or_default();
+    if (const int switches = int(useMask) | int(useSss) << 1 | int(invertMask) << 2 | int(clampMask) << 3;
+        switches != _loggedSwitches || maskScale != _loggedMaskScale)
     {
         _loggedSwitches = switches;
-        LOG_INFO("OpenNR RR: use disocclusion mask {}, invert it {}, use SSS guide {}", useMask, invertMask, useSss);
+        _loggedMaskScale = maskScale;
+        LOG_INFO("OpenNR RR: use disocclusion mask {}, scale it by {}, invert it {}, clamp it to 0..1 {}, use SSS guide {}",
+                 useMask, maskScale, invertMask, clampMask, useSss);
     }
+    frame.disocclusion_mask_scale = maskScale > 0.0f ? maskScale : 1.0f;
     if (!useMask)
         frame.disocclusion_mask = {};
     if (!useSss)
@@ -925,6 +931,8 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
         frame.flags |= ONR_RR_FRAME_ROUGHNESS_PACKED;
     if (invertMask)
         frame.flags |= ONR_RR_FRAME_DM_INVERT;
+    if (clampMask)
+        frame.flags |= ONR_RR_FRAME_DM_CLAMP;
 
     return true;
 }
