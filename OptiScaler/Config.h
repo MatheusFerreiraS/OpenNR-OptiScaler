@@ -1102,7 +1102,7 @@ class Config
     // network, and read the mask as 1 - mask; applied on the next frame. The scale multiplies the mask and the clamp
     // keeps it in 0..1 afterwards (RE Requiem writes values up to 3000; DLSS-RR takes them as they are)
     CustomOptional<bool> OpenNrRrUseDisocclusionMask { true };
-    CustomOptional<bool> OpenNrRrUseSssGuide { true };
+    CustomOptional<bool> OpenNrRrUseSssGuide { false }; // off by default: costs time in game, on where a game needs it
     CustomOptional<bool> OpenNrRrInvertDisocclusionMask { false };
     CustomOptional<bool> OpenNrRrClampDisocclusionMask { true };
     CustomOptional<float> OpenNrRrDisocclusionMaskScale { 1.0f };
