@@ -835,6 +835,15 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
     frame.transparency_opacity =
         texture("DLSS.TransparencyLayerOpacity", "DLSS.TransparencyLayerOpacity.Subrect.Base.X",
                 "DLSS.TransparencyLayerOpacity.Subrect.Base.Y", read);
+    // Two more guides nvngx_dlssd.dll 310.9.1 feeds its first encoder (RE Requiem passes both): the disocclusion mask,
+    // and the SSS guide, which ColorBeforeFog replaces when given; NGX reads the latter at the colour's subrect.
+    frame.disocclusion_mask = texture("DLSS.DisocclusionMask", "DLSS.DisocclusionMask.Subrect.Base.X",
+                                      "DLSS.DisocclusionMask.Subrect.Base.Y", read);
+    frame.sss_guide = texture("DLSSD.ColorBeforeFog", nullptr, nullptr, read);
+    if (frame.sss_guide.resource == nullptr)
+        frame.sss_guide = texture("DLSSD.ScreenSpaceSubsurfaceScatteringGuide", nullptr, nullptr, read);
+    frame.sss_guide.x = frame.color.x;
+    frame.sss_guide.y = frame.color.y;
     LogNgxInputs(params, static_cast<ID3D12Resource*>(frame.transparency_layer.resource));
 
     if (frame.color.resource == nullptr || frame.depth.resource == nullptr || frame.motion.resource == nullptr ||
@@ -852,12 +861,14 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
     {
         guidesLogged = true;
         LOG_INFO("OpenNR RR: guides diffuse albedo {}, specular albedo {}, normals {}, roughness {}, specular hit "
-                 "distance {}, ray direction + hit distance {}, transparency layer {}, its opacity {}",
+                 "distance {}, ray direction + hit distance {}, transparency layer {}, its opacity {}, disocclusion mask "
+                 "{}, SSS guide {}",
                  frame.diffuse_albedo.resource != nullptr, frame.specular_albedo.resource != nullptr,
                  frame.normals.resource != nullptr, frame.roughness.resource != nullptr,
                  frame.specular_hit_distance.resource != nullptr,
                  frame.specular_ray_direction_hit_distance.resource != nullptr,
-                 frame.transparency_layer.resource != nullptr, frame.transparency_opacity.resource != nullptr);
+                 frame.transparency_layer.resource != nullptr, frame.transparency_opacity.resource != nullptr,
+                 frame.disocclusion_mask.resource != nullptr, frame.sss_guide.resource != nullptr);
     }
 
     // Without the create-time mode, the first frame settles it: no roughness texture means it rides in normals.w.

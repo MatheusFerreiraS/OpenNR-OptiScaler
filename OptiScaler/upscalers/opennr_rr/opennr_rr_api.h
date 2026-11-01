@@ -146,9 +146,16 @@ typedef struct OnrRrFrame {
     // not read yet).
     OnrRrTexture transparency_layer;
     OnrRrTexture transparency_opacity;
+    // Optional tail (size may be ONR_RR_FRAME_SIZE_V2 without it): two more guides nvngx_dlssd.dll 310.9.1 feeds its
+    // first encoder, red channel, render extent: DLSS.DisocclusionMask (at its own subrect) and
+    // DLSSD.ScreenSpaceSubsurfaceScatteringGuide, for which NGX takes DLSSD.ColorBeforeFog when that is given (read at
+    // the colour's subrect: pass the colour's x, y).
+    OnrRrTexture disocclusion_mask;
+    OnrRrTexture sss_guide;
 } OnrRrFrame;
 
 #define ONR_RR_FRAME_SIZE_V1 ((uint32_t)offsetof(OnrRrFrame, transparency_layer))
+#define ONR_RR_FRAME_SIZE_V2 ((uint32_t)offsetof(OnrRrFrame, disocclusion_mask))
 
 typedef struct OnrRrInfo {
     uint32_t size;                 // sizeof(OnrRrInfo)
