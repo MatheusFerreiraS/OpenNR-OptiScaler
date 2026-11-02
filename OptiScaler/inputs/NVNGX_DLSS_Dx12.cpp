@@ -790,6 +790,14 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
             state.newBackend = FfxApiProxy::IsDenoiserApiImplementedDx12() ? Upscaler::FSR_RR : Upscaler::FSR21;
             ImGui::InsertNotification({ ImGuiToastType::Warning, 10000, "OpenNR RR did not start, see the log" });
         }
+        // FSR-RR that does not start hands Ray Reconstruction to OpenNR RR when the runtime takes this GPU, even
+        // with OpenNR RR switched off
+        else if (upscalerBackend == Upscaler::FSR_RR && IdentifyGpu::getPrimaryGpu().vendorId != VendorId::Nvidia &&
+                 OpenNrRr::SplitReady() && OpenNrRr::Usable(D3D12Device->GetAdapterLuid()))
+        {
+            LOG_INFO("FSR-RR did not initialise, trying OpenNR RR");
+            state.newBackend = Upscaler::OpenNrRr;
+        }
 
         Dx12Contexts[handleId].featureKey = state.newBackend;
         Dx12Contexts[handleId].featureID = InFeatureID;
