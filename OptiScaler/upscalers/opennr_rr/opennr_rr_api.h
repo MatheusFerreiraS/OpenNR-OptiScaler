@@ -66,7 +66,7 @@ enum OnrRrResult {
 
 enum OnrRrMode {
     ONR_RR_MODE_FAST = 0,      // fp32 accumulation (kernels *_f), the default
-    ONR_RR_MODE_FAITHFUL = 1,  // fp16 accumulation every 8 K as the reference GPU (k8 kernels)
+    ONR_RR_MODE_FAITHFUL = 1,  // accepted from older hosts and run as fast (the k8 kernels are harness-only)
 };
 
 enum OnrRrState {
@@ -188,7 +188,7 @@ typedef struct OnrRrApi {
     int32_t (*Check)(const void* adapter_luid, const wchar_t* dlssd_path);
     int32_t (*Create)(const OnrRrCreateInfo* info, void** context);
     int32_t (*Destroy)(void* context);
-    int32_t (*SetMode)(void* context, uint32_t mode);   // applies when the kernels of that mode are built
+    int32_t (*SetMode)(void* context, uint32_t mode);   // only fast is built: a no-op that keeps fast
     int32_t (*RecordInputs)(void* context, const OnrRrFrame* frame, void* command_list, void** job);
     int32_t (*Enqueue)(void* context, void* job, void* command_queue);
     int32_t (*RecordOutput)(void* context, void* job, void* command_list);

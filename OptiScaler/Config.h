@@ -1092,7 +1092,6 @@ class Config
     // OpenNR RR: Ray Reconstruction on the DLSS-RR network (OpenNrRrRuntime.dll), D3D12, RDNA4. On by default: it
     // only takes over where the runtime accepts the GPU and nvngx_dlssd.dll, FSR-RR otherwise
     CustomOptional<bool> OpenNrRrEnabled { true };
-    CustomOptional<std::string> OpenNrRrMode { "fast" }; // fast or faithful
     // mochizuki NR on the denoised render-size image, between the network and its temporal post: off, loop (the
     // history takes the NR) or display (the network keeps its own history, the shown image adds the NR as a delta)
     CustomOptional<std::string> OpenNrRrNrOnDenoised { "off" };

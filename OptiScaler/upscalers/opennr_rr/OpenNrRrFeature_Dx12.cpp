@@ -406,14 +406,6 @@ void LogNgxInputs(const NVSDK_NGX_Parameter& params, ID3D12Resource* layer)
     }
 }
 
-uint32_t ModeFromConfig()
-{
-    const auto mode = Config::Instance()->OpenNrRrMode.value_or_default();
-    return _stricmp(mode.c_str(), "faithful") == 0 ? ONR_RR_MODE_FAITHFUL : ONR_RR_MODE_FAST;
-}
-
-const char* ModeName(uint32_t mode) { return mode == ONR_RR_MODE_FAITHFUL ? "faithful" : "fast"; }
-
 const char* StateName(uint32_t state)
 {
     switch (state)
@@ -610,7 +602,6 @@ bool OpenNrRrFeatureDx12::InitInternal(ID3D12GraphicsCommandList* InCommandList,
 
     _maxRenderWidth = RenderWidth();
     _maxRenderHeight = RenderHeight();
-    _mode = ModeFromConfig();
 
     const auto dataDir = (Util::DllPath().parent_path() / L"opennr-rr").wstring();
     std::wstring dlssd;
@@ -621,7 +612,7 @@ bool OpenNrRrFeatureDx12::InitInternal(ID3D12GraphicsCommandList* InCommandList,
 
     OnrRrCreateInfo info {};
     info.size = sizeof(info);
-    info.mode = _mode;
+    info.mode = ONR_RR_MODE_FAST;
     info.d3d12_device = Device;
     info.max_render_width = _maxRenderWidth;
     info.max_render_height = _maxRenderHeight;
@@ -659,8 +650,8 @@ bool OpenNrRrFeatureDx12::InitInternal(ID3D12GraphicsCommandList* InCommandList,
     uint32_t running = ONR_RR_BACKEND_VULKAN;
     if (s_getBackend != nullptr)
         s_getBackend(_context, &running);
-    LOG_INFO("OpenNR RR: created, render {}x{} -> output {}x{}, mode {}, backend {} (asked: {}), weights from {}",
-             _maxRenderWidth, _maxRenderHeight, DisplayWidth(), DisplayHeight(), ModeName(_mode),
+    LOG_INFO("OpenNR RR: created, render {}x{} -> output {}x{}, backend {} (asked: {}), weights from {}",
+             _maxRenderWidth, _maxRenderHeight, DisplayWidth(), DisplayHeight(),
              running == ONR_RR_BACKEND_D3D12 ? "D3D12" : "Vulkan", backend, wstring_to_string(dlssd));
 
     if (!LowResMV())
@@ -950,13 +941,6 @@ bool OpenNrRrFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandL
         return false;
     }
 
-    if (const uint32_t mode = ModeFromConfig(); mode != _mode)
-    {
-        const int32_t rc = s_api.SetMode(_context, mode);
-        LOG_INFO("OpenNR RR: mode {} -> {} (rc {})", ModeName(_mode), ModeName(mode), rc);
-        _mode = mode;
-    }
-
     if (_frameCount % 30 == 0)
     {
         OnrRrInfo info {};
@@ -965,10 +949,9 @@ bool OpenNrRrFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandL
         if (s_api.GetInfo(_context, &info) == ONR_RR_OK)
         {
             if (_frameCount % 300 == 0)
-                LOG_INFO("OpenNR RR: {} ({}), {} network frames, GPU {:.2f} ms (avg {:.2f}), {}x{} -> {}x{}, mode {}",
+                LOG_INFO("OpenNR RR: {} ({}), {} network frames, GPU {:.2f} ms (avg {:.2f}), {}x{} -> {}x{}",
                          StateName(info.state), info.message, info.frames, info.gpu_ms_last, info.gpu_ms_average,
-                         info.render_width, info.render_height, info.output_width, info.output_height,
-                         ModeName(info.mode));
+                         info.render_width, info.render_height, info.output_width, info.output_height);
 
             if (info.state == ONR_RR_STATE_FAILED)
             {
