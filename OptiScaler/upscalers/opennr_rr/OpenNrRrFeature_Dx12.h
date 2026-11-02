@@ -42,7 +42,6 @@ class OpenNrRrFeatureDx12 : public IFeature_Dx12
     // The job armed on a list's between slot, until that list runs.
     void* _job = nullptr;
     ID3D12CommandList* _jobList = nullptr;
-    uint32_t _mode = ONR_RR_MODE_FAST;
     uint32_t _maxRenderWidth = 0;
     uint32_t _maxRenderHeight = 0;
     bool _ngxHWDepth = false;

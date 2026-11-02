@@ -454,7 +454,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             }
 
             OpenNrRrEnabled.set_from_config(readBool("OpenNR-RR", "Enabled"));
-            OpenNrRrMode.set_from_config(readString("OpenNR-RR", "Mode", true));
             OpenNrRrNrOnDenoised.set_from_config(readString("OpenNR-RR", "NrOnDenoised", true));
             OpenNrRrBackend.set_from_config(readString("OpenNR-RR", "Backend", true));
             OpenNrRrUseDisocclusionMask.set_from_config(readBool("OpenNR-RR", "UseDisocclusionMask"));
@@ -1707,7 +1706,6 @@ bool Config::SaveIni()
         }
 
         ini.SetValue("OpenNR-RR", "Enabled", GetBoolValue(Instance()->OpenNrRrEnabled.value_for_config()).c_str());
-        ini.SetValue("OpenNR-RR", "Mode", Instance()->OpenNrRrMode.value_for_config().value_or("auto").c_str());
         ini.SetValue("OpenNR-RR", "NrOnDenoised",
                      Instance()->OpenNrRrNrOnDenoised.value_for_config().value_or("auto").c_str());
         ini.SetValue("OpenNR-RR", "Backend", Instance()->OpenNrRrBackend.value_for_config().value_or("auto").c_str());

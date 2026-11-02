@@ -3489,16 +3489,6 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             ScopedIndent indent {};
             ImGui::Spacing();
 
-            const char* modes[] = { "Fast", "Faithful" };
-            int mode = config->OpenNrRrMode.value_or_default() == "faithful" ? 1 : 0;
-
-            ImGui::PushItemWidth(150.0f * menuResScale);
-            if (ImGui::Combo("Mode", &mode, modes, 2))
-                config->OpenNrRrMode = mode == 1 ? "faithful" : "fast";
-            ImGui::PopItemWidth();
-            ShowTooltip("Fast: fp32 accumulation.\nFaithful: fp16 accumulation, as the reference GPU does.\n"
-                        "Applies once the kernels of that mode are built.");
-
             const char* nrModes[] = { "Off", "In the loop", "Display only" };
             const auto nrMode = config->OpenNrRrNrOnDenoised.value_or_default();
             int nr = nrMode == "loop" ? 1 : nrMode == "display" ? 2 : 0;
