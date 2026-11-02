@@ -11,8 +11,9 @@ RX 9000 (RDNA4). O OptiScaler (GPL) só carrega `OpenNrRrRuntime.dll` (MIT) pelo
 `OptiScaler/upscalers/opennr_rr/opennr_rr_api.h` (cópia literal do arquivo do repositório MIT). Os pesos saem da
 `nvngx_dlssd.dll` do próprio jogo (310.9.1.0 no Cyberpunk), lidos em tempo de execução; nada da NVIDIA é distribuído.
 
-Modos: **Rápido** (padrão, acumulação fp32, ~6,5 ms de rede a 1080p Quality) e **Fiel** (acumulação fp16 a cada 8 K
-como a GPU de referência, ~11,4 ms). Na validação pelo caminho D3D12 os dois ficam em 60–65 dB contra a saída do NGX.
+Um modo só, o **rápido** (acumulação fp32). O modo fiel (k8, acumulação fp16 a cada 8 K como a GPU de referência)
+saiu do produto em 2026-11-02 (branch `opennr-rr-line`): fica só no harness do repositório MIT. Na validação pelo
+caminho D3D12 o rápido fica em 60–65 dB contra a saída do NGX.
 
 ## Como funciona no OptiScaler
 
@@ -25,11 +26,14 @@ como a GPU de referência, ~11,4 ms). Na validação pelo caminho D3D12 os dois 
   divide listas está ativo (no Cyberpunk do usuário, `NrBackend=mochizuki`).
 - Seleção: entrada extra "OpenNR RR" no combo de upscaler quando o jogo usa RR no DX12 numa GPU não NVIDIA. Escolher
   grava `Enabled=true`; trocar para outro grava `false`. Se não puder ser oferecido, uma linha cinza diz o motivo.
-- Cabeçalho "OpenNR RR" no menu: combo Fast/Faithful (grava `Mode`, aplica ao vivo) e status (estado, ms de GPU,
-  mensagem, origem dos pesos).
+- Cabeçalho "OpenNR RR" no menu: status (estado, ms de GPU, mensagem, origem dos pesos) e as chaves das entradas
+  opcionais: `UseSssGuide` (desligada por padrão), `UseDisocclusionMask`, `UseResponsivityMask`, `UseColorBeforeTransparency`,
+  `UseDepthOfFieldGuide`, `UseReflectionMotionVectors`, `UseLayerOpacityAndMotion` (ligadas; só valem quando o jogo
+  passa a entrada). Sem combo de modo.
 - Queda: DLL ausente, `Check`/`Create` falhando, estado FAILED, divisão recusada ou erro de quadro → log, um aviso e
   volta para o FSR-RR, sem tentar de novo até reiniciar o jogo.
-- INI: `[OpenNR-RR] Enabled=auto` (desligado) e `Mode=auto` (rápido).
+- INI: `[OpenNR-RR] Enabled=auto` (ligado onde o runtime aceita a GPU e a `nvngx_dlssd.dll`) e as chaves `Use*` acima.
+  Um `Mode=` que sobrou de um ini antigo é ignorado.
 - Com OpenNR RR ativo o NR antes do SR (mochizuki) não roda nesses quadros (como já acontece com o FSR-RR): a lista só
   pode ser dividida uma vez.
 
@@ -37,7 +41,8 @@ como a GPU de referência, ~11,4 ms). Na validação pelo caminho D3D12 os dois 
 
 - `dxgi.dll` trocado pelo build desta branch (sha256 e95c9f26…); o original está em
   `_optiscaler_backup_2026-10-30_opennr_rr\dxgi.dll` (979a8285…).
-- Novos: `OpenNrRrRuntime.dll` (33126c00…) e a pasta `opennr-rr\shaders\` (43 SPIR-V, os dois modos).
+- Novos: `OpenNrRrRuntime.dll` (33126c00…) e a pasta `opennr-rr\shaders\` (43 SPIR-V, os dois modos; a build atual
+  carrega 39, ver o stage `out\rr-line-stage\` do OpenNR-Denoiser).
 - `OptiScaler.ini` do usuário **não foi tocado**. Lista em `_optiscaler_backup_2026-10-30_opennr_rr\installed.txt`.
 
 ## Como testar
@@ -46,7 +51,7 @@ como a GPU de referência, ~11,4 ms). Na validação pelo caminho D3D12 os dois 
    ligado** (como já é usado com o FSR-RR).
 2. No jogo, abrir o menu do OptiScaler (Insert), **Upscalers** → combo do upscaler → **OpenNR RR**.
 3. Nos primeiros segundos a imagem é a cor sem denoise (a rede está sendo montada, ~6 s na primeira vez); depois entra
-   o RR. No cabeçalho **OpenNR RR** do menu: status "ready", tempo de GPU, e o combo **Fast/Faithful** (Rápido/Fiel).
+   o RR. No cabeçalho **OpenNR RR** do menu: status "ready", tempo de GPU e as chaves das entradas.
 4. Testar movimento de câmera, cortes de cena, reflexos e trocar a qualidade do DLSS (muda a resolução de render).
 
 Logs para mandar: `opennr_rr.log` (runtime) e `OptiScaler.log` (linhas "OpenNR RR"), ambos em `bin\x64`; se travar,
@@ -55,7 +60,7 @@ Logs para mandar: `opennr_rr.log` (runtime) e `OptiScaler.log` (linhas "OpenNR R
 ## Reverter
 
 Copiar `_optiscaler_backup_2026-10-30_opennr_rr\dxgi.dll` de volta para `bin\x64` e apagar `OpenNrRrRuntime.dll` e a
-pasta `opennr-rr`. Se o menu gravou `Enabled=true`/`Mode` em `[OpenNR-RR]`, essas chaves não fazem nada no build antigo.
+pasta `opennr-rr`. Chaves gravadas pelo menu em `[OpenNR-RR]` não fazem nada sem a DLL.
 
 ## Riscos
 
