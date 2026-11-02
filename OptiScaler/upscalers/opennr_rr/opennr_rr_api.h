@@ -141,12 +141,12 @@ typedef struct OnrRrFrame {
     OnrRrTexture depth;
     OnrRrTexture motion;           // current -> previous
     OnrRrTexture specular_hit_distance;
-    OnrRrTexture specular_ray_direction_hit_distance;   // .w used when specular_hit_distance is absent
+    OnrRrTexture specular_ray_direction_hit_distance;   // not read (rr2 has no input for it)
     OnrRrTexture output;           // output extent, written by RecordOutput
     // Optional tail (size may be ONR_RR_FRAME_SIZE_V1 without it; older runtimes ignore it): the transparency layer
     // NGX composites over the output (premultiplied RGBA at the render extent: DLSS.TransparencyLayer, or
-    // DLSSD.ColorBeforeParticles, which NGX takes for it), and its separate opacity (DLSS.TransparencyLayerOpacity;
-    // not read yet).
+    // DLSSD.ColorBeforeParticles, which NGX takes for it), and its separate opacity (DLSS.TransparencyLayerOpacity,
+    // rgb, its own subrect; read only from ONR_RR_FRAME_SIZE_V4 on: older hosts left it unread).
     OnrRrTexture transparency_layer;
     OnrRrTexture transparency_opacity;
     // Optional tail (size may be ONR_RR_FRAME_SIZE_V2 without it): two more guides nvngx_dlssd.dll 310.9.1 feeds its
@@ -158,11 +158,26 @@ typedef struct OnrRrFrame {
     // Optional tail (size may be ONR_RR_FRAME_SIZE_V3 without it): the disocclusion mask is multiplied by this before
     // DM_INVERT and DM_CLAMP; 0 or absent = 1 (NGX takes the mask as is)
     float disocclusion_mask_scale;
+    // Optional tail (size may be ONR_RR_FRAME_SIZE_V4 without it): the rest of what nvngx_dlssd.dll 310.9.1 feeds rr2
+    // (docs/NOTA-ENTRADAS.md). The first encoder takes DLSSD.ResponsivityMask (red, its own subrect),
+    // DLSSD.ColorBeforeTransparency (rgb) and DLSSD.DepthOfFieldGuide (red), both read at the colour's subrect (pass
+    // the colour's x, y), and GBuffer.SpecularMvec, the reflections' motion vectors in place of the ones it derives
+    // from depth, normals and the hit distance (read at the motion vectors' subrect, scaled as them). The downsample
+    // takes DLSS.TransparencyLayerMvecs (the layer's own motion vectors, its own subrect; NGX reads them at the output
+    // pixel and multiplies them by MV.Scale); transparency_opacity above is read from this size on. Without
+    // DLSSD.SpecularHitDistance the reflections move with the pixel's motion vector, as in NGX
+    // (specular_ray_direction_hit_distance is not read: rr2 has no input for it).
+    OnrRrTexture responsivity_mask;
+    OnrRrTexture color_before_transparency;
+    OnrRrTexture depth_of_field_guide;
+    OnrRrTexture specular_motion;
+    OnrRrTexture transparency_motion;
 } OnrRrFrame;
 
 #define ONR_RR_FRAME_SIZE_V1 ((uint32_t)offsetof(OnrRrFrame, transparency_layer))
 #define ONR_RR_FRAME_SIZE_V2 ((uint32_t)offsetof(OnrRrFrame, disocclusion_mask))
 #define ONR_RR_FRAME_SIZE_V3 ((uint32_t)offsetof(OnrRrFrame, disocclusion_mask_scale))
+#define ONR_RR_FRAME_SIZE_V4 ((uint32_t)offsetof(OnrRrFrame, responsivity_mask))
 
 typedef struct OnrRrInfo {
     uint32_t size;                 // sizeof(OnrRrInfo)

@@ -353,13 +353,15 @@ constexpr const char* kNgxTextures[] = {
     "DLSS.TransparencyLayerOpacity", "DLSS.TransparencyLayerMvecs", "DLSS.DisocclusionMask", "DLSSD.ResponsivityMask",
     "GBuffer.IndirectAlbedo", "GBuffer.SpecularMvec", "GBuffer.Emissive", "MotionVectors3D", "IsParticleMask",
     "AnimatedTextureMask", "DepthHighRes", "Position.ViewSpace", "RayTracingHitDistance", "MotionVectorsReflection",
-    "DLSS.Input.Reduce.Ghost.Mask", "DLSS.Input.Bias.Current.Color.Mask",
+    "DLSS.Input.Reduce.Ghost.Mask", "DLSS.Input.Bias.Current.Color.Mask", "GBuffer.Attrib.15",
 };
 
 constexpr const char* kNgxScalars[] = {
     "DLSS.Pre.Exposure", "DLSS.Exposure.Scale", "MV.Scale.X", "MV.Scale.Y", "Jitter.Offset.X", "Jitter.Offset.Y",
     "DLSS.Input.Bias.Current.Color.Subrect.Base.X", "DLSS.Input.Bias.Current.Color.Subrect.Base.Y",
     "DLSS.TransparencyLayer.Subrect.Base.X", "DLSS.TransparencyLayer.Subrect.Base.Y", "TonemapperType",
+    "DLSSD.ResponsivityMask.Subrect.Base.X", "DLSSD.ResponsivityMask.Subrect.Base.Y",
+    "DLSS.TransparencyLayerMvecs.Subrect.Base.X", "DLSS.TransparencyLayerMvecs.Subrect.Base.Y",
 };
 
 // Which DLSS-D inputs the game passes: the first frame, then whenever the set changes (at most 20 times), with each
@@ -844,25 +846,60 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
         frame.sss_guide = texture("DLSSD.ScreenSpaceSubsurfaceScatteringGuide", nullptr, nullptr, read);
     frame.sss_guide.x = frame.color.x;
     frame.sss_guide.y = frame.color.y;
+    // The rest nvngx_dlssd.dll feeds rr2: the responsivity mask (its own subrect), ColorBeforeTransparency and the depth
+    // of field guide (at the colour's subrect), the reflections' motion vectors (at the motion vectors' subrect), and
+    // the transparency layer's own motion vectors (its own subrect).
+    frame.responsivity_mask = texture("DLSSD.ResponsivityMask", "DLSSD.ResponsivityMask.Subrect.Base.X",
+                                      "DLSSD.ResponsivityMask.Subrect.Base.Y", read);
+    frame.color_before_transparency = texture(NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency, nullptr, nullptr, read);
+    frame.color_before_transparency.x = frame.color.x;
+    frame.color_before_transparency.y = frame.color.y;
+    frame.depth_of_field_guide = texture(NVSDK_NGX_Parameter_DLSSD_DepthOfFieldGuide, nullptr, nullptr, read);
+    frame.depth_of_field_guide.x = frame.color.x;
+    frame.depth_of_field_guide.y = frame.color.y;
+    frame.specular_motion = texture(NVSDK_NGX_Parameter_GBuffer_SpecularMvec, nullptr, nullptr, read);
+    frame.specular_motion.x = frame.motion.x;
+    frame.specular_motion.y = frame.motion.y;
+    frame.transparency_motion = texture("DLSS.TransparencyLayerMvecs", "DLSS.TransparencyLayerMvecs.Subrect.Base.X",
+                                        "DLSS.TransparencyLayerMvecs.Subrect.Base.Y", read);
     // diagnostic switches from the menu, applied on this frame
     const bool useMask = cfg.OpenNrRrUseDisocclusionMask.value_or_default();
     const bool useSss = cfg.OpenNrRrUseSssGuide.value_or_default();
     const bool invertMask = cfg.OpenNrRrInvertDisocclusionMask.value_or_default();
     const bool clampMask = cfg.OpenNrRrClampDisocclusionMask.value_or_default();
     const float maskScale = cfg.OpenNrRrDisocclusionMaskScale.value_or_default();
-    if (const int switches = int(useMask) | int(useSss) << 1 | int(invertMask) << 2 | int(clampMask) << 3;
+    const bool useResp = cfg.OpenNrRrUseResponsivityMask.value_or_default();
+    const bool useCbt = cfg.OpenNrRrUseColorBeforeTransparency.value_or_default();
+    const bool useDof = cfg.OpenNrRrUseDepthOfFieldGuide.value_or_default();
+    const bool useSmv = cfg.OpenNrRrUseReflectionMotionVectors.value_or_default();
+    const bool useLayerExtras = cfg.OpenNrRrUseLayerOpacityAndMotion.value_or_default();
+    if (const int switches = int(useMask) | int(useSss) << 1 | int(invertMask) << 2 | int(clampMask) << 3 |
+                             int(useResp) << 4 | int(useCbt) << 5 | int(useDof) << 6 | int(useSmv) << 7 |
+                             int(useLayerExtras) << 8;
         switches != _loggedSwitches || maskScale != _loggedMaskScale)
     {
         _loggedSwitches = switches;
         _loggedMaskScale = maskScale;
-        LOG_INFO("OpenNR RR: use disocclusion mask {}, scale it by {}, invert it {}, clamp it to 0..1 {}, use SSS guide {}",
-                 useMask, maskScale, invertMask, clampMask, useSss);
+        LOG_INFO("OpenNR RR: use disocclusion mask {}, scale it by {}, invert it {}, clamp it to 0..1 {}, use SSS guide {}, "
+                 "use responsivity mask {}, colour before transparency {}, depth of field guide {}, reflection motion "
+                 "vectors {}, transparency layer opacity and motion {}",
+                 useMask, maskScale, invertMask, clampMask, useSss, useResp, useCbt, useDof, useSmv, useLayerExtras);
     }
     frame.disocclusion_mask_scale = maskScale > 0.0f ? maskScale : 1.0f;
     if (!useMask)
         frame.disocclusion_mask = {};
     if (!useSss)
         frame.sss_guide = {};
+    if (!useResp)
+        frame.responsivity_mask = {};
+    if (!useCbt)
+        frame.color_before_transparency = {};
+    if (!useDof)
+        frame.depth_of_field_guide = {};
+    if (!useSmv)
+        frame.specular_motion = {};
+    if (!useLayerExtras)
+        frame.transparency_opacity = frame.transparency_motion = {};
     LogNgxInputs(params, static_cast<ID3D12Resource*>(frame.transparency_layer.resource));
 
     if (frame.color.resource == nullptr || frame.depth.resource == nullptr || frame.motion.resource == nullptr ||
@@ -880,14 +917,18 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
     {
         guidesLogged = true;
         LOG_INFO("OpenNR RR: guides diffuse albedo {}, specular albedo {}, normals {}, roughness {}, specular hit "
-                 "distance {}, ray direction + hit distance {}, transparency layer {}, its opacity {}, disocclusion mask "
-                 "{}, SSS guide {}",
+                 "distance {}, ray direction + hit distance {} (not read), transparency layer {}, its opacity {}, its "
+                 "motion vectors {}, disocclusion mask {}, SSS guide {}, responsivity mask {}, colour before "
+                 "transparency {}, depth of field guide {}, reflection motion vectors {}",
                  frame.diffuse_albedo.resource != nullptr, frame.specular_albedo.resource != nullptr,
                  frame.normals.resource != nullptr, frame.roughness.resource != nullptr,
                  frame.specular_hit_distance.resource != nullptr,
                  frame.specular_ray_direction_hit_distance.resource != nullptr,
                  frame.transparency_layer.resource != nullptr, frame.transparency_opacity.resource != nullptr,
-                 frame.disocclusion_mask.resource != nullptr, frame.sss_guide.resource != nullptr);
+                 frame.transparency_motion.resource != nullptr, frame.disocclusion_mask.resource != nullptr,
+                 frame.sss_guide.resource != nullptr, frame.responsivity_mask.resource != nullptr,
+                 frame.color_before_transparency.resource != nullptr, frame.depth_of_field_guide.resource != nullptr,
+                 frame.specular_motion.resource != nullptr);
     }
 
     // Without the create-time mode, the first frame settles it: no roughness texture means it rides in normals.w.

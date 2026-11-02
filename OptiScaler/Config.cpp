@@ -462,6 +462,11 @@ bool Config::Reload(std::filesystem::path iniPath)
             OpenNrRrInvertDisocclusionMask.set_from_config(readBool("OpenNR-RR", "InvertDisocclusionMask"));
             OpenNrRrClampDisocclusionMask.set_from_config(readBool("OpenNR-RR", "ClampDisocclusionMask"));
             OpenNrRrDisocclusionMaskScale.set_from_config(readFloat("OpenNR-RR", "DisocclusionMaskScale"));
+            OpenNrRrUseResponsivityMask.set_from_config(readBool("OpenNR-RR", "UseResponsivityMask"));
+            OpenNrRrUseColorBeforeTransparency.set_from_config(readBool("OpenNR-RR", "UseColorBeforeTransparency"));
+            OpenNrRrUseDepthOfFieldGuide.set_from_config(readBool("OpenNR-RR", "UseDepthOfFieldGuide"));
+            OpenNrRrUseReflectionMotionVectors.set_from_config(readBool("OpenNR-RR", "UseReflectionMotionVectors"));
+            OpenNrRrUseLayerOpacityAndMotion.set_from_config(readBool("OpenNR-RR", "UseLayerOpacityAndMotion"));
         }
 
         // XeSS
@@ -1715,6 +1720,16 @@ bool Config::SaveIni()
                      GetBoolValue(Instance()->OpenNrRrClampDisocclusionMask.value_for_config()).c_str());
         ini.SetValue("OpenNR-RR", "DisocclusionMaskScale",
                      GetFloatValue(Instance()->OpenNrRrDisocclusionMaskScale.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "UseResponsivityMask",
+                     GetBoolValue(Instance()->OpenNrRrUseResponsivityMask.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "UseColorBeforeTransparency",
+                     GetBoolValue(Instance()->OpenNrRrUseColorBeforeTransparency.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "UseDepthOfFieldGuide",
+                     GetBoolValue(Instance()->OpenNrRrUseDepthOfFieldGuide.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "UseReflectionMotionVectors",
+                     GetBoolValue(Instance()->OpenNrRrUseReflectionMotionVectors.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "UseLayerOpacityAndMotion",
+                     GetBoolValue(Instance()->OpenNrRrUseLayerOpacityAndMotion.value_for_config()).c_str());
     }
 
     // XeSS

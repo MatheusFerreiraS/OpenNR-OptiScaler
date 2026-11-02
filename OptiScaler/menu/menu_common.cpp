@@ -3575,6 +3575,32 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                         "Diagnostic: turn it off to see whether skin or trails change.\n"
                         "opennr_rr.log gets a summary of what the game puts in the mask and the guide every 3 s.");
 
+            // the other DLSS-D inputs rr2 reads, each used when the game gives it (the log's inventory says which)
+            const struct { CustomOptional<bool>* opt; const char* label; const char* tip; } extras[] = {
+                { &config->OpenNrRrUseResponsivityMask, "Use responsivity mask",
+                  "Feeds the game's DLSSD.ResponsivityMask to the network, as DLSS-RR does.\n"
+                  "Diagnostic: turn it off to see whether ghosting or smearing change." },
+                { &config->OpenNrRrUseColorBeforeTransparency, "Use colour before transparency",
+                  "Feeds the game's DLSSD.ColorBeforeTransparency to the network, as DLSS-RR does.\n"
+                  "Diagnostic: turn it off to see whether glass, water or particles change." },
+                { &config->OpenNrRrUseDepthOfFieldGuide, "Use depth of field guide",
+                  "Feeds the game's DLSSD.DepthOfFieldGuide to the network, as DLSS-RR does.\n"
+                  "Diagnostic: turn it off to see whether out-of-focus areas change." },
+                { &config->OpenNrRrUseReflectionMotionVectors, "Use reflection motion vectors",
+                  "Takes the game's GBuffer.SpecularMvec for how reflections move, as DLSS-RR does,\n"
+                  "instead of deriving it from depth, normals and the hit distance.\n"
+                  "Diagnostic: turn it off to see whether reflections smear or lag." },
+                { &config->OpenNrRrUseLayerOpacityAndMotion, "Use transparency layer opacity and motion",
+                  "Takes the transparency layer's own opacity and motion vectors when the game gives them, as DLSS-RR does.\n"
+                  "Diagnostic: turn it off to see whether particles or transparent effects change." },
+            };
+            for (const auto& e : extras)
+            {
+                if (bool on = e.opt->value_or_default(); ImGui::Checkbox(e.label, &on))
+                    *e.opt = on;
+                ShowTooltip(e.tip);
+            }
+
             if (const auto nrStatus = OpenNrRr::DenoisedNrStatus(); !nrStatus.empty())
                 ImGui::TextWrapped("NR: %s", nrStatus.c_str());
 

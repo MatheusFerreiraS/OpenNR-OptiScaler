@@ -1107,6 +1107,13 @@ class Config
     CustomOptional<bool> OpenNrRrInvertDisocclusionMask { false };
     CustomOptional<bool> OpenNrRrClampDisocclusionMask { true };
     CustomOptional<float> OpenNrRrDisocclusionMaskScale { 1.0f };
+    // the rest of the DLSS-D inputs nvngx_dlssd.dll feeds rr2 (docs/NOTA-ENTRADAS.md in OpenNR-Denoiser), each used when
+    // the game gives it; off for diagnosis, applied on the next frame
+    CustomOptional<bool> OpenNrRrUseResponsivityMask { true };
+    CustomOptional<bool> OpenNrRrUseColorBeforeTransparency { true };
+    CustomOptional<bool> OpenNrRrUseDepthOfFieldGuide { true };
+    CustomOptional<bool> OpenNrRrUseReflectionMotionVectors { true };
+    CustomOptional<bool> OpenNrRrUseLayerOpacityAndMotion { true };
 
     // FSR-RR
     CustomOptional<int> FfxDenoiserIndex { 0 };
