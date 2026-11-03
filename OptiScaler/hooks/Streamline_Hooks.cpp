@@ -1278,7 +1278,8 @@ sl::Result StreamlineHooks::hkslGetFeatureRequirements(sl::Feature feature, sl::
                  JoinNames(requirements.vkFeatures13, requirements.vkNumFeatures13));
     }
 
-    // NV-only device extensions the AMD driver lacks; the game checks them against the device
+    // Device extensions the AMD driver lacks (NV ones, and EXT_buffer_device_address which it only has as KHR/core).
+    // id Tech 8 keeps Streamline on only if the device has every one of them.
     if (Config::Instance()->StreamlineTrimRequirements.value_or_default() && result == sl::Result::eOk &&
         requirements.vkDeviceExtensions != nullptr)
     {
@@ -1292,7 +1293,8 @@ sl::Result StreamlineHooks::hkslGetFeatureRequirements(sl::Feature feature, sl::
         for (uint32_t i = 0; i < requirements.vkNumDeviceExtensions; i++)
         {
             auto name = requirements.vkDeviceExtensions[i];
-            if (name != nullptr && (strncmp(name, "VK_NVX_", 7) == 0 || strncmp(name, "VK_NV_", 6) == 0))
+            if (name != nullptr && (strncmp(name, "VK_NVX_", 7) == 0 || strncmp(name, "VK_NV_", 6) == 0 ||
+                                    strcmp(name, "VK_EXT_buffer_device_address") == 0))
             {
                 LOG_INFO("slGetFeatureRequirements: feature {} drops {}", (uint32_t) feature, name);
                 continue;
@@ -1303,6 +1305,9 @@ sl::Result StreamlineHooks::hkslGetFeatureRequirements(sl::Feature feature, sl::
 
         requirements.vkNumDeviceExtensions = static_cast<uint32_t>(names.size());
         requirements.vkDeviceExtensions = names.empty() ? nullptr : names.data();
+
+        LOG_INFO("slGetFeatureRequirements: feature {} device ext after trim [{}]", (uint32_t) feature,
+                 JoinNames(requirements.vkDeviceExtensions, requirements.vkNumDeviceExtensions));
     }
 
     return result;

@@ -269,16 +269,22 @@ static void SpoofProperties(const char* function, void* caller, VkPhysicalDevice
                        targetDeviceIdMatches &&
                        (!config->VulkanSpoofGameOnly.value_or_default() || GateDiag::FromGame(caller));
 
+    // id Tech 8 picks its vendor from driverID alone; VulkanDriverIdOnly leaves the rest real
+    const bool driverIdOnly = config->VulkanDriverIdOnly.value_or_default();
+
     if (spoof)
     {
-        auto deviceName = wstring_to_string(config->SpoofedGPUName.value_or_default());
-        strncpy_s(properties->deviceName, deviceName.c_str(), _TRUNCATE);
-        properties->vendorID = config->SpoofedVendorId.value_or_default();
-        properties->deviceID = config->SpoofedDeviceId.value_or_default();
-        properties->driverVersion = SpoofedDriverVersion();
+        if (!driverIdOnly)
+        {
+            auto deviceName = wstring_to_string(config->SpoofedGPUName.value_or_default());
+            strncpy_s(properties->deviceName, deviceName.c_str(), _TRUNCATE);
+            properties->vendorID = config->SpoofedVendorId.value_or_default();
+            properties->deviceID = config->SpoofedDeviceId.value_or_default();
+            properties->driverVersion = SpoofedDriverVersion();
+        }
 
         // driverID also comes back through the Vulkan 1.2 properties
-        if (properties->vendorID == VendorId::Nvidia)
+        if (config->SpoofedVendorId.value_or_default() == VendorId::Nvidia)
         {
             for (auto next = (VkDummyProps*) pNext; next != nullptr; next = (VkDummyProps*) next->pNext)
             {

@@ -1105,6 +1105,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             VulkanExtensionSpoofing.set_from_config(readBool("Spoofing", "VulkanExtensionSpoofing"));
             VulkanVRAM.set_from_config(readInt("Spoofing", "VulkanVRAM"));
             VulkanSpoofGameOnly.set_from_config(readBool("Spoofing", "VulkanGameOnly"));
+            VulkanDriverIdOnly.set_from_config(readBool("Spoofing", "VulkanDriverIdOnly"));
             VulkanExtensionSpoofList.set_from_config(readString("Spoofing", "VulkanExtensionList"));
             GateDiagnostics.set_from_config(readBool("Spoofing", "GateDiagnostics"));
             StreamlineForceSupported.set_from_config(readBool("Spoofing", "StreamlineForceSupported"));
@@ -2398,6 +2399,8 @@ bool Config::SaveIni()
         ini.SetValue("Spoofing", "VulkanVRAM", GetIntValue(Instance()->VulkanVRAM.value_for_config()).c_str());
         ini.SetValue("Spoofing", "VulkanGameOnly",
                      GetBoolValue(Instance()->VulkanSpoofGameOnly.value_for_config()).c_str());
+        ini.SetValue("Spoofing", "VulkanDriverIdOnly",
+                     GetBoolValue(Instance()->VulkanDriverIdOnly.value_for_config()).c_str());
         ini.SetValue("Spoofing", "VulkanExtensionList",
                      Instance()->VulkanExtensionSpoofList.value_for_config_or("auto").c_str());
         ini.SetValue("Spoofing", "GateDiagnostics",
