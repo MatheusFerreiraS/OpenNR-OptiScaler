@@ -1073,9 +1073,14 @@ void MenuCommon::AddVulkanBackends(Upscaler upscaler)
 {
     // No FSR w/Dx12 on Vulkan: FFX runs FSR 4 natively there now, and the w/Dx12 copies crashed RDR2. DLSS w/Dx12 stays,
     // it is how NeuralHub's DLSS reaches a Vulkan game.
-    RenderUpscalerCombo(API::Vulkan, upscaler,
-                        { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::DLSS,
-                          Upscaler::DLSS_on12 });
+    std::vector<Upscaler> options { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22,
+                                    Upscaler::FFX,  Upscaler::DLSS,  Upscaler::DLSS_on12 };
+
+    // Ray Reconstruction on OpenRR (the game's Vulkan device): kept in the list while it runs
+    if (upscaler == Upscaler::OpenNrRr)
+        options.push_back(Upscaler::OpenNrRr);
+
+    RenderUpscalerCombo(API::Vulkan, upscaler, options);
 }
 
 template <HasDefaultValue B> void MenuCommon::AddResourceBarrier(std::string name, CustomOptional<int32_t, B>* value)
@@ -3489,38 +3494,42 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             ScopedIndent indent {};
             ImGui::Spacing();
 
-            const char* nrModes[] = { "Off", "In the loop", "Display only" };
-            const auto nrMode = config->OpenNrRrNrOnDenoised.value_or_default();
-            int nr = nrMode == "loop" ? 1 : nrMode == "display" ? 2 : 0;
-
-            ImGui::PushItemWidth(150.0f * menuResScale);
-            if (ImGui::Combo("NR on denoised image", &nr, nrModes, 3))
-                config->OpenNrRrNrOnDenoised = nr == 1 ? "loop" : nr == 2 ? "display" : "off";
-            ImGui::PopItemWidth();
-            ShowTooltip("mochizuki NR (NrBackend=mochizuki and its settings) on the denoised render-size image,\n"
-                        "before the temporal accumulation and the upscale.\n"
-                        "In the loop: the accumulated history takes the NR as well; may flicker with strong NR models.\n"
-                        "Display only: the NR goes onto the shown image, following it from the first frame; the RR keeps\n"
-                        "its own history.");
-
-            const char* backends[] = { "Auto", "D3D12", "Vulkan" };
-            const auto backendName = config->OpenNrRrBackend.value_or_default();
-            int backend = backendName == "d3d12" ? 1 : backendName == "vulkan" ? 2 : 0;
-
-            ImGui::PushItemWidth(150.0f * menuResScale);
-            if (ImGui::Combo("Backend", &backend, backends, 3))
+            // the NR hop and the backend choice are D3D12's; a Vulkan game runs on its own device
+            if (currentFeature->Api() != API::Vulkan)
             {
-                config->OpenNrRrBackend = backend == 1 ? "d3d12" : backend == 2 ? "vulkan" : "auto";
-                // the runtime picks its backend at creation
-                state.newBackend = currentBackend;
-                MARK_ALL_BACKENDS_CHANGED();
+                const char* nrModes[] = { "Off", "In the loop", "Display only" };
+                const auto nrMode = config->OpenNrRrNrOnDenoised.value_or_default();
+                int nr = nrMode == "loop" ? 1 : nrMode == "display" ? 2 : 0;
+
+                ImGui::PushItemWidth(150.0f * menuResScale);
+                if (ImGui::Combo("NR on denoised image", &nr, nrModes, 3))
+                    config->OpenNrRrNrOnDenoised = nr == 1 ? "loop" : nr == 2 ? "display" : "off";
+                ImGui::PopItemWidth();
+                ShowTooltip("mochizuki NR (NrBackend=mochizuki and its settings) on the denoised render-size image,\n"
+                            "before the temporal accumulation and the upscale.\n"
+                            "In the loop: the accumulated history takes the NR as well; may flicker with strong NR models.\n"
+                            "Display only: the NR goes onto the shown image, following it from the first frame; the RR keeps\n"
+                            "its own history.");
+
+                const char* backends[] = { "Auto", "D3D12", "Vulkan" };
+                const auto backendName = config->OpenNrRrBackend.value_or_default();
+                int backend = backendName == "d3d12" ? 1 : backendName == "vulkan" ? 2 : 0;
+
+                ImGui::PushItemWidth(150.0f * menuResScale);
+                if (ImGui::Combo("Backend", &backend, backends, 3))
+                {
+                    config->OpenNrRrBackend = backend == 1 ? "d3d12" : backend == 2 ? "vulkan" : "auto";
+                    // the runtime picks its backend at creation
+                    state.newBackend = currentBackend;
+                    MARK_ALL_BACKENDS_CHANGED();
+                }
+                ImGui::PopItemWidth();
+                ShowTooltip("D3D12: the network runs on the game's own device, recorded into its command list\n"
+                            "(no second device, no copies through shared memory, no queue crossings).\n"
+                            "Vulkan: the network runs on a Vulkan device of its own beside the game.\n"
+                            "Auto: D3D12 when the runtime's check on this GPU and driver passes, otherwise Vulkan.\n"
+                            "Changing it recreates OpenRR.");
             }
-            ImGui::PopItemWidth();
-            ShowTooltip("D3D12: the network runs on the game's own device, recorded into its command list\n"
-                        "(no second device, no copies through shared memory, no queue crossings).\n"
-                        "Vulkan: the network runs on a Vulkan device of its own beside the game.\n"
-                        "Auto: D3D12 when the runtime's check on this GPU and driver passes, otherwise Vulkan.\n"
-                        "Changing it recreates OpenRR.");
 
             if (bool useMask = config->OpenNrRrUseDisocclusionMask.value_or_default();
                 ImGui::Checkbox("Use disocclusion mask", &useMask))
@@ -3600,8 +3609,10 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                                         : info.state == ONR_RR_STATE_BUILDING ? "building"
                                                                               : "failed";
                 ImGui::Text("State: %s, GPU %.2f ms (average)", stateName, info.gpu_ms_average);
-                ImGui::Text("Running on: %s", info.backend == ONR_RR_BACKEND_D3D12 ? "D3D12 (the game's command list)" : "Vulkan");
-                if (info.backend != ONR_RR_BACKEND_D3D12 && info.backend_message[0] != 0)
+                ImGui::Text("Running on: %s", info.backend == ONR_RR_BACKEND_D3D12         ? "D3D12 (the game's command list)"
+                                              : info.backend == ONR_RR_BACKEND_VULKAN_HOST ? "Vulkan (the game's command buffer)"
+                                                                                           : "Vulkan");
+                if (info.backend == ONR_RR_BACKEND_VULKAN && info.backend_message[0] != 0)
                     ImGui::TextWrapped("D3D12 not used: %s", info.backend_message);
 
                 if (info.message[0] != 0)

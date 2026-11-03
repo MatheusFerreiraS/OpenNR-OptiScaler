@@ -456,6 +456,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             OpenNrRrEnabled.set_from_config(readBool("OpenNR-RR", "Enabled"));
             OpenNrRrNrOnDenoised.set_from_config(readString("OpenNR-RR", "NrOnDenoised", true));
             OpenNrRrBackend.set_from_config(readString("OpenNR-RR", "Backend", true));
+            OpenNrRrVkInputLayout.set_from_config(readString("OpenNR-RR", "VkInputLayout", true));
             OpenNrRrUseDisocclusionMask.set_from_config(readBool("OpenNR-RR", "UseDisocclusionMask"));
             OpenNrRrUseSssGuide.set_from_config(readBool("OpenNR-RR", "UseSssGuide"));
             OpenNrRrInvertDisocclusionMask.set_from_config(readBool("OpenNR-RR", "InvertDisocclusionMask"));
@@ -1711,6 +1712,7 @@ bool Config::SaveIni()
         ini.SetValue("OpenNR-RR", "NrOnDenoised",
                      Instance()->OpenNrRrNrOnDenoised.value_for_config().value_or("auto").c_str());
         ini.SetValue("OpenNR-RR", "Backend", Instance()->OpenNrRrBackend.value_for_config().value_or("auto").c_str());
+        ini.SetValue("OpenNR-RR", "VkInputLayout", Instance()->OpenNrRrVkInputLayout.value_for_config().value_or("read").c_str());
         ini.SetValue("OpenNR-RR", "UseDisocclusionMask",
                      GetBoolValue(Instance()->OpenNrRrUseDisocclusionMask.value_for_config()).c_str());
         ini.SetValue("OpenNR-RR", "UseSssGuide", GetBoolValue(Instance()->OpenNrRrUseSssGuide.value_for_config()).c_str());

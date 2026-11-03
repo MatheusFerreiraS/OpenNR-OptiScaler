@@ -1065,6 +1065,9 @@
     <ClInclude Include="upscalers\opennr_rr\OpenNrRrFeature_Dx12.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="upscalers\opennr_rr\OpenNrRrFeature_Vk.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="upscalers\fsr31\FSRDFeature_Dx12.h">
     <ClInclude Include="framegen\reprojection\Reprojection_Dx12.h">
       <Filter>Header Files</Filter>
@@ -1827,6 +1830,9 @@
       <Filter>Header Files</Filter>
     </ClCompile>
     <ClCompile Include="upscalers\opennr_rr\OpenNrRrFeature_Dx12.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="upscalers\opennr_rr\OpenNrRrFeature_Vk.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="upscalers\fsr31\FSRDFeature_Dx12.cpp">

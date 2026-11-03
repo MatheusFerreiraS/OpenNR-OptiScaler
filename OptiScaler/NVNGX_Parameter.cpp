@@ -10,6 +10,7 @@
 #include <proxies/FfxApi_Proxy.h>
 #include <framegen/nvngx/Nvngx_FG.h>
 #include <dlssnr/amd/AmdBridge.h>
+#include <upscalers/opennr_rr/OpenNrRrFeature_Vk.h>
 #include <dlssnr/amd/AmdPreSr.h>
 
 /// @brief Calculates the resolution scaling ratio override based on the provided quality level and current
@@ -862,6 +863,14 @@ void InitNGXParameters(NVSDK_NGX_Parameter* InParams, API api)
                 LOG_DEBUG("Setting DLSSD flags for FSR Ray Regeneration");
             else if (rrApi != FfxDenoiserApiGeneration::NotLoaded)
                 LOG_DEBUG("FSR Ray Regeneration provider is not compatible with the RR 1.2 dispatch backend");
+        }
+
+        // Vulkan: OpenRR on the game's device when it was made for the runtime
+        if (!ssDenoiseAvailable && api == API::Vulkan && Config::Instance()->OpenNrRrEnabled.value_or_default() &&
+            OpenNrRr::VkUsable(VK_NULL_HANDLE, VK_NULL_HANDLE))
+        {
+            ssDenoiseAvailable = true;
+            LOG_DEBUG("Setting DLSSD flags for OpenRR on Vulkan");
         }
 
         InParams->Set("SuperSamplingDenoising.Available", ssDenoiseAvailable);

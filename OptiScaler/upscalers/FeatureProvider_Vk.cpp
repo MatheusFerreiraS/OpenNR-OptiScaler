@@ -17,6 +17,7 @@
 #include "upscalers/ffx/FFXFeature_VkOn12.h"
 #include <misc/IdentifyGpu.h>
 #include <dlssnr/amd/AmdBridge.h>
+#include "upscalers/opennr_rr/OpenNrRrFeature_Vk.h"
 
 bool FeatureProvider_Vk::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NGX_Parameter* parameters,
                                     std::unique_ptr<IFeature_Vk>* feature)
@@ -96,6 +97,16 @@ bool FeatureProvider_Vk::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NGX_
             break;
         }
 
+    case Upscaler::OpenNrRr:
+        *feature = std::make_unique<OpenNrRrFeatureVk>(handleId, parameters);
+
+        if ((*feature)->ModuleLoaded())
+            break;
+
+        *feature = std::make_unique<FSR2FeatureVk>(handleId, parameters);
+        upscaler = Upscaler::FSR22;
+        break;
+
     case Upscaler::DLSSD:
         if (dlssCapableForThisProcess && state.NVNGX_DLSSD_Path.has_value())
         {
@@ -126,11 +137,12 @@ bool FeatureProvider_Vk::GetFeature(Upscaler upscaler, UINT handleId, NVSDK_NGX_
         loaded = true; // Assuming the fallback always loads successfully
     }
 
-    // DLSSD is stored in the config as DLSS
+    // DLSSD is stored in the config as DLSS; OpenRR is never the upscaler a Super Resolution request gets
     if (upscaler == Upscaler::DLSSD)
         upscaler = Upscaler::DLSS;
 
-    cfg.VulkanUpscaler = upscaler;
+    if (upscaler != Upscaler::OpenNrRr)
+        cfg.VulkanUpscaler = upscaler;
 
     return loaded;
 }

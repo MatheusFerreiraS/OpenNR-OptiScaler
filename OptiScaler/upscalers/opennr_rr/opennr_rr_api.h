@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// OpenRR runtime (OpenNrRrRuntime.dll): C interface for a host that intercepts a game's Ray Reconstruction
+// OpenNR RR runtime (OpenNrRrRuntime.dll): C interface for a host that intercepts a game's Ray Reconstruction
 // (NGX DLSS-D) evaluate on D3D12. The network runs on a Vulkan device of its own on the game's adapter; the game's
 // textures reach it through shared D3D12 buffers and a shared fence.
 //
@@ -39,6 +39,15 @@
 // (a kernel the D3D12 driver did not take), so a host asks every frame. With the Vulkan backend the frame goes
 // through RecordInputs / Enqueue / RecordOutput as before; with D3D12 those return ONR_RR_UNSUPPORTED.
 //
+// ABI 5 (OnrRrGetApi(5, &api5.v4.v3.v2.v1), OnrRrApi5) adds the Vulkan host backend, for Vulkan games: the kernels run
+// on the game's own VkDevice and are recorded into the game's command buffer at the evaluate point, as on D3D12.
+//   at vkCreateDevice: PrepareVkDevice(physical, &info, &out, &setup) adds what the kernels need to the game's create
+//   info (extensions, features, one queue of the device left to the runtime); the host creates the device with out,
+//   then FinishVkDevice(setup, ...) (always, also when the create failed) says which queue that is
+//   Create with OnrRrCreateInfo.vk_device (d3d12_device null)
+//   per frame RecordVk(ctx, frame, command_buffer): the whole frame (inputs, network, post, output)
+// OnrRrTexture.resource is then an OnrRrVkImage* and OnrRrTexture.state its VkImageLayout.
+//
 // Create returns at once; the weights and the kernels are built on a background thread. Until they are ready
 // (and after a failure) frames still go through Enqueue/RecordOutput and the output is the colour, scaled
 // bilinearly. GetInfo says which state the runtime is in and why.
@@ -55,6 +64,7 @@ extern "C" {
 #define ONR_RR_ABI_VERSION_2 2
 #define ONR_RR_ABI_VERSION_3 3
 #define ONR_RR_ABI_VERSION_4 4
+#define ONR_RR_ABI_VERSION_5 5
 
 enum OnrRrResult {
     ONR_RR_OK = 0,
@@ -79,6 +89,7 @@ enum OnrRrState {
 enum OnrRrBackend {
     ONR_RR_BACKEND_VULKAN = 0,     // a Vulkan device of the runtime's own, shared buffers and fences (RecordInputs...)
     ONR_RR_BACKEND_D3D12 = 1,      // the game's D3D12 device, recorded into the game's list (Record / RecordPost)
+    ONR_RR_BACKEND_VULKAN_HOST = 2, // the game's Vulkan device, recorded into the game's command buffer (RecordVk, ABI 5)
 };
 
 // OnrRrCreateInfo.backend: which one the host wants.
@@ -121,9 +132,38 @@ typedef struct OnrRrCreateInfo {
     const wchar_t* log_path;       // null: <runtime DLL folder>\opennr_rr.log
     // Optional tail (size may be ONR_RR_CREATE_INFO_SIZE_V1 without it: Vulkan backend)
     uint32_t backend;              // OnrRrBackendChoice
+    // Optional tail (size may be ONR_RR_CREATE_INFO_SIZE_V2 without it): the game's Vulkan device (ABI 5). With it
+    // d3d12_device and backend are not read and the frames go through RecordVk.
+    const struct OnrRrVkDevice* vk_device;
 } OnrRrCreateInfo;
 
 #define ONR_RR_CREATE_INFO_SIZE_V1 ((uint32_t)offsetof(OnrRrCreateInfo, backend))
+#define ONR_RR_CREATE_INFO_SIZE_V2 ((uint32_t)offsetof(OnrRrCreateInfo, vk_device))
+
+// The game's Vulkan device (ABI 5). Its instance must be Vulkan 1.3 or later and the device created with the create
+// info PrepareVkDevice gave; queue_family / queue_index: the queue FinishVkDevice named, which the host never uses.
+// The device must be idle when Destroy is called (no command buffer we recorded into still pending).
+typedef struct OnrRrVkDevice {
+    uint32_t size;                 // sizeof(OnrRrVkDevice)
+    uint32_t api_version;          // the instance's apiVersion
+    void* instance;                // VkInstance
+    void* physical_device;         // VkPhysicalDevice
+    void* device;                  // VkDevice
+    uint32_t queue_family, queue_index;
+} OnrRrVkDevice;
+
+// A texture of a Vulkan frame: OnrRrTexture.resource points to one (read during the call only), OnrRrTexture.state is
+// its VkImageLayout, left as it is. The NGX Vulkan resource's image view info, one mip level of one layer. With a view
+// the runtime may read the texture through it (a float format, or 8-bit unorm albedos, in a layout shader reads take)
+// and write the output through it (rgba16f, GENERAL, usage with STORAGE); otherwise it copies.
+typedef struct OnrRrVkImage {
+    uint64_t image;                // VkImage
+    uint64_t view;                 // VkImageView of the format below, one aspect (may be 0)
+    uint32_t format;               // VkFormat of the view (a depth format: its depth aspect is read)
+    uint32_t width, height;        // of that mip level
+    uint32_t mip, layer;
+    uint32_t usage;                // VkImageUsageFlags the host knows of (0: unknown, the view is not used)
+} OnrRrVkImage;
 
 typedef struct OnrRrFrame {
     uint32_t size;                 // sizeof(OnrRrFrame)
@@ -273,7 +313,25 @@ typedef struct OnrRrApi4 {
     int32_t (*RecordPost)(void* context, void* job, void* command_list, uint32_t format);
 } OnrRrApi4;
 
-// abi_version 1 fills an OnrRrApi; 2 fills the OnrRrApi2 that api points to; 3 the OnrRrApi3; 4 the OnrRrApi4.
+typedef struct OnrRrApi5 {
+    OnrRrApi4 v4;                  // v4.v3.v2.v1.abi_version = 5
+    // Without a context, at the game's vkCreateDevice. physical_device: VkPhysicalDevice; create_info: the game's
+    // VkDeviceCreateInfo; out: a VkDeviceCreateInfo the runtime fills, valid until FinishVkDevice. ONR_RR_OK: create the
+    // device with out. ONR_RR_UNSUPPORTED (GetLastError says why): out is the game's own, the Vulkan host backend is
+    // not offered. Structures of the game's chain may be changed in place until FinishVkDevice puts them back.
+    int32_t (*PrepareVkDevice)(void* physical_device, const void* create_info, void* out, void** setup);
+    // After the create (device: the VkDevice, null when it failed). The runtime's queue; ONR_RR_OK when setup was
+    // prepared and the device created.
+    int32_t (*FinishVkDevice)(void* setup, void* device, uint32_t* queue_family, uint32_t* queue_index);
+    // The whole frame into command_buffer (a VkCommandBuffer of the device, recording, outside a render pass): the
+    // textures go to TRANSFER_SRC (the output to TRANSFER_DST) and back to the layouts the frame gives; the compute
+    // pipeline, descriptor sets and push constants bound in it are not restored. Until the network is ready the output
+    // is the colour, scaled bilinearly.
+    int32_t (*RecordVk)(void* context, const OnrRrFrame* frame, void* command_buffer);
+} OnrRrApi5;
+
+// abi_version 1 fills an OnrRrApi; 2 fills the OnrRrApi2 that api points to; 3 the OnrRrApi3; 4 the OnrRrApi4; 5 the
+// OnrRrApi5.
 typedef int32_t (*PFN_OnrRrGetApi)(uint32_t abi_version, OnrRrApi* api);
 // exported by OpenNrRrRuntime.dll
 #ifdef ONR_RR_BUILDING
