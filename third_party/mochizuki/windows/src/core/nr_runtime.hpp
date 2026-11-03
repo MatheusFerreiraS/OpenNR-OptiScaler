@@ -547,6 +547,12 @@ public:
     // goes on too. Recorded into `cmd` before that recording. False, nothing recorded: one model pass only, and
     // `from` must hold a history for the feature.
     bool carry_history(VkCommandBuffer cmd, const Runtime& from, uint64_t feature);
+    // Dynamic resolution inside one frame extent (a host's bucket): the frame's content moved from its top-left
+    // from_x x from_y (shares of the frame's width and height) to its top-left to_x x to_y. Every history the next
+    // recordings read (each feature's, and with `passes` above 1 each later pass's) is scaled bilinearly from the one
+    // onto the other, and the rest of each image repeats its new edge, as the host pads the frame. Latches, seeds and
+    // parities go on. Recorded into `cmd` before those recordings. False, nothing recorded: no history to scale.
+    bool rescale_history(VkCommandBuffer cmd, float from_x, float from_y, float to_x, float to_y, uint32_t passes);
     // A runtime built with RuntimeConfig::plan_only: its lowering, for another runtime's network memory
     // (with_slot_of). Any runtime: its own lowering.
     std::shared_ptr<const RuntimeCore> plan() const;

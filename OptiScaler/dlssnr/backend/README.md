@@ -84,8 +84,10 @@ RenoDX's own. `AmdModelScale` and `AmdDynamicScale` do
 not reach mochizuki: the settle gate in `AmdBridge::Run` ignores both for it.
 `MochizukiDynamicResolution` is the runtime's `drs_mode`. With `auto` (the default), once the render
 subrect is smaller than the colour texture, the network runs at a bucket: per axis the largest subrect
-seen, rounded up to 64 px, within the texture. A subrect change inside the bucket only restarts the
-history, with no rebuild and no settle (the gate in `AmdBridge::Run` then settles on the colour texture).
+seen, rounded up to 64 px, within the texture. A subrect change inside the bucket neither rebuilds nor
+settles (the gate in `AmdBridge::Run` then settles on the colour texture), and the network's histories
+are scaled from the old subrect onto the new one, so the history goes on (it restarts only with the
+RenoDX stage's look stabilizer on, whose own history is not scaled).
 The bucket grows with a larger subrect, and shrinks after 30 s of frames of one colour texture whose
 subrects all stay at least 128 px inside it on both axes. A game that makes a new colour texture at every
 step instead (Cyberpunk 2077) is bucketed in `auto` too: textures of one format and aspect share one bucket

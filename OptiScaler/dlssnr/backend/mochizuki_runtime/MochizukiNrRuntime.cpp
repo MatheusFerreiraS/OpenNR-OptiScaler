@@ -22,10 +22,11 @@
 // colour allocation is seen, they are built for a bucket instead (Session::DrsExtent): the largest subrect seen,
 // rounded up to 64 within the allocation. The frame's buffers are then keyed on the allocation, each frame copies only
 // its subrect, the part of the bucket past it repeats the subrect's edge, the motion vectors are laid over the subrect
-// in the bucket's uv, and the history restarts whenever the subrect changes. A subrect equal to the bucket runs as it
-// does in exact. A game that reallocates its colour at every step instead (Cyberpunk 2077) engages auto too: allocations
-// of one format and aspect share a bucket held at the largest of them, and the frame's buffers and Super Resolution's
-// texture stay at that size. Always buckets every frame, also across allocations.
+// in the bucket's uv, and a frame whose subrect changed first scales the history from the old subrect onto its own
+// (Runtime::rescale_history), so it goes on (with the RenoDX stage's look stabilizer on, it restarts). A subrect equal
+// to the bucket runs as it does in exact. A game that reallocates its colour at every step instead (Cyberpunk 2077)
+// engages auto too: allocations of one format and aspect share a bucket held at the largest of them, and the frame's
+// buffers and Super Resolution's texture stay at that size. Always buckets every frame, also across allocations.
 //
 // Errors (NrError): only a lost device ends the session. It, and a Vulkan side that stops finishing frames (the
 // watchdog), releases every game queue waiting on fromVk. A failed network build or buffer allocation is retried
@@ -1650,6 +1651,8 @@ struct ProductRuntime : nr::Runtime
 {
     std::unique_ptr<nr::renodx::Stage> reno;
     uint32_t renoPasses = 0; // the stage's passes on the last frame: a pass past them drops its history
+    // The render subrect the histories were last written at (0: none), for rescale_history.
+    uint32_t historyWidth = 0, historyHeight = 0;
     Image exposure;
     // With NetworkKey::firstPass: the stage's pass 1 (StageFrame::first), RGBA32F at the frame's extent, as the
     // core's first_pass_output() is; null where the stage cannot write it.
@@ -4234,6 +4237,16 @@ struct Session
                 frame.depth_inverted = job.depthInverted;
             }
         }
+        // Dynamic resolution: histories written at another subrect of the bucket are scaled onto this one.
+        if (motion)
+        {
+            if (!job.reset && runtime->historyWidth && (runtime->historyWidth != w || runtime->historyHeight != h))
+                runtime->rescale_history(c, float(runtime->historyWidth) / float(W),
+                                         float(runtime->historyHeight) / float(H), float(w) / float(W),
+                                         float(h) / float(H), uint32_t(job.controls.passes));
+            runtime->historyWidth = w;
+            runtime->historyHeight = h;
+        }
         if (runtime->reno)
             consumed = RecordReno(c, frame);
         else if (motion)
@@ -4681,6 +4694,13 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 {
                     s->bucket.motionWidth = std::max(s->bucket.motionWidth, UINT(md.Width));
                     s->bucket.motionHeight = std::max(s->bucket.motionHeight, md.Height);
+                    // Vectors allocated as the colour is, which a game that reallocates both moves in step: sized for
+                    // the largest colour allocation from the start, so the first larger one remakes nothing.
+                    if (md.Width == cd.Width && md.Height == cd.Height)
+                    {
+                        s->bucket.motionWidth = std::max(s->bucket.motionWidth, s->bucket.limitWidth);
+                        s->bucket.motionHeight = std::max(s->bucket.motionHeight, s->bucket.limitHeight);
+                    }
                     g.motionWidth = s->bucket.motionWidth;
                     g.motionHeight = s->bucket.motionHeight;
                 }
@@ -4751,6 +4771,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 key.prep = key.cascade = false;
             }
             std::string why;
+            const bool sameGeometry = s->geometry == g;
             if (!s->EnsureNetwork(key, g, colour, why))
                 return Fail(LMXXF_NR_UNAVAILABLE, why.c_str());
             if (!(s->geometry == g))
@@ -4768,14 +4789,16 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                              g.height, unsigned(g.colourFormat), g.motionWidth, g.motionHeight,
                              unsigned(g.motionFormat), unsigned(g.depthFormat));
             }
-            // A new valid extent restarts the history: it holds the frame's content where the old one had it.
+            // A new valid extent: the history holds the frame's content where the old one had it. In the same bucket
+            // the frame scales it onto the new one (RunNetwork); elsewhere it restarts.
             if (w != s->validWidth || h != s->validHeight)
             {
                 s->validWidth = w;
                 s->validHeight = h;
                 s->infoValidWidth = w;
                 s->infoValidHeight = h;
-                s->resetPending = true;
+                if (!sameGeometry || !g.bucketed || (renodx && reno.look_stabilize))
+                    s->resetPending = true;
             }
 
             // While a build for new settings runs, the frame keeps the network it ran on: no more passes than that one

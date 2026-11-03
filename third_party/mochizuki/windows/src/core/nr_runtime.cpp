@@ -529,6 +529,8 @@ struct Runtime::Impl {
     nrvk::Context::Image predict_gain_image{};
     nrvk::Kernel predict_gain, predict_apply;
     std::vector<nrvk::Context::Image> history_store;
+    // Runtime::rescale_history's copy of the image it scales, made on first use.
+    nrvk::Context::Image rescale_tmp{};
     // ---- what the pass costs, measured on the GPU ----------------------------
     //
     // A timestamp pair around everything `record_all` puts in the caller's
@@ -1685,6 +1687,7 @@ struct Runtime::Impl {
         if (predict_gain.device) predict_gain.destroy();
         if (predict_apply.device) predict_apply.destroy();
         for (auto& h : history_store) session.ctx.destroy(h);
+        if (rescale_tmp.handle) session.ctx.destroy(rescale_tmp);
         for (auto& f : features) if (f.second.history.handle) session.ctx.destroy(f.second.history);
         for (auto& r : retiring) if (r.first.handle) session.ctx.destroy(r.first);
         if (mask_pre.device) mask_pre.destroy();
@@ -3420,6 +3423,88 @@ bool Runtime::carry_history(VkCommandBuffer cmd, const Runtime& from, uint64_t f
     fs.seed = fit->second.seed;
     fs.parity = fit->second.parity;
     fs.prep_gen = impl_->prep_gen;
+    return true;
+}
+
+bool Runtime::rescale_history(VkCommandBuffer cmd, float from_x, float from_y, float to_x, float to_y,
+                              uint32_t passes) {
+    auto& t = impl_->temporal;
+    if (!cmd || !t.enabled || stale()) return false;
+    const uint32_t mw = impl_->mw, mh = impl_->mh;
+    // The frame's shares in model texels.
+    auto model = [](float v, uint32_t m) {
+        return int32_t(std::clamp<long>(std::lround(double(std::clamp(v, 0.f, 1.f)) * m), 1, long(m)));
+    };
+    const int32_t fw = model(from_x, mw), fh = model(from_y, mh), tw = model(to_x, mw), th = model(to_y, mh);
+    if (fw == tw && fh == th) return false;
+    // What the next recordings read: the bound history (pass 1 of the runtime's own, or the bound feature's), the
+    // runtime's later passes, and every other feature's image.
+    nrvk::Context::Image& bound = t.pingpong ? t.hist(t.hcur) : t.history;
+    std::vector<nrvk::Context::Image*> images;
+    if (!impl_->bound_feature && t.latch) {
+        images.push_back(&bound);
+        for (uint32_t k = 1; k < std::min<size_t>(passes, impl_->history_store.size()); ++k)
+            images.push_back(&impl_->history_store[k]);
+    }
+    for (auto& [id, fs] : impl_->features)
+        if (fs.latch) images.push_back(id == impl_->bound_feature ? &bound : &fs.history);
+    if (images.empty()) return false;
+    auto& s = impl_->session;
+    nrvk::Context::Image& tmp = impl_->rescale_tmp;
+    if (!tmp.handle) {
+        // Memory of its own, outside the resize path's heap region.
+        nrvk::ImageHeap* const heap = s.ctx.heap;
+        s.ctx.heap = nullptr;
+        try {
+            tmp = s.ctx.image(mw, mh, t.history.format, false, false);
+        } catch (const std::exception&) {
+            tmp = {};
+        }
+        s.ctx.heap = heap;
+        if (!tmp.handle) return false;
+    }
+    const VkFilter filter = impl_->filters_linearly(t.history.format) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    auto blit = [&](VkImage src, VkOffset3D s0, VkOffset3D s1, VkImage dst, VkOffset3D d0, VkOffset3D d1,
+                    VkFilter f) {
+        VkImageBlit b{};
+        b.srcSubresource = b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        b.srcOffsets[0] = s0; b.srcOffsets[1] = s1;
+        b.dstOffsets[0] = d0; b.dstOffsets[1] = d1;
+        vkCmdBlitImage(cmd, src, VK_IMAGE_LAYOUT_GENERAL, dst, VK_IMAGE_LAYOUT_GENERAL, 1, &b, f);
+    };
+    constexpr VkAccessFlags rw = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    for (nrvk::Context::Image* im : images) {
+        if (!im->handle || im->format != tmp.format || im->w != mw || im->h != mh) continue;
+        const VkImage h = im->handle;
+        barrier(cmd, h, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+        barrier(cmd, tmp.handle, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+        VkImageCopy c{};
+        c.srcSubresource = c.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        c.extent = {mw, mh, 1};
+        vkCmdCopyImage(cmd, h, VK_IMAGE_LAYOUT_GENERAL, tmp.handle, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+        barrier(cmd, tmp.handle, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+        barrier(cmd, h, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+        blit(tmp.handle, {0, 0, 0}, {fw, fh, 1}, h, {0, 0, 0}, {tw, th, 1}, filter);
+        // The rest repeats the new edge: the column right of it, then the rows below (corner included).
+        if (tw < int32_t(mw)) {
+            barrier(cmd, h, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, rw);
+            blit(h, {tw - 1, 0, 0}, {tw, th, 1}, h, {tw, 0, 0}, {int32_t(mw), th, 1}, VK_FILTER_NEAREST);
+        }
+        if (th < int32_t(mh)) {
+            barrier(cmd, h, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, rw);
+            blit(h, {0, th - 1, 0}, {int32_t(mw), th, 1}, h, {0, th, 0}, {int32_t(mw), int32_t(mh), 1},
+                 VK_FILTER_NEAREST);
+        }
+        barrier(cmd, h, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+    }
     return true;
 }
 
