@@ -1311,6 +1311,11 @@ class Config
     CustomOptional<bool, SoftDefault> VulkanSpoofing { false };
     CustomOptional<bool, SoftDefault> VulkanExtensionSpoofing { false };
     CustomOptional<int, NoDefault> VulkanVRAM; // disabled by default
+    CustomOptional<bool> VulkanSpoofGameOnly { false };
+    CustomOptional<std::string, NoDefault> VulkanExtensionSpoofList; // e.g. VK_NVX_binary_import,VK_NVX_image_view_handle
+    CustomOptional<bool> GateDiagnostics { false };
+    CustomOptional<bool> StreamlineForceSupported { false };
+    CustomOptional<bool> StreamlineTrimRequirements { false };
     CustomOptional<bool> SpoofHAGS { false };
     CustomOptional<bool> SpoofFeatureLevel { false };
     CustomOptional<uint32_t> SpoofedVendorId { VendorId::Nvidia };
