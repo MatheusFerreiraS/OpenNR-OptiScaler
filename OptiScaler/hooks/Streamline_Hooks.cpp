@@ -1225,6 +1225,7 @@ sl::Result StreamlineHooks::hkslIsFeatureSupported(sl::Feature feature, const sl
                      "answered {}",
                      from, (uint32_t) feature, luid, adapterInfo.vkPhysicalDevice, (int) result,
                      magic_enum::enum_name(result), (int) answer);
+        GateDiag::LogDoomState("slIsFeatureSupported");
     }
 
     return answer;
@@ -1276,6 +1277,7 @@ sl::Result StreamlineHooks::hkslGetFeatureRequirements(sl::Feature feature, sl::
                  JoinNames(requirements.vkInstanceExtensions, requirements.vkNumInstanceExtensions),
                  JoinNames(requirements.vkFeatures12, requirements.vkNumFeatures12),
                  JoinNames(requirements.vkFeatures13, requirements.vkNumFeatures13));
+        GateDiag::LogDoomState("slGetFeatureRequirements");
     }
 
     // Device extensions the AMD driver lacks (NV ones, and EXT_buffer_device_address which it only has as KHR/core).
@@ -1431,6 +1433,7 @@ sl::Result StreamlineHooks::hkslGetFeatureFunction(sl::Feature feature, const ch
         auto from = GateDiag::Caller(_ReturnAddress());
         if (GateDiag::First(std::format("slfunc|{}|{}|{}", from, (uint32_t) feature, functionName)))
             LOG_INFO("GateDiag slGetFeatureFunction from {}: feature {} {}", from, (uint32_t) feature, functionName);
+        GateDiag::LogDoomState("slGetFeatureFunction");
     }
 
     if (OwnsDlssg() && feature == sl::kFeatureDLSS_G)

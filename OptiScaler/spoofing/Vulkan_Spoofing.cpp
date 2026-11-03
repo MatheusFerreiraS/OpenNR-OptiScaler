@@ -351,6 +351,9 @@ static void SpoofProperties(const char* function, void* caller, VkPhysicalDevice
                  function, from, realVendor, properties->vendorID, realDevice, properties->deviceID,
                  properties->driverVersion, properties->deviceName, spoof, chain, extra);
     }
+
+    if (GateDiag::FromGame(caller))
+        GateDiag::LogDoomState(function);
 }
 
 inline static void hkvkGetPhysicalDeviceProperties(VkPhysicalDevice physical_device,
@@ -959,6 +962,7 @@ VkResult VulkanSpoofing::hkvkCreateDevice(VkPhysicalDevice physicalDevice, VkDev
             asked += std::format(" {}", pCreateInfo->ppEnabledExtensionNames[i]);
 
         LOG_INFO("GateDiag vkCreateDevice from the app: {} extensions:{}", pCreateInfo->enabledExtensionCount, asked);
+        GateDiag::LogDoomState("vkCreateDevice");
     }
 
     std::vector<VkExtensionProperties> supportedDeviceExtensions;
@@ -1377,6 +1381,9 @@ static void LogExtensionAnswer(void* caller, uint32_t count, const VkExtensionPr
     if (GateDiag::First(std::format("ext|{}|{}|{}", from, count, nv)))
         LOG_INFO("GateDiag vkEnumerateDeviceExtensionProperties from {}: {} extensions, NV/BDA/push ones:{}", from,
                  count, nv.empty() ? " none" : nv);
+
+    if (GateDiag::FromGame(caller))
+        GateDiag::LogDoomState("vkEnumerateDeviceExtensionProperties");
 }
 
 inline static VkResult hkvkEnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice, const char* pLayerName,
