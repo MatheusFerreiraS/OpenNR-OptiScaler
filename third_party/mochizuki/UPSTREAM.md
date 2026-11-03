@@ -512,7 +512,11 @@ Local patches:
     kernel, `tools/aco-records/produce-rdna2.ps1`) when both folders are there, with shaders-rdna2 as the templates
     of the per-pipeline fallback, and skips the startup pipeline check as the RDNA3 ACO network does; `nr_runtime.cpp`
     lets the RDNA2 network run that bundle only. Without the bundle the RDNA2 network is compiled by the driver as
-    before. Not shipped in the product build yet.
+    before. Not shipped in the product build yet. Records for the rdna2-mega shaders-rdna2 (`produce-rdna2.ps1`, Mesa
+    25.3.6, navi21): `windows/data/aco/gfx103x/records`, 33 of the 49 network kernels (0 scratch), with
+    `layouts.txt`, `produce-log.txt` and `summary.txt`; the temporal pre/post kernels the network uses
+    (`temporal_pre_fp32nh`, `temporal_post_fp32h16`, `_grade`) have a sampled image before another binding and stay
+    with the driver. The bundle is `dlssnr-amd\aco-gfx103x\shaders` = shaders-rdna2 as built + those records.
 
 The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
 OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;
@@ -538,6 +542,25 @@ pipelines' also by the names and sizes of the shader files), so each runs once a
 `MZ_RDNA3_CHECK=0` skips both, `=pipelines` the probes only (with `MZ_FORCE_RDNA3=1` on an RX 9000, whose layout
 fails the probes); the hooks `MZ_TEST_RDNA3_COMPILE_CRASH=<file>`, `MZ_TEST_RDNA3_COMPILE_HANG=<file>` and
 `MZ_TEST_RDNA3_TIMEOUT_MS` test the child's paths.
+
+The first start without the second compile (local patch 32, RDNA3 and RDNA2): AMD's driver keeps what it compiles for
+the executable that compiled it, its own cache and a VkPipelineCache the child writes alike (a cache file written by
+one process and loaded by another under another name: every pipeline compiled again), so the check's work never
+reached the game, which then built the network serially. Now, with a prewarm list for the network's folder
+(`prewarm\manifest-rdna3.txt`, `manifest-rdna2.txt`, made and shipped as RDNA4's `manifest.txt`), the child compiles each
+file the list names with the core's own create infos (the same device features, extensions and application name as
+`Vulkan::Create`, plus VK_KHR_pipeline_binary) and keeps each pipeline's machine code (`mzi::ManifestPipelines`,
+`work\binaries\`, NRAC files named by the hash of the list's line, `identity.txt` = device, driver, cache UUID). After a
+passed check `mzi::AdoptBinaries` moves them to `dlssnr-amd\binaries-<net>\`; the network's device enables
+VK_KHR_maintenance5 + VK_KHR_pipeline_binary (FP16 networks only), the build's Capture imports each core pipeline whose
+binary is there (`mzi_vkCreateComputePipelines`, the driver compiles any other, and any import that fails), and the
+prewarm leaves those out. Files the list does not name keep the check's reflected layout. `MZ_CHECK_CACHE=0`: as
+before. Same machine code, so the same output (forced RDNA3 and RDNA2 hashes unchanged). RX 9070 XT, small 720p, cold
+driver (shaders with a SPIR-V generator word of their own), time to the first frame: RDNA2 62.3 s (check 17.5 s,
+36 pipelines built serially in 40.9 s) -> 27.4 s with the list alone (prewarm 10.5 s on 8 threads) -> 22.7 s now
+(check 18.2 s, every core pipeline imported); RDNA3 52.6 s -> 26.4 s -> 26.6 s (check 20.5 s against 16.6 s: the
+exact create infos and the capture cost what the prewarm saved here; the second start is 1.4 s); RDNA4 7.5 s
+(its list, unchanged).
 
 ACO for the RDNA3 network: with ACO asked for, the host looks for `dlssnr-amd\aco-gfx11\` laid out as `aco\`
 (`records\` named by the hash of the SPIR-V in `shaders\`, which `linux/build/build_network.py rdna3` makes, and an
@@ -664,6 +687,16 @@ FP8 and no matrix extension, keeps the pipeline check (`rdna2-check.txt`, `MZ_RD
 without progress before a compile counts as hung, its kernels take minutes each) and has no layout probes. The log says `[mochizuki] the RDNA2 network, its matrices emulated in ALU ...`; the menu's mochizuki
 page `RX 6000 (experimental, FP16 network)`, or `RX 6000 network off: ...`. `MochizukiNrInfo::network` is 3.
 
+On v0.0.8.2 (branch rdna2-mega, 2026-11-03): the RDNA2 tree needed no shader change. Its pre block still reads the
+noise table from the weight blob, so binding 5 gets the 16-byte stand-in; the dead-slot and arena changes apply to it
+as they do to RDNA3 (it shares RDNA3's graph). `history_f16` (MochizukiHistoryPrecision 16, the default) gives it the
+RGBA16F history and `temporal_post_fp32h16` like the other networks. Forced on the RX 9070 XT: with
+`NR_HIST16=0` the output is byte-identical to rdna2-aco's (small and 310.8, 1152x648 and 720p, 20 frames), with the
+16-bit default 55.0-55.9 dB from it, the clean one-frame hashes of the RX 6000 kit unchanged at 720p, 1080p and
+1440p for both models. The shaders-rdna2 network files are rdna2-aco's byte for byte; `runtime\` gained 0.0.8.2's
+`runtime_alpha` and `runtime_blit` as `shaders-rdna3\` did. ACO gfx10.3 records for this SPIR-V:
+`windows/data/aco/gfx103x/` (below).
+
 The RDNA2 techniques (FP16 dot products with FP32 sums, emulated e4m3 rounding) were inspired by the public README and
 CHANGELOG of a GPL-3.0 RDNA2 port of the DLSS network; none of its code was read or used (the plan's clean-room rules).
 
@@ -673,7 +706,7 @@ CHANGELOG of a GPL-3.0 RDNA2 port of the DLSS network; none of its code was read
 (`VULKAN_SDK`) and Python. It downloads glslang 16.5.0, the version the upstream SPIR-V is pinned to, and Slang
 2026.19 (SHA-256 checked, for the RenoDX shaders) into `toolchain\` here, and writes `MochizukiNrRuntime.dll` and
 `dlssnr-amd\shaders\` (with `renodx\`), `dlssnr-amd\shaders-rdna3\` (53 network, 11 temporal, 16 runtime) and
-`shaders-rdna2\` (44 network) to `out` (default `exports\mochizuki-runtime`).
+`shaders-rdna2\` (40 network, 11 temporal, 16 runtime) to `out` (default `exports\mochizuki-runtime`).
 
 The shader folder has 55 network, 6 temporal and 16 runtime pipelines (v0.0.8.2 and the local passes;
 `runtime\FidelityFX-FSR1-LICENSE.txt` beside the FSR 1 EASU in `runtime_upscale`) and 30 RenoDX files, 113 files. The prewarm list
@@ -682,6 +715,11 @@ ACO on), run the runtime once at 720p, 1080p, 1440p and 3840x2160 and once at 10
 empty `prewarm\`, and take the list it writes: 38 pipelines for v0.0.7 and for v0.0.8.2
 (`exports/mochi0082-verify/prewarm.ps1` in the sync's worktree). The 0.5.5 list had 33: it lacked `ffwd3w`,
 `gemmprojw` and `gemmvqkvnorm` (the larger extents and the 310.8 model) besides the two new Style grade pipelines.
+The FP16 networks have lists of their own, which their first start needs (local patch 32): `prewarm\manifest-rdna2.txt`
+and `manifest-rdna3.txt`, made the same way with the network forced (`MZ_FORCE_RDNA2=1` / `MZ_FORCE_RDNA3=1`, the check
+skipped): small at 1152x648, 720p, 1080p, 1440p and 4K, Natural and Cinematic at 1080p, the 310.8 model at 720p and
+1080p; 41 pipelines each for this build (`exports\verify\manifests.ps1` in the rdna2-mega worktree). Remake them
+whenever shaders-rdna2 or shaders-rdna3 change.
 
 ## The model
 

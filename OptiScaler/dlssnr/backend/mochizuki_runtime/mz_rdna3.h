@@ -43,9 +43,12 @@ std::string LayoutCheck(VkPhysicalDevice physical, VkDevice device, VkQueue queu
 // process, no device in it, `stop` set) and the text says why; the network then builds unprotected and nothing is
 // kept. `note`: how many compiled, in how long, the slowest. `work` holds the child's list and log.
 // The RDNA2 network's emulated kernels take minutes each (the slowest about 7 on the RX 9070 XT with 8 at once), so
-// it waits kPipelineTimeoutRdna2Ms.
+// it waits kPipelineTimeoutRdna2Ms. With `data` (dlssnr-amd) the child compiles the files the prewarm manifest of
+// data\shaders<variant> names with the core's create infos and keeps their machine code in work\binaries
+// (mzi::ManifestPipelines), which the caller hands to mzi::AdoptBinaries.
 constexpr unsigned kPipelineTimeoutMs = 300000, kPipelineTimeoutRdna2Ms = 1800000;
 std::string PipelineCheck(const LUID& luid, const std::vector<std::wstring>& files, const std::wstring& work,
                           const std::atomic<bool>* stop, bool& ran, std::string& note,
-                          unsigned timeoutMs = kPipelineTimeoutMs);
+                          unsigned timeoutMs = kPipelineTimeoutMs, const std::wstring& data = {},
+                          const std::wstring& variant = {});
 } // namespace mzr3

@@ -246,6 +246,13 @@ bool Fp16CheckSkips(nr::Arch arch, bool layout)
     return !std::strcmp(v, "0") || (layout && !std::strcmp(v, "pipelines"));
 }
 
+// A diagnostic switch set to 0 (MZ_CHECK_CACHE=0: the pipeline check hands no pipeline cache to the build).
+bool MzEnvOff(const char* name)
+{
+    char v[8] {};
+    return GetEnvironmentVariableA(name, v, sizeof v) && !std::strcmp(v, "0");
+}
+
 // An FP16 network's pipelines (shaders-rdna3 or shaders-rdna2, and the RenoDX stage's in shaders\renodx), and the key
 // the pipeline check's verdict is kept under: the device's, and a hash of the files' names and sizes, so other shaders
 // (a new release) are checked again.
@@ -1135,7 +1142,8 @@ struct Vulkan
         if (arch == nr::Arch::rdna2)
             enabled.erase(std::find(enabled.begin(), enabled.end(), VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME));
         mzi::BinaryProbe probe;
-        wml.pNext = probe.Prepare(physical, offered, enabled, wml.pNext);
+        // The FP16 networks import the pipeline check's machine code (mz_interpose.h, AdoptBinaries).
+        wml.pNext = probe.Prepare(physical, offered, enabled, wml.pNext, Fp16() && !MzEnvOff("MZ_CHECK_CACHE"));
 
         // A second queue, when the family has one, takes the network builds (the core submits only while it is
         // constructed), so a build never holds the frames' queue; the frames keep the higher priority.
@@ -3543,12 +3551,16 @@ struct Session
             bool ran = false;
             std::string note;
             nr::g_build_stage = 6;
-            why = mzr3::PipelineCheck(device->GetAdapterLuid(), files,
-                                      DataDirectory() + L"\\dlssnr-amd\\" + Fp16Tag(vk.arch) + L"-check", &abandon,
-                                      ran, note,
+            const std::wstring data = DataDirectory() + L"\\dlssnr-amd", work = data + L"\\" + Fp16Tag(vk.arch) + L"-check",
+                               variant = std::wstring(L"-") + Fp16Tag(vk.arch);
+            why = mzr3::PipelineCheck(device->GetAdapterLuid(), files, work, &abandon, ran, note,
                                       vk.arch == nr::Arch::rdna2 ? mzr3::kPipelineTimeoutRdna2Ms
-                                                                 : mzr3::kPipelineTimeoutMs);
+                                                                 : mzr3::kPipelineTimeoutMs,
+                                      MzEnvOff("MZ_CHECK_CACHE") ? std::wstring() : data, variant);
             nr::g_build_stage = 1;
+            // What the check compiled with the core's create infos, imported by the build below.
+            if (ran && why.empty())
+                mzi::AdoptBinaries(data, variant, work + L"\\binaries");
             if (abandon)
                 throw std::runtime_error("stopped: the session is being destroyed");
             if (!ran)

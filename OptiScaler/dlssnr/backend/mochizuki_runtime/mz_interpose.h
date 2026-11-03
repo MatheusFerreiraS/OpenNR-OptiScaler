@@ -59,6 +59,40 @@ class Capture
     std::unique_ptr<State> state;
 };
 
+// The FP16 networks' pipeline check (mz_rdna3.cpp) runs in a child process, and AMD's driver keeps a pipeline cache
+// for the executable that filled it only (neither its own cache nor a VkPipelineCache the child writes serves the
+// game). With a prewarm manifest for the shaders, the child compiles each file the manifest names with the create
+// infos it lists (the core's own) and keeps each pipeline's machine code as a VK_KHR_pipeline_binary, which any process
+// imports as it is; AdoptBinaries puts them in dlssnr-amd\binaries<variant>\, where the build's Capture imports them
+// instead of compiling and the prewarm leaves them out. The network's device has the extension for it (BinaryProbe).
+class ManifestPipelines
+{
+  public:
+    // data: the runtime's dlssnr-amd folder; variant as Capture's. Lists nothing when the manifest is missing or was
+    // made for other shaders.
+    ManifestPipelines(const std::wstring& data, const std::wstring& variant) noexcept;
+    ~ManifestPipelines();
+    ManifestPipelines(const ManifestPipelines&) = delete;
+    ManifestPipelines& operator=(const ManifestPipelines&) = delete;
+    // Create infos listed for a shader file (its full path, under data\shaders<variant>).
+    size_t Count(const std::wstring& file) const noexcept;
+    // Each of them made and destroyed; with `binaries` (a folder) its machine code kept there when the device has
+    // VK_KHR_pipeline_binary. The first failure, or VK_SUCCESS.
+    VkResult Compile(VkDevice device, const std::wstring& file, const std::wstring& binaries = {}) const noexcept;
+    size_t Total() const noexcept;
+
+    struct State;
+
+  private:
+    std::unique_ptr<State> state;
+};
+
+// The check child's binaries (the folder `from`, with its identity.txt) as data\binaries<variant>\, replacing what was
+// there. Logs how many; false when there were none.
+bool AdoptBinaries(const std::wstring& data, const std::wstring& variant, const std::wstring& from) noexcept;
+// The device and driver a binary folder holds code for (identity.txt): another one's is not imported.
+std::string BinaryIdentity(VkPhysicalDevice physical);
+
 // MZ_PROBE_PIPELINE_BINARY=1 (read once per process): Vulkan::Create enables VK_KHR_maintenance5 and
 // VK_KHR_pipeline_binary when the device offers both, and logs the global pipeline key (vkGetPipelineKeyKHR without a
 // create info) with the pipelineCacheUUID, to find out whether the key depends on the executable. Nothing changes
@@ -73,10 +107,12 @@ struct BinaryProbe
     };
     bool enabled = false;
 
+    bool active = false; // the two are on the device (asked for, or `always`)
+
     // Adds the two extensions to `extensions` and returns the features to chain into the device's create info in
-    // front of `next`, when asked for and offered; returns `next` otherwise.
+    // front of `next`, when asked for (or `always`: the FP16 networks' binaries) and offered; returns `next` otherwise.
     void* Prepare(VkPhysicalDevice physical, const std::vector<VkExtensionProperties>& offered,
-                  std::vector<const char*>& extensions, void* next);
+                  std::vector<const char*>& extensions, void* next, bool always = false);
     // Once the device exists.
     void Report(VkDevice device, VkPhysicalDevice physical) const;
 };
