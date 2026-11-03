@@ -563,7 +563,7 @@ and Inspect. A two-column version was tried and dropped. The NVIDIA-chain page i
 ### 0.4.0
 
 **Third NR runtime: mochizuki.**
-[mochizuki0323/DLSSNR-AMD](https://github.com/mochizuki0323/DLSSNR-AMD) (MIT, v0.0.1, commit
+[mochizuki0323/DLSSNR-AMD](https://gitlab.com/mochizuki0323/DLSSNR-AMD) (MIT, v0.0.1, commit
 `791b046`, vendored under `third_party/mochizuki/`) reimplements the NR network of NVIDIA's
 `nvngx_dlssnr.dll` 310.8.0 as Vulkan compute shaders on FP8 (`VK_KHR_cooperative_matrix`,
 `VK_EXT_shader_float8`), so it needs RDNA4. Upstream's own host asks vkd3d-proton for the game's

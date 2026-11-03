@@ -2,7 +2,8 @@
 
 The Vulkan network behind `MochizukiNrRuntime.dll` (`NrBackend=mochizuki`).
 
-- Source: https://github.com/mochizuki0323/DLSSNR-AMD
+- Source: https://gitlab.com/mochizuki0323/DLSSNR-AMD (moved from GitHub on 2026-10-30 with its history; the
+  commits named here are the same on GitLab)
 - Pinned commit: `cc27501` (2026-10-19, tag v0.0.7): `windows/src/core/`, `windows/shaders/`, `windows/build/` and
   `windows/data/aco/` as upstream has them, apart from the local patches below, and the Linux network ACO is made
   from (`linux/build/build_network.py`, `linux/shaders/`) from the same tag (its Linux half, `29fda44`). See Sync to
