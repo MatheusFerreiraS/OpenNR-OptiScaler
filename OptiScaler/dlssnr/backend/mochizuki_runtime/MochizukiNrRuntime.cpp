@@ -246,7 +246,7 @@ bool Fp16CheckSkips(nr::Arch arch, bool layout)
     return !std::strcmp(v, "0") || (layout && !std::strcmp(v, "pipelines"));
 }
 
-// A diagnostic switch set to 0 (MZ_CHECK_CACHE=0: the pipeline check hands no pipeline cache to the build).
+// A diagnostic switch set to 0 (MZ_CHECK_CACHE=0: the pipeline check keeps no machine code for the build).
 bool MzEnvOff(const char* name)
 {
     char v[8] {};
@@ -1131,7 +1131,12 @@ struct Vulkan
             Rdna2Aco();
         }
         else
+        {
             nr::logf("[mochizuki] the FP8 network (VK_EXT_shader_float8)");
+            const std::string asked = nr::binary::directory();
+            if (!asked.empty() && std::filesystem::path(asked).filename() != "aco")
+                nr::binary::disable("the FP8 network has no ACO records (dlssnr-amd\\aco\\)");
+        }
         // Optional: without it the network takes its descriptor reads.
         bufferDeviceAddress = deviceAddress;
         f12.bufferDeviceAddress = bufferDeviceAddress ? VK_TRUE : VK_FALSE;
@@ -3108,9 +3113,22 @@ struct Session
                        []
                        {
                            const std::string data = RootUtf8(DataDirectory()) + "\\dlssnr-amd";
-                           const std::string bundle = data + "\\aco";
-                           if (GetFileAttributesA((bundle + "\\records").c_str()) == INVALID_FILE_ATTRIBUTES ||
-                               GetFileAttributesA((bundle + "\\shaders").c_str()) == INVALID_FILE_ATTRIBUTES)
+                           const auto has = [](const std::string& b)
+                           {
+                               return GetFileAttributesA((b + "\\records").c_str()) != INVALID_FILE_ATTRIBUTES &&
+                                      GetFileAttributesA((b + "\\shaders").c_str()) != INVALID_FILE_ATTRIBUTES;
+                           };
+                           std::string bundle = data + "\\aco";
+                           // Without RDNA4's bundle an FP16 network's own one is enough: Rdna2Aco / Rdna3Aco take it
+                           // once the device says which network runs (an RDNA4 device then has none: Vulkan::Create).
+                           if (!has(bundle))
+                               for (const char* own : { "\\aco-gfx103x", "\\aco-gfx11" })
+                                   if (has(data + own))
+                                   {
+                                       bundle = data + own;
+                                       break;
+                                   }
+                           if (!has(bundle))
                            {
                                nr::logf("[mochizuki] ACO asked for, but %s has no records\\ and shaders\\: the "
                                         "driver compiles the network",
@@ -3131,7 +3149,11 @@ struct Session
                            std::vector<std::string> shells { bundle + "\\shell", data + "\\shaders",
                                                              data + "\\shaders\\temporal" };
                            nr::binary::configure(bundle, std::move(shells), cache, std::move(aliases));
-                           nr::logf("[mochizuki] ACO: the network runs ACO's machine code from %s", bundle.c_str());
+                           if (bundle == data + "\\aco")
+                               nr::logf("[mochizuki] ACO: the network runs ACO's machine code from %s", bundle.c_str());
+                           else
+                               nr::logf("[mochizuki] ACO: no dlssnr-amd\\aco; %s, for the network it is made for only",
+                                        bundle.c_str());
                        });
     }
 

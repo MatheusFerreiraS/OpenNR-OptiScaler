@@ -517,6 +517,8 @@ Local patches:
     `layouts.txt`, `produce-log.txt` and `summary.txt`; the temporal pre/post kernels the network uses
     (`temporal_pre_fp32nh`, `temporal_post_fp32h16`, `_grade`) have a sampled image before another binding and stay
     with the driver. The bundle is `dlssnr-amd\aco-gfx103x\shaders` = shaders-rdna2 as built + those records.
+    `ConfigureAco` no longer needs RDNA4's `aco\`: without it the FP16 networks' own bundle is set up, and an RDNA4 device
+    then runs without ACO.
 
 The host (`MochizukiNrRuntime.cpp`) takes the RDNA3 network on an AMD device (as AMD's driver reports it, through
 OptiScaler's GPU spoofing) without VK_EXT_shader_float8 or its features, when the FP16 configuration is reported;
