@@ -12,6 +12,13 @@ included), SHA-256 `87CC9A6F022F19DDA7C6B78E953A5B887CB4935BCB08556D396A27830ABA
 `run-test.bat`, one result zip `OpenNR-RX6000-result-<date>.zip`. Older kits in `send\`: v4 (EB909F1C...2233A0, the one
 the RX 6600 ran second), v2 (7A088A20...CCBFF4).
 
+## Kit v6 (2026-11-03, branch rdna2-mega)
+
+Driver contra ACO (aco-gfx103x), primeiro start a frio antes/agora/ACO, small + 310.8 em 1152x648/720p/1080p/1440p.
+Pacote, como ler e a rodada no 9070 XT: `handoff/HANDOFF-rdna2-mega.md` (seção Kit v6). O que mudou nos scripts:
+`cases.ps1` (8 casos, `KIT_QUICK`), `kit.ps1` (9 etapas, `KIT_ACO_ANYWAY`), `build-kit.ps1` (bundle ACO, lista de prewarm,
+palavra geradora 0x7761), `rehash_manifest.py`, `pack-kit.ps1`, `tools/rx7000-kit/mz_e2e.cpp` (`E2E_CREATE_FLAGS`).
+
 ## Cache on C>=64, pass 1 rolled, candidate sets (2026-10-28 late, kit v5)
 
 RX 6600 kit v4 result (driver 26.8.1, AMD proprietary shader compiler): all PASS with identical hashes, Small 720p

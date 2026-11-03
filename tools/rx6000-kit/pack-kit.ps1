@@ -1,9 +1,9 @@
 # pack-kit.ps1 <kit dir> <zip>: zips <kit dir>\OpenNR-RX6000-test as it ships (no models, caches, logs or results).
 param([string]$kitRoot, [string]$zip)
 $ErrorActionPreference = 'Stop'
-$kit = Join-Path $kitRoot 'OpenNR-RX6000-test'
-foreach ($d in 'result', 'OpenNR-RX6000-result-*.zip', 'files\work', 'files\mixed', 'files\mochizuki_nr.log',
-               'files\dlssnr-amd\*.bin', 'files\dlssnr-amd\*.part', 'files\dlssnr-amd\*.cache', 'files\dlssnr-amd\prewarm',
+$kit = Join-Path (Resolve-Path $kitRoot).Path 'OpenNR-RX6000-test'
+foreach ($d in 'result', 'OpenNR-RX6000-result-*.zip', 'files\work', 'files\mixed*', 'files\aco-gfx103x\cache', 'files\mochizuki_nr.log',
+               'files\dlssnr-amd\*.bin', 'files\dlssnr-amd\*.part', 'files\dlssnr-amd\*.cache', 'files\dlssnr-amd\aco-cache',
                'files\dlssnr-amd\build.*', 'files\dlssnr-amd\rdna2-check*', 'files\dlssnr-amd\float-colour-shared') {
     Get-Item -Path (Join-Path $kit $d) -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
 }

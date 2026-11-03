@@ -226,6 +226,7 @@ int main(int argc, char** argv)
     ci.device = device;
     ci.queue = queue;
     ci.assets_directory = modules.c_str();
+    ci.flags = envU("E2E_CREATE_FLAGS", 0);   // 2: ACO (LMXXF_NR_CREATE_FLAG_ACO)
     void* ctx = nullptr;
     char err[1024] {};
     if (api.Create(&ci, &ctx) != LMXXF_NR_OK || api.PrepareSession(ctx) != LMXXF_NR_OK)
