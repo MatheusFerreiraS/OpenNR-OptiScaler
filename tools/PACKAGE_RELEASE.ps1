@@ -73,6 +73,8 @@ if ($DepsRoot) {
     $depSearch += (Join-Path $DepsRoot 'OptiScaler')
     $depSearch += $DepsRoot
 }
+# FSR SDK 2.4's signed DLLs; external/FidelityFX-SDK-v2 (2.3.0) stays for the sources OptiScaler compiles.
+$depSearch += (Join-Path $root 'external/FidelityFX-SDK-v2.4/Kits/FidelityFX/signedbin')
 $depSearch += (Join-Path $root 'external/FidelityFX-SDK-v2/Kits/FidelityFX/signedbin')
 $depSearch += (Join-Path $root 'OptiScaler-AMD-PreSR-R1/OptiScaler')
 $depSearch += (Join-Path $root 'OptiScaler-AMD-PreSR-Multipass-v2.25/OptiScaler')
@@ -162,6 +164,7 @@ foreach ($pair in @(
     @('external/xess/LICENSE.txt', 'XeSS_LICENSE.txt'),
     @('external/FidelityFX-SDK/docs/license.md', 'FidelityFX_v1_LICENSE.md'),
     @('external/FidelityFX-SDK-v2/docs/license.md', 'FidelityFX_v2_LICENSE.md'),
+    @('external/FidelityFX-SDK-v2.4/docs/license.md', 'FidelityFX_v2_LICENSE.md'),
     @('external/directx_agility_sdk/LICENSE.txt', 'DirectX_LICENSE.txt')
 )) {
     $p = Join-Path $root $pair[0]

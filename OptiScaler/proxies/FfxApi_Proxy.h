@@ -607,7 +607,8 @@ class FfxApiProxy
             return FfxDenoiserApiGeneration::Unknown;
         if (version == feature_version { 1, 1, 0 })
             return FfxDenoiserApiGeneration::V1_1;
-        if (version == feature_version { 1, 2, 0 })
+        // 1.2.1 (SDK 2.4) keeps the 1.2 API
+        if (version.major == 1 && version.minor == 2)
             return FfxDenoiserApiGeneration::V1_2;
 
         return FfxDenoiserApiGeneration::Unsupported;
