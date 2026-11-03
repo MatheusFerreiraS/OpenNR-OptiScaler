@@ -80,7 +80,82 @@ MochizukiNrRuntime.cpp` hosts the runtime instead, on a Vulkan device of its own
     family already makes; at 1 and 1 the same gain as before. `nr_renodx.cpp` `chain_active` follows: a Display
     frame changes the image when either strength is above 0 (upstream: colour, or transfer with pedestal removal).
 
+25. (0.0.8.2 sync) The runtime keeps its composition. Upstream 0.0.8 took everything around the network out of
+    `nr_runtime.cpp` (the linear path, Model resolution, the transfer and enlargement, multi-pass, the detail-only
+    cascade, the runtime's own Preprocess; `runtime_encode/transfer/upscale/downscale/taps/prep` and `cascade_*` are
+    gone from `windows/shaders/passes`) and runs it in its own host (the wilsjo2 flow). Here `nr_runtime.cpp/.hpp`
+    stay 0.0.7's with patches 3 to 9 and these of 0.0.8.x ported: the pre block's binding 5 is the noise table
+    (`NrSession::noise_buf`: the direct pre set, the control mask's pre, the temporal pre's buffers), History
+    Precision as `RuntimeConfig::history_f16` (default true, NR_HIST16 wins; the RGBA16F post where the folder has it
+    and its grade twin, else RGBA32F; one pass only), and the 1x1 depth image with Motion Without Depth. The passes
+    stay in both `build_network.py` `RUNTIME` lists beside upstream's new `runtime_blit`; `runtime_alpha.comp` is
+    upstream's (round-half-up of the product, as the post block's store).
+26. (0.0.8.2 sync) `nr_runtime.hpp` `Preprocess::inverse` (default true), which the RenoDX stage's reworked
+    [Preprocess] reads; `runtime_prep.comp` ignores it.
+27. (0.0.8.2 sync) `nr_graph.cpp` `build_shared`: without `--lazy-images` the noise table is filled there as `build`
+    fills it (upstream fills it only through its runtime's lazy path; the host here never takes the shared build).
+
 The new passes are in both `build_network.py` `RUNTIME` lists.
+
+### Sync to v0.0.8.2 (2026-11-03)
+
+Upstream moved to GitLab; 0.0.8.1 (`339938c`, with TheAutomatic's RDNA3 merge request #26) and 0.0.8.2 (`050b8e5`,
+`c53878b`). Merged three ways (base `cc27501`, ours, theirs) over the vendored paths only. Taken as upstream has it:
+- the network's video memory (0.0.8.2): slots that no chosen kernel touches get no bytes (`dead`), inside a
+  persistent run a layer's output takes the bytes of the output two layers before, the arena laid out largest
+  first when that is smaller than the first fit, the post block's never-written second output a 1x1 image
+  (`post_no_out1`), the seed-0 noise table in a buffer of its own (`noise_buffer`, the pre block's binding 5, filled
+  at build: both RDNA4 folders say so in their manifest; the RDNA3 network keeps it in the weight blob and its
+  binding 5 gets a 16-byte stand-in). Harness, RX 9070 XT, ACO: activation arena 1080p small model 409.7 -> 168.0 MB, 310.8 model 392.2 -> 211.0
+  MB, 720p small 193.7 -> 88.7 MB; the process grew by 784 -> 475 MB building the 1080p small network;
+- the RDNA4 network's shaders (`fswin_t.comp`, `fswin_body.glsl`, `image_input.glsl`, `swin_math.glsl`,
+  `pipelines.json`): the noise read, `post_no_out1`, and CC_SMALL_FP8_EXPERIMENTAL's `NR_SACT` / `NR_FIXP` /
+  `NR_VOMERGE`, all off in the shipped pipelines. The ACO records of the changed shaders are upstream's new ones:
+  62 of 62 default and 75 of 75 int4 match the SPIR-V built here (the folder's other 39 records are
+  CC_SMALL_FP8_EXPERIMENTAL's, not built here);
+- UTF-8 paths everywhere (`nr_path_u8.hpp`), `nr_vram_tag.hpp`, `nr_gpu_completion.hpp` (the stage's retire
+  tickets), `nrvk::blit` (a compute blit on compute-only lists, `runtime_blit.comp`), the PAL adapter's gfx11 and
+  gfx11.5 code objects and record version 2 (`nr_pal_binary.hpp`), the ACO loader's fixes (a failure of ACO's code
+  itself turns ACO off and builds again with the driver; the import cache keyed on the build too);
+- the RenoDX stage (`nr_renodx.*`, `windows/shaders/renodx*`): Passes (fast) (`renodx-fast/st_*.comp`; Extrapolation,
+  Feedback, Hybrid, Edit strength), the [Preprocess] rework with Inverse (`renodx-prep/prep_resolve.hlsli`, the
+  resolve built again with `NR_PREP_RESOLVE` as `*_prep.spv`), `legacy_decode_reduce`, `renodx_debug`, less GPU time
+  for the same output. Local patches 10 and 11 kept. The stage's own new defaults (Detail stability off, the Present
+  hook point) do not reach OptiScaler, whose `MochizukiReno*` keys set every field; the stage's NRNoiseEveryFrame is
+  upstream host's and not read here;
+- RDNA3 in `windows/`: upstream took the same mauri870 fork changes this tree took for patch 13 (FP16 matrix
+  configuration, the twins, alias bindings, `plain_tiles`, `kswap`, no persistent runs and no tile chains by
+  default). Their copy and ours met in `nrvk.hpp` and `nr_graph.cpp`; upstream's structure is kept where it is the
+  same thing (`Context::target_float8`, `has_matrix_config`, the `Kernel` fields `retarget` needs), ours where it
+  differs (the twins owned by `GraphAct` / `GraphArenas::wgt_twin` / `GraphStaging::twin`, patch 15; `g_rdna3`, patch
+  19's `NR_RDNA3_PERSIST`, `aco_push_gap` for the Linux push blocks). Patch 17's `takes_machine` now takes gfx11 too,
+  as upstream's adapter does; the RDNA3 network still runs ACO only from an `aco-gfx11` bundle.
+
+Not taken: upstream's own RDNA3 network (`windows/shaders/rdna3`, `windows/data/aco/rdna3`, `build_aco_network.py`;
+see RDNA3), the wilsjo2 style and flow, NR Control (`windows/shaders/control`; `nr_control_shared.hpp` follows
+upstream and is not used), CC_SMALL_FP8_EXPERIMENTAL (its weights are made by upstream's installer, ACO only),
+`--lazy-images` (the input copy and answer image made on first use: the composition here binds them at build), the
+live History Precision switch (`set_history_f16`; a change here takes a new network), the `carry_history` changes,
+supersampling Model resolution, the 0.0.8.2 resize queue and prefetch (upstream's host), signing and packaging.
+
+Dynamic resolution: upstream builds a runtime per render size (`share_for`) and starts each feature's history afresh
+at a new size, as NVIDIA's DLL does; `[Network] Resize History = 1` (off by default) carries it with
+`Runtime::carry_history`, a bilinear blit of the whole history onto the new size. That is what the reverted 3eff79ec5
+did here, and in Cyberpunk 2077 it made each step more visible. The host keeps 5421603fd (auto buckets Cyberpunk's
+per-step reallocations, no rebuilds) and restarts the history when the subrect changes, as upstream's default does.
+
+Harness, RX 9070 XT (40 frames, `exports/mochi0082-verify/tests.ps1`), against the 0.5.9 release runtime:
+- with NR_HIST16=0 (the RGBA32F history of 0.5.9) byte-identical at 720p and 1080p, small and 310.8 model, driver
+  compiler and ACO (8 of 8), and with a pan of 8 px a frame (ACO, 720p and 1080p);
+- as shipped (RGBA16F history with ACO): 54.7-57.3 dB from 0.5.9 (mean 0.1-0.2% darker), pan 56.1-57.1 dB; the
+  driver-compiled network has no RGBA16F post and stays byte-identical;
+- the network's GPU time, 0.5.9 / this: ACO small 720p 3.15 / 2.82 ms, 1080p 5.25 / 5.20, 310.8 720p 5.05 / 4.89,
+  1080p 7.45 / 7.07; driver compiler small 720p 4.09 / 4.33, 1080p 6.99 / 6.08, 310.8 720p 6.74 / 5.81, 1080p
+  9.96 / 9.08 (one run each, a few tenths of noise);
+- forced RDNA3 (MZ_FORCE_RDNA3=1, ACO off): every size deterministic over three runs, 1152x648 byte-identical to
+  0.5.9, 720p and 1080p within a few values (max 0.0005; the gfx12 run of the gfx11 network is wrong by design);
+  1152x648 6.9 ms, 720p 8.4 ms, 1080p 13.0-13.4 ms, as 0.5.9. The startup pipeline check passed 109 of 109 (99
+  before: the stage's ten new shaders).
 
 ### Sync to v0.0.7 (2026-10-19)
 
@@ -184,7 +259,7 @@ before (mean |out_n - shift(out_n-1)| 0.0007 against 0.0102 and 0.0075), the mot
 Upstream's [Network] ACO Mode: the network as machine code made in advance with Mesa's ACO, loaded through
 `VK_KHR_pipeline_binary` instead of compiled by the AMD driver. Vendored for it: `linux/build/build_network.py`,
 `linux/shaders/rdna4/` and `linux/shaders/passes/` (the Linux network, which the records were made from), and
-`windows/data/aco/records/` and `shell-aliases.txt` (62 records since v0.0.7, the Style grade twins included). The build script writes
+`windows/data/aco/records/` and `shell-aliases.txt` (62 used, the Style grade twins included; since v0.0.8.2 the folder holds 101, the other 39 CC_SMALL_FP8_EXPERIMENTAL's). The build script writes
 `dlssnr-amd/aco/` beside the shaders: `shaders/` built from the Linux sources, `records/`, `shell-aliases.txt`.
 Each record is named by the FNV-1a hash of its SPIR-V, so the Linux network must build byte for byte as upstream's
 (glslang 16.5.0): all 62 match.
@@ -436,19 +511,41 @@ Nothing has run on an RX 7000 yet. After the v0.0.7 merge (2026-10-19): the RDNA
 to the main branch's build and so is its output (harness, 1080p, both models, Standard and Natural); forced RDNA3
 builds in 16.2 s cold at 1080p and runs both models.
 
+Upstream's own RDNA3 network (0.0.8.1, TheAutomatic's #26; RX 7000 and Radeon 700M / 800M / 8000S): the same fork's
+kernels moved to `windows/shaders/rdna3`, built plainly with glslang (`build_aco_network.py`) and run only as ACO's
+gfx11 machine code (`windows/data/aco/rdna3`, 62 records, templates in `shells/`); without ACO's code RDNA3 has no NR
+there. Not taken; ours stays the default (2026-11-03):
+- its `attn` keeps `NR_QPAD 4` (72-byte rows) and its `vitattn` the cooperative-matrix body with the ColumnMajor V^T
+  load: the pair that was wrong and changed run to run on an RX 7900 XTX here (patches 23 and 24). Under ACO the
+  LLPC side of it may not exist, but nothing here can run gfx11 code to check it;
+- it keeps the edge bodies and persistent-run pipelines (off by default in its host, as patch 19 does here);
+- it needs a driver that takes pipeline binaries; ours compiles with the driver and was right on an RX 7900 XTX,
+  RX 7800 XT and Radeon 8060S;
+- its records are named by the hash of its SPIR-V, so they cannot serve our `shaders-rdna3` (other sources and the
+  LLPC unroll). The PAL adapter now takes gfx11 code objects (patch 17), so an opt-in is a matter of shipping its
+  folder as `aco-gfx11` with its SPIR-V and shells and checking the push layout (`aco_push_gap`) on an RX 7000
+  first.
+
+For the RDNA2 branches (`mochizuki-rdna2`, a later rebase onto this): `nr_graph.cpp`, `nrvk.hpp` and `nr_runtime.cpp`
+moved (the dead slots and arena layout, the noise buffer at the pre block's binding 5: an RDNA2 pre block that reads
+the noise from the weight blob needs no `noise_buffer` in its manifest and keeps working; its kernels' binding 5 now
+gets the 16-byte stand-in), `Kernel` grew `retarget`'s fields, the PAL adapter takes gfx11 (not gfx10.3), and
+`build_network.py`'s `RUNTIME` list has `runtime_blit`.
+
 ## Build
 
 `tools\build-mochizuki-runtime.cmd [out]` from an MSVC developer prompt, with the Vulkan SDK 1.4.357 or newer
 (`VULKAN_SDK`) and Python. It downloads glslang 16.5.0, the version the upstream SPIR-V is pinned to, and Slang
 2026.19 (SHA-256 checked, for the RenoDX shaders) into `toolchain\` here, and writes `MochizukiNrRuntime.dll` and
-`dlssnr-amd\shaders\` (with `renodx\`) and `dlssnr-amd\shaders-rdna3\` (53 network, 11 temporal, 15 runtime) to
+`dlssnr-amd\shaders\` (with `renodx\`) and `dlssnr-amd\shaders-rdna3\` (53 network, 11 temporal, 16 runtime) to
 `out` (default `exports\mochizuki-runtime`).
 
-The shader folder has 55 network, 6 temporal and 15 runtime pipelines (v0.0.7 and the local passes;
-`runtime\FidelityFX-FSR1-LICENSE.txt` beside the FSR 1 EASU in `runtime_upscale`), 103 files. The prewarm list
+The shader folder has 55 network, 6 temporal and 16 runtime pipelines (v0.0.8.2 and the local passes;
+`runtime\FidelityFX-FSR1-LICENSE.txt` beside the FSR 1 EASU in `runtime_upscale`) and 30 RenoDX files, 113 files. The prewarm list
 (`dlssnr-amd\prewarm\manifest.txt`) must be made again whenever the shaders change: with ACO off (it is skipped with
 ACO on), run the runtime once at 720p, 1080p, 1440p and 3840x2160 and once at 1080p with the 310.8 model, from an
-empty `prewarm\`, and take the list it writes: 38 pipelines for v0.0.7. The 0.5.5 list had 33: it lacked `ffwd3w`,
+empty `prewarm\`, and take the list it writes: 38 pipelines for v0.0.7 and for v0.0.8.2
+(`exports/mochi0082-verify/prewarm.ps1` in the sync's worktree). The 0.5.5 list had 33: it lacked `ffwd3w`,
 `gemmprojw` and `gemmvqkvnorm` (the larger extents and the 310.8 model) besides the two new Style grade pipelines.
 
 ## The model
