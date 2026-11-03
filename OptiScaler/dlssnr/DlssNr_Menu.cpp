@@ -312,6 +312,8 @@ static bool RenoChoice(std::string_view key, const char* label, int* v, int lo, 
         { "MochizukiRenoSourceEncoding", "From the format\0SDR\0Linear\0PQ\0" },
         { "MochizukiRenoFeedMode", "Auto\0Content meter\0Game exposure\0" },
         { "MochizukiRenoNormGovernor", "Off\0Slew\0Stable\0" },
+        { "MochizukiRenoPassesMode", "Legacy\0Fast\0" },
+        { "MochizukiRenoFastMethod", "Extrapolation\0Feedback\0Hybrid\0Edit strength\0" },
     };
     for (const auto& [name, items] : combos)
         if (key == name)

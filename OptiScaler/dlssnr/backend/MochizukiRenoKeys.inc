@@ -9,8 +9,8 @@ MZR_U(MochizukiRenoStyle, 0u, 0, 2, 1, "Style", reno_style, "The model's Style: 
 MZR_F(MochizukiRenoLocalTone, 1.0f, 0.0f, 2.0f, 1, "Local tone", reno_local_tone, "The model's local lighting.")
 MZR_F(MochizukiRenoLocalStructure, 1.0f, 0.0f, 2.0f, 1, "Local structure", reno_local_structure,
       "The model's structure strength.")
-MZR_F(MochizukiRenoSkinStructure, -1.0f, -1.0f, 1.0f, 1, "Skin structure", reno_skin_structure,
-      "Structure on skin; -1 is the model's own. Needs the auto mask.")
+MZR_F(MochizukiRenoSkinStructure, 1.0f, 0.0f, 2.0f, 1, "Skin structure", reno_skin_structure,
+      "Structure on skin, 0 to 2 (1 is the model's default). Needs the auto mask.")
 MZR_B(MochizukiRenoAutoMask, false, 0, 1, 1, "Auto mask", reno_auto_mask,
       "The model's character mask, so skin gets its own structure.")
 MZR_B(MochizukiRenoSkinIndependent, true, 0, 1, 1, "Independent skin", reno_skin_independent,
@@ -35,8 +35,8 @@ MZR_F(MochizukiRenoPass2LocalTone, 1.0f, 0.0f, 2.0f, 3, "Local tone", reno_pass_
       "This pass's local lighting.")
 MZR_F(MochizukiRenoPass2Structure, 1.0f, 0.0f, 2.0f, 3, "Local structure", reno_pass_local_structure_0,
       "This pass's structure strength.")
-MZR_F(MochizukiRenoPass2Skin, -1.0f, -1.0f, 1.0f, 3, "Skin structure", reno_pass_skin_structure_0,
-      "This pass's skin structure; -1 is the model's own.")
+MZR_F(MochizukiRenoPass2Skin, 1.0f, 0.0f, 2.0f, 3, "Skin structure", reno_pass_skin_structure_0,
+      "This pass's skin structure, 0 to 2 (1 is the model's default).")
 MZR_B(MochizukiRenoPass2AutoMask, false, 0, 1, 3, "Auto mask", reno_pass_auto_mask_0, "This pass's character mask.")
 MZR_F(MochizukiRenoPass3Transfer, 1.0f, 0.0f, 1.0f, 4, "Transfer strength", reno_pass_transfer_1,
       "How much of this pass's brightness change is kept.")
@@ -51,8 +51,8 @@ MZR_F(MochizukiRenoPass3LocalTone, 1.0f, 0.0f, 2.0f, 4, "Local tone", reno_pass_
       "This pass's local lighting.")
 MZR_F(MochizukiRenoPass3Structure, 1.0f, 0.0f, 2.0f, 4, "Local structure", reno_pass_local_structure_1,
       "This pass's structure strength.")
-MZR_F(MochizukiRenoPass3Skin, -1.0f, -1.0f, 1.0f, 4, "Skin structure", reno_pass_skin_structure_1,
-      "This pass's skin structure; -1 is the model's own.")
+MZR_F(MochizukiRenoPass3Skin, 1.0f, 0.0f, 2.0f, 4, "Skin structure", reno_pass_skin_structure_1,
+      "This pass's skin structure, 0 to 2 (1 is the model's default).")
 MZR_B(MochizukiRenoPass3AutoMask, false, 0, 1, 4, "Auto mask", reno_pass_auto_mask_1, "This pass's character mask.")
 MZR_F(MochizukiRenoPass4Transfer, 1.0f, 0.0f, 1.0f, 5, "Transfer strength", reno_pass_transfer_2,
       "How much of the brightness change of pass 4 and later is kept.")
@@ -67,7 +67,7 @@ MZR_F(MochizukiRenoPass4LocalTone, 1.0f, 0.0f, 2.0f, 5, "Local tone", reno_pass_
       "The local lighting of pass 4 and later.")
 MZR_F(MochizukiRenoPass4Structure, 1.0f, 0.0f, 2.0f, 5, "Local structure", reno_pass_local_structure_2,
       "The structure strength of pass 4 and later.")
-MZR_F(MochizukiRenoPass4Skin, -1.0f, -1.0f, 1.0f, 5, "Skin structure", reno_pass_skin_structure_2,
+MZR_F(MochizukiRenoPass4Skin, 1.0f, 0.0f, 2.0f, 5, "Skin structure", reno_pass_skin_structure_2,
       "The skin structure of pass 4 and later; -1 is the model's own.")
 MZR_B(MochizukiRenoPass4AutoMask, false, 0, 1, 5, "Auto mask", reno_pass_auto_mask_2,
       "The character mask of pass 4 and later.")
@@ -164,10 +164,10 @@ MZR_F(MochizukiRenoMVecScaleX, 1.0f, -2.0f, 2.0f, 10, "Motion vector scale X", r
 MZR_F(MochizukiRenoMVecScaleY, 1.0f, -2.0f, 2.0f, 10, "Motion vector scale Y", reno_mvec_scale_y,
       "Scales the game's motion vectors; -1 flips a game whose vectors point the other way.")
 MZR_U(MochizukiRenoPassesMode, 0u, 0, 1, 2, "Passes mode", reno_passes_mode,
-      "0 legacy: the network once a pass. 1 fast: the network once a frame, its change strengthened by the fast method"
+      "Legacy: the network once a pass. Fast: the network once a frame, its change strengthened by the fast method"
       "\nbelow (the pass count is then 1).")
 MZR_U(MochizukiRenoFastMethod, 0u, 0, 3, 2, "Fast method", reno_fast_method,
-      "Passes (fast): 0 Extrapolation, 1 Feedback, 2 Hybrid, 3 Edit strength. Feedback and Hybrid need motion vectors.")
+      "Passes (fast): Extrapolation, Feedback, Hybrid or Edit strength. Feedback and Hybrid need motion vectors.")
 MZR_F(MochizukiRenoFastExtrapolationPasses, 3.0f, 1.0f, 8.0f, 2, "Extrapolation passes", reno_fast_passes_0,
       "Extrapolation's strength, as the legacy pass count it stands for.")
 MZR_F(MochizukiRenoFastFeedbackPasses, 3.0f, 1.0f, 8.0f, 2, "Feedback passes", reno_fast_passes_1,
