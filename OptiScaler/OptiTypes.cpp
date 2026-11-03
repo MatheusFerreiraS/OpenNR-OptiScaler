@@ -86,7 +86,7 @@ std::string UpscalerDisplayName(Upscaler upscaler, API api)
         return "FSR-RR";
 
     case Upscaler::OpenNrRr:
-        return "OpenNR RR";
+        return "OpenRR";
     }
 
     return "????";
@@ -129,7 +129,7 @@ std::string UpscalerShortName(Upscaler upscaler)
         return "DLSSD";
 
     case Upscaler::OpenNrRr:
-        return "OpenNR RR";
+        return "OpenRR";
     }
 
     return "????";

@@ -42,7 +42,7 @@ Kind ActiveKindFromConfig()
 }
 
 // The runtimes that run between the two halves of the game's command list need the split: lmxxf, mochizuki and
-// OpenNR RR. Like NrBackend, OpenNR RR's Enabled counts as the game started with it.
+// OpenRR. Like NrBackend, OpenRR's Enabled counts as the game started with it.
 bool SubmissionHooksWanted()
 {
     static const bool openNrRr = Config::Instance()->OpenNrRrEnabled.value_or_default();

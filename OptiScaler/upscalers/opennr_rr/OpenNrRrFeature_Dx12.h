@@ -9,15 +9,15 @@ namespace OpenNrRr
 {
 // Loads the runtime and asks it once whether this adapter and nvngx_dlssd.dll can run the network.
 bool Usable(LUID adapter);
-// Whether Usable has run, and why OpenNR RR is not offered (empty while it is).
+// Whether Usable has run, and why OpenRR is not offered (empty while it is).
 bool Checked();
 std::string Reason();
-// A failure this session: OpenNR RR stays off until the game restarts, so the fallback never returns to it.
+// A failure this session: OpenRR stays off until the game restarts, so the fallback never returns to it.
 void Block(const std::string& why);
 // The running context's state, for the menu. False without one.
 bool Info(OnrRrInfo& info);
 // Whether the game's lists are OptiScaler's split proxies, set up at launch when an NR runtime that splits them or
-// OpenNR RR was enabled.
+// OpenRR was enabled.
 bool SplitReady();
 // NrOnDenoised: what mochizuki on the denoised image is doing, or why it is not running. Empty while it is off.
 std::string DenoisedNrStatus();

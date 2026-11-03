@@ -193,7 +193,7 @@ bool Load()
     if (!std::filesystem::exists(path, ec))
     {
         s_reason = "OpenNrRrRuntime.dll is not in OptiScaler's folder";
-        LOG_INFO("OpenNR RR: {} ({})", s_reason, wstring_to_string(path.wstring()));
+        LOG_INFO("OpenRR: {} ({})", s_reason, wstring_to_string(path.wstring()));
         return false;
     }
 
@@ -202,7 +202,7 @@ bool Load()
     if (module == nullptr)
     {
         s_reason = std::format("OpenNrRrRuntime.dll did not load (error {})", GetLastError());
-        LOG_ERROR("OpenNR RR: {} ({})", s_reason, wstring_to_string(path.wstring()));
+        LOG_ERROR("OpenRR: {} ({})", s_reason, wstring_to_string(path.wstring()));
         return false;
     }
 
@@ -238,7 +238,7 @@ bool Load()
     {
         s_reason = std::format("OpenNrRrRuntime.dll does not offer ABI {} (rc {}, abi {})", ONR_RR_ABI_VERSION, rc,
                                api.abi_version);
-        LOG_ERROR("OpenNR RR: {}", s_reason);
+        LOG_ERROR("OpenRR: {}", s_reason);
         FreeLibrary(module);
         return false;
     }
@@ -250,7 +250,7 @@ bool Load()
     s_getBackend = api4.GetBackend;
     s_record = api4.Record;
     s_recordPost = api4.RecordPost;
-    LOG_INFO("OpenNR RR: runtime loaded from {} (ABI {})", wstring_to_string(path.wstring()), api.abi_version);
+    LOG_INFO("OpenRR: runtime loaded from {} (ABI {})", wstring_to_string(path.wstring()), api.abi_version);
     return true;
 }
 
@@ -375,7 +375,7 @@ void LogNgxInputs(const NVSDK_NGX_Parameter& params, ID3D12Resource* layer)
     ++frames;
     withLayer += layer != nullptr;
     if (frames % 3000 == 0)
-        LOG_INFO("OpenNR RR: transparency layer in {} of the last 3000 frames", std::exchange(withLayer, 0));
+        LOG_INFO("OpenRR: transparency layer in {} of the last 3000 frames", std::exchange(withLayer, 0));
 
     std::string set;
     std::vector<std::string> lines;
@@ -396,15 +396,15 @@ void LogNgxInputs(const NVSDK_NGX_Parameter& params, ID3D12Resource* layer)
 
     lastSet = set;
     ++logs;
-    LOG_INFO("OpenNR RR: DLSS-D inputs at frame {} ({} textures):", frames, lines.size());
+    LOG_INFO("OpenRR: DLSS-D inputs at frame {} ({} textures):", frames, lines.size());
     for (const auto& line : lines)
-        LOG_INFO("OpenNR RR:   {}", line);
+        LOG_INFO("OpenRR:   {}", line);
     for (const char* key : kNgxScalars)
     {
         if (float value = 0; params.Get(key, &value) == NVSDK_NGX_Result_Success)
-            LOG_INFO("OpenNR RR:   {} = {}", key, value);
+            LOG_INFO("OpenRR:   {} = {}", key, value);
         else if (int ivalue = 0; params.Get(key, &ivalue) == NVSDK_NGX_Result_Success)
-            LOG_INFO("OpenNR RR:   {} = {}", key, ivalue);
+            LOG_INFO("OpenRR:   {} = {}", key, ivalue);
     }
 }
 
@@ -451,7 +451,7 @@ bool Usable(LUID adapter)
 
     const char* source = nullptr;
     s_dlssdPath = FindDlssd(&source);
-    LOG_INFO("OpenNR RR: nvngx_dlssd.dll {} ({})", source, wstring_to_string(s_dlssdPath));
+    LOG_INFO("OpenRR: nvngx_dlssd.dll {} ({})", source, wstring_to_string(s_dlssdPath));
 
     int32_t rc;
     {
@@ -466,20 +466,20 @@ bool Usable(LUID adapter)
         s_reason = RuntimeError();
         if (s_reason.empty())
             s_reason = std::format("not supported here (rc {})", rc);
-        LOG_INFO("OpenNR RR: Check rc={}: {}", rc, s_reason);
+        LOG_INFO("OpenRR: Check rc={}: {}", rc, s_reason);
         return false;
     }
 
     if (s_dlssdPath.empty())
     {
         s_reason = "nvngx_dlssd.dll not found, the weights are built from it";
-        LOG_INFO("OpenNR RR: {}", s_reason);
+        LOG_INFO("OpenRR: {}", s_reason);
         return false;
     }
 
     s_reason.clear();
     s_usable = true;
-    LOG_INFO("OpenNR RR: Check passed on adapter {:08X}:{:08X}", (uint32_t) adapter.HighPart, adapter.LowPart);
+    LOG_INFO("OpenRR: Check passed on adapter {:08X}:{:08X}", (uint32_t) adapter.HighPart, adapter.LowPart);
     return true;
 }
 
@@ -577,7 +577,7 @@ bool OpenNrRrFeatureDx12::InitInternal(ID3D12GraphicsCommandList* InCommandList,
 
     if (!OpenNrRr::Usable(Device->GetAdapterLuid()))
     {
-        LOG_ERROR("OpenNR RR: not usable: {}", OpenNrRr::Reason());
+        LOG_ERROR("OpenRR: not usable: {}", OpenNrRr::Reason());
         return false;
     }
 
@@ -638,7 +638,7 @@ bool OpenNrRrFeatureDx12::InitInternal(ID3D12GraphicsCommandList* InCommandList,
     if (rc != ONR_RR_OK || _context == nullptr)
     {
         const auto error = RuntimeError();
-        LOG_ERROR("OpenNR RR: Create rc={}: {}", rc, error);
+        LOG_ERROR("OpenRR: Create rc={}: {}", rc, error);
         OpenNrRr::Block(std::format("Create failed ({})", error));
         _context = nullptr;
         return false;
@@ -652,12 +652,12 @@ bool OpenNrRrFeatureDx12::InitInternal(ID3D12GraphicsCommandList* InCommandList,
     uint32_t running = ONR_RR_BACKEND_VULKAN;
     if (s_getBackend != nullptr)
         s_getBackend(_context, &running);
-    LOG_INFO("OpenNR RR: created, render {}x{} -> output {}x{}, backend {} (asked: {}), weights from {}",
+    LOG_INFO("OpenRR: created, render {}x{} -> output {}x{}, backend {} (asked: {}), weights from {}",
              _maxRenderWidth, _maxRenderHeight, DisplayWidth(), DisplayHeight(),
              running == ONR_RR_BACKEND_D3D12 ? "D3D12" : "Vulkan", backend, wstring_to_string(dlssd));
 
     if (!LowResMV())
-        LOG_WARN("OpenNR RR: the game declares display-size motion vectors; the runtime reads them at render size");
+        LOG_WARN("OpenRR: the game declares display-size motion vectors; the runtime reads them at render size");
 
     SetInit(true);
     return true;
@@ -705,7 +705,7 @@ void OpenNrRrFeatureDx12::DropStaleJob()
 
         static uint32_t dropped = 0;
         if (++dropped <= 10 || dropped % 300 == 0)
-            LOG_WARN("OpenNR RR: the list of the previous frame never ran its between slot; job cancelled (#{})",
+            LOG_WARN("OpenRR: the list of the previous frame never ran its between slot; job cancelled (#{})",
                      dropped);
     }
 
@@ -719,9 +719,9 @@ void OpenNrRrFeatureDx12::FallBack(const std::string& why)
         return;
 
     _fellBack = true;
-    LOG_ERROR("OpenNR RR: {}; switching Ray Reconstruction back to the previous provider", why);
+    LOG_ERROR("OpenRR: {}; switching Ray Reconstruction back to the previous provider", why);
     ImGui::InsertNotification(
-        { ImGuiToastType::Warning, 10000, "OpenNR RR stopped, Ray Reconstruction goes back to FSR-RR (see the log)" });
+        { ImGuiToastType::Warning, 10000, "OpenRR stopped, Ray Reconstruction goes back to FSR-RR (see the log)" });
 
     OpenNrRr::Block(why);
 
@@ -871,7 +871,7 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
     {
         _loggedSwitches = switches;
         _loggedMaskScale = maskScale;
-        LOG_INFO("OpenNR RR: use disocclusion mask {}, scale it by {}, invert it {}, clamp it to 0..1 {}, use SSS guide {}, "
+        LOG_INFO("OpenRR: use disocclusion mask {}, scale it by {}, invert it {}, clamp it to 0..1 {}, use SSS guide {}, "
                  "use responsivity mask {}, colour before transparency {}, depth of field guide {}, reflection motion "
                  "vectors {}, transparency layer opacity and motion {}",
                  useMask, maskScale, invertMask, clampMask, useSss, useResp, useCbt, useDof, useSmv, useLayerExtras);
@@ -907,7 +907,7 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
     if (!guidesLogged)
     {
         guidesLogged = true;
-        LOG_INFO("OpenNR RR: guides diffuse albedo {}, specular albedo {}, normals {}, roughness {}, specular hit "
+        LOG_INFO("OpenRR: guides diffuse albedo {}, specular albedo {}, normals {}, roughness {}, specular hit "
                  "distance {}, ray direction + hit distance {} (not read), transparency layer {}, its opacity {}, its "
                  "motion vectors {}, disocclusion mask {}, SSS guide {}, responsivity mask {}, colour before "
                  "transparency {}, depth of field guide {}, reflection motion vectors {}",
@@ -926,7 +926,7 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
     if (_roughnessPacked < 0)
     {
         _roughnessPacked = frame.roughness.resource == nullptr ? 1 : 0;
-        LOG_INFO("OpenNR RR: roughness mode not declared, using {}", _roughnessPacked ? "packed" : "separate");
+        LOG_INFO("OpenRR: roughness mode not declared, using {}", _roughnessPacked ? "packed" : "separate");
     }
 
     // Hardware or linear depth, decided as FSR-RR does: its HardwareDepth override, then a depth-stencil resource,
@@ -946,7 +946,7 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
     if (static_cast<int>(hardwareDepth) != _loggedHWDepth)
     {
         _loggedHWDepth = hardwareDepth;
-        LOG_INFO("OpenNR RR: depth is {} ({}), {}", hardwareDepth ? "hardware" : "linear",
+        LOG_INFO("OpenRR: depth is {} ({}), {}", hardwareDepth ? "hardware" : "linear",
                  _hasNGXDepthType ? (_ngxHWDepth ? "NGX says hardware" : "NGX says linear") : "NGX says nothing",
                  DepthInverted() ? "reversed Z" : "standard Z");
     }
@@ -990,7 +990,7 @@ bool OpenNrRrFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandL
         if (s_api.GetInfo(_context, &info) == ONR_RR_OK)
         {
             if (_frameCount % 300 == 0)
-                LOG_INFO("OpenNR RR: {} ({}), {} network frames, GPU {:.2f} ms (avg {:.2f}), {}x{} -> {}x{}",
+                LOG_INFO("OpenRR: {} ({}), {} network frames, GPU {:.2f} ms (avg {:.2f}), {}x{} -> {}x{}",
                          StateName(info.state), info.message, info.frames, info.gpu_ms_last, info.gpu_ms_average,
                          info.render_width, info.render_height, info.output_width, info.output_height);
 
@@ -1140,7 +1140,7 @@ bool OpenNrRrFeatureDx12::EvaluateD3d12(ID3D12GraphicsCommandList* InCommandList
         if (split)
             format = RecordDenoisedNr(*InParameters, frame, job, &image);
         else
-            LOG_WARN("OpenNR RR: the split for the denoised image was refused (hr {:#x}); frame without NR", (uint32_t) hr);
+            LOG_WARN("OpenRR: the split for the denoised image was refused (hr {:#x}); frame without NR", (uint32_t) hr);
 
         if (const int32_t rc = s_recordPost(_context, job, list, format); rc != ONR_RR_OK)
         {
@@ -1384,13 +1384,13 @@ void OpenNrRrFeatureDx12::LogHopTiming(int slotIndex)
     MochizukiNrInfo mz {};
     const bool mzInfo = DlssNr::Backend::LmxxfBackend::MochizukiInfo(mz);
     if (s_getHopTiming != nullptr)
-        LOG_INFO("OpenNR RR: hop timeline on the GPU, mean of {} frames (ms): queue -> network {:.3f} | network {:.3f} | "
+        LOG_INFO("OpenRR: hop timeline on the GPU, mean of {} frames (ms): queue -> network {:.3f} | network {:.3f} | "
                  "-> producer {:.3f} | producer {:.3f} | mochizuki {:.3f} (its network {:.3f}) | consumer {:.3f} | -> post "
                  "{:.3f} | post {:.3f} | -> queue {:.3f} | total {:.3f}",
                  d.summed, d.sum[0] / n, d.sum[1] / n, d.sum[2] / n, d.sum[3] / n, d.sum[4] / n,
                  mzInfo ? mz.gpu_ms_median : 0.f, d.sum[5] / n, d.sum[6] / n, d.sum[7] / n, d.sum[8] / n, d.sum[9] / n);
     else
-        LOG_INFO("OpenNR RR: hop timeline on the GPU, mean of {} frames (ms; a runtime without ABI 3, its halves with "
+        LOG_INFO("OpenRR: hop timeline on the GPU, mean of {} frames (ms; a runtime without ABI 3, its halves with "
                  "their hops): network {:.3f} | producer {:.3f} | mochizuki {:.3f} (its network {:.3f}) | consumer {:.3f} "
                  "| post {:.3f} | total {:.3f}",
                  d.summed, d.sum[1] / n, d.sum[3] / n, d.sum[4] / n, mzInfo ? mz.gpu_ms_median : 0.f, d.sum[5] / n,
@@ -1416,10 +1416,10 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
         loggedEdit = edit;
         loggedWhy = why;
         if (edit != ONR_RR_EDIT_OFF)
-            LOG_INFO("OpenNR RR: mochizuki on the denoised image, mode {}",
+            LOG_INFO("OpenRR: mochizuki on the denoised image, mode {}",
                      edit == ONR_RR_EDIT_LOOP ? "loop" : "display");
         else if (!why.empty())
-            LOG_INFO("OpenNR RR: mochizuki on the denoised image is not running: {}", why);
+            LOG_INFO("OpenRR: mochizuki on the denoised image is not running: {}", why);
     }
 
     if (edit == ONR_RR_EDIT_OFF || d.broken)
@@ -1481,7 +1481,7 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
         }
         catch (const std::exception& e)
         {
-            LOG_ERROR("OpenNR RR: mochizuki on the denoised image: {} failed", e.what());
+            LOG_ERROR("OpenRR: mochizuki on the denoised image: {} failed", e.what());
             d.SetStatus(std::string("failed: ") + e.what());
             d.broken = true;
             return 0;
@@ -1489,7 +1489,7 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
 
         d.mz = new DlssNr::Backend::LmxxfBackend(d.device, q, Util::DllPath().parent_path(), L"MochizukiNrRuntime.dll",
                                                  true);
-        LOG_INFO("OpenNR RR: mochizuki session for the denoised image on queue {:p}", (void*) q);
+        LOG_INFO("OpenRR: mochizuki session for the denoised image on queue {:p}", (void*) q);
     }
     else if (d.device != Device)
     {

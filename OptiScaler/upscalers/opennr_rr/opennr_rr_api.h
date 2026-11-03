@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// OpenNR RR runtime (OpenNrRrRuntime.dll): C interface for a host that intercepts a game's Ray Reconstruction
+// OpenRR runtime (OpenNrRrRuntime.dll): C interface for a host that intercepts a game's Ray Reconstruction
 // (NGX DLSS-D) evaluate on D3D12. The network runs on a Vulkan device of its own on the game's adapter; the game's
 // textures reach it through shared D3D12 buffers and a shared fence.
 //

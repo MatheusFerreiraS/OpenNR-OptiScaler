@@ -1040,7 +1040,7 @@ void MenuCommon::AddDx11Backends(Upscaler upscaler)
                           Upscaler::FSR22_on12, Upscaler::FFX_on12, Upscaler::DLSS, Upscaler::DLSS_on12 });
 }
 
-// Whether OpenNR RR can take over this game's Ray Reconstruction; reason says why not. Asks the runtime once.
+// Whether OpenRR can take over this game's Ray Reconstruction; reason says why not. Asks the runtime once.
 static bool OpenNrRrOffered(std::string* reason)
 {
     if (!OpenNrRr::SplitReady())
@@ -1061,7 +1061,7 @@ void MenuCommon::AddDx12Backends(Upscaler upscaler)
     std::vector<Upscaler> options { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::DLSS };
     std::string reason;
 
-    // Ray Reconstruction is running: OpenNR RR is one more provider for it
+    // Ray Reconstruction is running: OpenRR is one more provider for it
     if ((upscaler == Upscaler::FSR_RR || upscaler == Upscaler::DLSSD || upscaler == Upscaler::OpenNrRr) &&
         OpenNrRrOffered(&reason))
         options.push_back(Upscaler::OpenNrRr);
@@ -3310,7 +3310,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
     std::string openNrRrReason;
     const bool openNrRrOffered =
         state.api == DX12 && usesRr && primaryGpu.vendorId != VendorId::Nvidia && OpenNrRrOffered(&openNrRrReason);
-    // FSR-RR or OpenNR RR on DX12 can take over from DLSSD on a non-Nvidia GPU
+    // FSR-RR or OpenRR on DX12 can take over from DLSSD on a non-Nvidia GPU
     const bool canSwitchRrOnDx12 = state.api == DX12 && primaryGpu.vendorId != VendorId::Nvidia &&
                                    (FfxApiProxy::IsDenoiserApiImplementedDx12() || openNrRrOffered);
 
@@ -3373,7 +3373,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
     if (state.api == DX12 && usesRr && primaryGpu.vendorId != VendorId::Nvidia && !openNrRrOffered)
     {
         ImGui::Spacing();
-        ImGui::TextDisabled("OpenNR RR: %s", openNrRrReason.c_str());
+        ImGui::TextDisabled("OpenRR: %s", openNrRrReason.c_str());
     }
 
     if (primaryGpu.dlssCapable && !state.NVNGX_DLSS_Path.has_value())
@@ -3480,11 +3480,11 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
         }
     }
 
-    // OpenNR RR -----------------------------
+    // OpenRR -----------------------------
     if (currentFeature->GetUpscalerType() == Upscaler::OpenNrRr)
     {
         ImGui::Spacing();
-        if (auto ch = ScopedCollapsingHeader("OpenNR RR"); ch.IsHeaderOpen())
+        if (auto ch = ScopedCollapsingHeader("OpenRR"); ch.IsHeaderOpen())
         {
             ScopedIndent indent {};
             ImGui::Spacing();
@@ -3520,7 +3520,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                         "(no second device, no copies through shared memory, no queue crossings).\n"
                         "Vulkan: the network runs on a Vulkan device of its own beside the game.\n"
                         "Auto: D3D12 when the runtime's check on this GPU and driver passes, otherwise Vulkan.\n"
-                        "Changing it recreates OpenNR RR.");
+                        "Changing it recreates OpenRR.");
 
             if (bool useMask = config->OpenNrRrUseDisocclusionMask.value_or_default();
                 ImGui::Checkbox("Use disocclusion mask", &useMask))

@@ -179,7 +179,7 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
         }
         else if (contextData->featureKey == Upscaler::OpenNrRr)
         {
-            // Leaving OpenNR RR, by choice or after a failure: the provider Ray Reconstruction had before it.
+            // Leaving OpenRR, by choice or after a failure: the provider Ray Reconstruction had before it.
             state.newBackend = fsrRrCapable ? Upscaler::FSR_RR : dlssdCapable ? Upscaler::DLSSD : Upscaler::FSR21;
             contextData->featureKey = state.newBackend;
         }
@@ -190,7 +190,7 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
     }
     else if (state.newBackend == Upscaler::OpenNrRr)
     {
-        // OpenNR RR is for Ray Reconstruction only. A Super Resolution feature recreated while the config names it
+        // OpenRR is for Ray Reconstruction only. A Super Resolution feature recreated while the config names it
         // runs FFX; one asked to switch to it keeps what it runs.
         if (!recreate)
         {
@@ -308,7 +308,7 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
             {
                 OpenNrRr::Block("it did not initialise");
                 state.newBackend = FfxApiProxy::IsDenoiserApiImplementedDx12() ? Upscaler::FSR_RR : Upscaler::FSR21;
-                ImGui::InsertNotification({ ImGuiToastType::Warning, 10000, "OpenNR RR did not start, see the log" });
+                ImGui::InsertNotification({ ImGuiToastType::Warning, 10000, "OpenRR did not start, see the log" });
             }
             else if (state.newBackend != Upscaler::DLSSD)
             {
