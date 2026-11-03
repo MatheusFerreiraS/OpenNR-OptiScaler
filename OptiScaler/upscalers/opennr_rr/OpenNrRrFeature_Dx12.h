@@ -33,6 +33,9 @@ class OpenNrRrFeatureDx12 : public IFeature_Dx12
     feature_version Version() override { return { 0, 1, 0 }; }
     Upscaler GetUpscalerType() const override { return Upscaler::OpenNrRr; }
     bool IsWithDx12() final { return false; }
+    // without the NR on the denoised image, which gets a line of its own
+    std::optional<double> ReadUpscalerTime(void* commandQueue) override;
+    void ReadDetailedGpuTimes(void* commandQueue, std::vector<DetailedGpuTime>& detailedGpuTimes) override;
 
   protected:
     bool InitInternal(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters) override;
@@ -62,6 +65,9 @@ class OpenNrRrFeatureDx12 : public IFeature_Dx12
     uint32_t RecordDenoisedNr(const NVSDK_NGX_Parameter& params, const OnrRrFrame& frame, void* job, const OnrRrDenoisedImage* image);
     // the hop's GPU timeline of a timed frame of this slot into the log (render thread)
     void LogHopTiming(int slotIndex);
+    // the NR span of a slot whose lists are done (render thread); the last one, when recent
+    void ReadNrTime(int slotIndex);
+    std::optional<float> NrTime() const;
     static int32_t Between(void* feature, void* job, void* queue);
     // D3D12 backend: the frame recorded into the game's list (Record / RecordPost)
     bool EvaluateD3d12(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX_Parameter* InParameters);

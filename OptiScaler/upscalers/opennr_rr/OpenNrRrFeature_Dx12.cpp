@@ -11,6 +11,7 @@
 #include <dlssnr/backend/LmxxfBackend.h>
 #include <dlssnr/backend/mochizuki_runtime/MochizukiNrControls.h>
 #include <dlssnr/backend/Selector.h>
+#include <dlssnr/amd/AmdBridge.h>
 #include <dlssnr/amd/AmdPreSr.h>
 #include <dlssnr/submission/SubmissionTls.h>
 
@@ -75,6 +76,7 @@ struct DenoisedNr
         std::atomic<uint64_t> busy { 0 };              // fence value that frees the allocator
         bool timed = false;
         uint64_t hop = 0; // the runtime's hop number of the timed frame, 0 until the between slot ran it
+        std::atomic<bool> ran { false }; // the between slot submitted the lists, so their NR timestamps are real
     };
 
     // The hop's timeline on the GPU, every kTimedEvery frames, logged every kTimedLog of them: D3D12 timestamps around
@@ -114,6 +116,9 @@ struct DenoisedNr
     double sum[10] {};
     int summed = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    // GPU time of the NR part (producer start to consumer end, mochizuki's own work in between), for the overlay
+    std::atomic<float> nrMs { 0 };
+    std::atomic<ULONGLONG> nrAt { 0 };
 
     bool Wait(uint64_t v)
     {
@@ -1204,6 +1209,7 @@ int32_t OpenNrRrFeatureDx12::BetweenD3d12(void* feature, void* job, void* queue)
     {
         auto& s = d.slots[slot];
         d.mz->SubmitOwnLists(q, s.producer, s.consumer, DlssNr::Submission::g_rawExecuteCommandLists);
+        s.ran.store(true, std::memory_order_release);
         const uint64_t v = d.value.fetch_add(1) + 1;
         q->Signal(d.fence, v);
         s.busy.store(v, std::memory_order_release);
@@ -1266,6 +1272,7 @@ int32_t OpenNrRrFeatureDx12::Between(void* feature, void* job, void* queue)
             if (rc == ONR_RR_OK && exported)
             {
                 d.mz->SubmitOwnLists(q, s->producer, s->consumer, exec);
+                s->ran.store(true, std::memory_order_release);
                 edited = format;
                 ran = true;
             }
@@ -1295,6 +1302,64 @@ int32_t OpenNrRrFeatureDx12::Between(void* feature, void* job, void* queue)
     if (rc != ONR_RR_OK)
         s_enqueueRc.store(rc, std::memory_order_release);
     return rc;
+}
+
+// The NR span of this slot's last frame, its lists done (render thread): into the NR's GPU time, which the overlay
+// shows on its own line and takes out of the upscaler time.
+void OpenNrRrFeatureDx12::ReadNrTime(int slotIndex)
+{
+    auto& d = Denoised();
+    auto& slot = d.slots[slotIndex];
+    ID3D12CommandQueue* q = d.queue.load(std::memory_order_acquire);
+    UINT64 frequency = 0;
+
+    if (!slot.ran.exchange(false, std::memory_order_acq_rel) || q == nullptr || FAILED(q->GetTimestampFrequency(&frequency)) ||
+        frequency == 0)
+        return;
+
+    const UINT i = UINT(slotIndex * DenoisedNr::kStamps);
+    const D3D12_RANGE range { (i + 1) * sizeof(uint64_t), (i + 5) * sizeof(uint64_t) };
+    uint64_t* ts = nullptr;
+    if (FAILED(d.readback->Map(0, &range, reinterpret_cast<void**>(&ts))))
+        return;
+    const uint64_t t0 = ts[i + 1], t1 = ts[i + 4];
+    const D3D12_RANGE none { 0, 0 };
+    d.readback->Unmap(0, &none);
+
+    if (t1 <= t0)
+        return;
+    const float ms = float(double(t1 - t0) * 1000.0 / double(frequency));
+    d.nrMs.store(ms, std::memory_order_relaxed);
+    d.nrAt.store(GetTickCount64(), std::memory_order_relaxed);
+    DlssNr::AmdBridge::ReportNeuralMs(ms);
+}
+
+std::optional<float> OpenNrRrFeatureDx12::NrTime() const
+{
+    auto& d = Denoised();
+    if (GetTickCount64() - d.nrAt.load(std::memory_order_relaxed) > 500)
+        return std::nullopt;
+    return d.nrMs.load(std::memory_order_relaxed);
+}
+
+// The upscaler's timestamps surround the whole evaluate, so they hold the NR between the network and the post too.
+std::optional<double> OpenNrRrFeatureDx12::ReadUpscalerTime(void* commandQueue)
+{
+    auto total = IFeature_Dx12::ReadUpscalerTime(commandQueue);
+    if (const auto nr = NrTime(); nr && total && lastUpscalerTime)
+    {
+        const double cut = std::min(double(*nr), *lastUpscalerTime);
+        lastUpscalerTime = *lastUpscalerTime - cut;
+        total = *total - cut;
+    }
+    return total;
+}
+
+void OpenNrRrFeatureDx12::ReadDetailedGpuTimes(void* commandQueue, std::vector<DetailedGpuTime>& detailedGpuTimes)
+{
+    IFeature_Dx12::ReadDetailedGpuTimes(commandQueue, detailedGpuTimes);
+    if (const auto nr = NrTime())
+        detailedGpuTimes.emplace_back(DetailedGpuTime { "NR (mochizuki)", double(*nr), false });
 }
 
 // A timed frame of this slot, its lists done (render thread): its timestamps into QueryPerformanceCounter ticks, then
@@ -1517,6 +1582,7 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
         d.SetStatus("the previous frames' lists are still running; frame skipped");
         return 0;
     }
+    ReadNrTime(slotIndex);
     LogHopTiming(slotIndex);
 
     if (d.colour == nullptr || d.width != image.width || d.height != image.height || d.format != DXGI_FORMAT(image.format))
@@ -1568,8 +1634,7 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
     slot.hop = 0;
     const UINT stamp = UINT(slotIndex * DenoisedNr::kStamps);
     slot.producer->Reset(slot.allocator, nullptr);
-    if (slot.timed)
-        slot.producer->EndQuery(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, stamp + 1);
+    slot.producer->EndQuery(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, stamp + 1);
     Transition(slot.producer, buffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
     Transition(slot.producer, d.colour, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
     slot.producer->CopyTextureRegion(&colourLoc, 0, 0, 0, &bufferLoc, nullptr);
@@ -1647,8 +1712,10 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
     slot.consumer->CopyTextureRegion(&outLoc, 0, 0, 0, &resultLoc, &box);
     Transition(slot.consumer, buffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
     Transition(slot.consumer, result, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    if (slot.timed)
-        slot.consumer->EndQuery(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, stamp + 4);
+    slot.consumer->EndQuery(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, stamp + 4);
+    // the NR span's two stamps (a timed frame resolves all of them again after EnqueuePost)
+    for (const UINT i : { stamp + 1, stamp + 4 })
+        slot.consumer->ResolveQueryData(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, i, 1, d.readback, i * sizeof(uint64_t));
     slot.consumer->Close();
 
     if (slot.timed)
