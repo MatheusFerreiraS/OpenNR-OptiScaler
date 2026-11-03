@@ -531,6 +531,10 @@ class Config
     CustomOptional<bool> MochizukiNoiseEveryFrame { false };
     // Natural and Cinematic graded after the network, as NVIDIA's DLL does (upstream 0.0.7); off gives the earlier picture.
     CustomOptional<bool> MochizukiStyleGrade { true };
+    // The temporal history's precision: 16 (RGBA16F, as NVIDIA's DLL and upstream 0.0.8.2) or 32 (RGBA32F, as before).
+    CustomOptional<uint32_t> MochizukiHistoryPrecision { 16 };
+    // Preprocess's change taken back through the curve's bounded inverse (upstream 0.0.8.1); off, as a ratio.
+    CustomOptional<bool> MochizukiPreprocessInverse { true };
 #define MZR_F(name, def, lo, hi, group, label, member, help) CustomOptional<float> name { def };
 #define MZR_U(name, def, lo, hi, group, label, member, help) CustomOptional<uint32_t> name { def };
 #define MZR_B(name, def, lo, hi, group, label, member, help) CustomOptional<bool> name { def };

@@ -163,3 +163,28 @@ MZR_F(MochizukiRenoMVecScaleX, 1.0f, -2.0f, 2.0f, 10, "Motion vector scale X", r
       "Scales the game's motion vectors; -1 flips a game whose vectors point the other way.")
 MZR_F(MochizukiRenoMVecScaleY, 1.0f, -2.0f, 2.0f, 10, "Motion vector scale Y", reno_mvec_scale_y,
       "Scales the game's motion vectors; -1 flips a game whose vectors point the other way.")
+MZR_U(MochizukiRenoPassesMode, 0u, 0, 1, 2, "Passes mode", reno_passes_mode,
+      "0 legacy: the network once a pass. 1 fast: the network once a frame, its change strengthened by the fast method"
+      "\nbelow (the pass count is then 1).")
+MZR_U(MochizukiRenoFastMethod, 0u, 0, 3, 2, "Fast method", reno_fast_method,
+      "Passes (fast): 0 Extrapolation, 1 Feedback, 2 Hybrid, 3 Edit strength. Feedback and Hybrid need motion vectors.")
+MZR_F(MochizukiRenoFastExtrapolationPasses, 3.0f, 1.0f, 8.0f, 2, "Extrapolation passes", reno_fast_passes_0,
+      "Extrapolation's strength, as the legacy pass count it stands for.")
+MZR_F(MochizukiRenoFastFeedbackPasses, 3.0f, 1.0f, 8.0f, 2, "Feedback passes", reno_fast_passes_1,
+      "Feedback's strength, as the legacy pass count it stands for.")
+MZR_F(MochizukiRenoFastHybridPasses, 3.0f, 1.0f, 8.0f, 2, "Hybrid passes", reno_fast_passes_2,
+      "Hybrid's strength, as the legacy pass count it stands for.")
+MZR_B(MochizukiRenoFastExtrapolationHaloLimit, false, 0, 1, 2, "Extrapolation halo limit", reno_fast_halo_limit_0,
+      "Extrapolation keeps the strengthened change inside the local range.")
+MZR_B(MochizukiRenoFastFeedbackHaloLimit, false, 0, 1, 2, "Feedback halo limit", reno_fast_halo_limit_1,
+      "Feedback keeps the strengthened change inside the local range.")
+MZR_B(MochizukiRenoFastHybridHaloLimit, false, 0, 1, 2, "Hybrid halo limit", reno_fast_halo_limit_2,
+      "Hybrid keeps the strengthened change inside the local range.")
+MZR_F(MochizukiRenoFastExtrapolationFine, 0.0f, 0.0f, 2.0f, 2, "Extrapolation fine detail", reno_fast_fine_0,
+      "The fine-detail part of Extrapolation's strengthening (1: as made).")
+MZR_F(MochizukiRenoFastFeedbackFine, 1.0f, 0.0f, 2.0f, 2, "Feedback fine detail", reno_fast_fine_1,
+      "The fine-detail part of Feedback's strengthening (1: as made).")
+MZR_F(MochizukiRenoFastHybridFine, 1.0f, 0.0f, 2.0f, 2, "Hybrid fine detail", reno_fast_fine_2,
+      "The fine-detail part of Hybrid's strengthening (1: as made).")
+MZR_F(MochizukiRenoFastEditStrength, 2.0f, 0.0f, 4.0f, 2, "Edit strength", reno_fast_edit_strength,
+      "Edit strength's multiplier on the network's change, in stops of the look's edit.")

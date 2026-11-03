@@ -182,6 +182,25 @@ extern "C"
          * 1 (default, also for a host whose struct ends before it), 0 the picture these styles had before. Per
          * frame, no rebuild. */
         uint32_t style_grade;
+        /* Upstream 0.0.8.2's [Network] History Precision: 16 (default, also for a host whose struct ends before it)
+         * keeps the temporal history in RGBA16F as NVIDIA's DLL does, 32 in RGBA32F. A change rebuilds the network. */
+        uint32_t history_precision;
+        /* The RenoDX stage's [Preprocess] Inverse (0.0.8.1): 1 (default) the network's change comes back through the
+         * bounded inverse of the curve, 0 as its ratio in the picture the network was shown. Per frame. */
+        uint32_t preprocess_inverse;
+        /* MochizukiRenoOptions.inc's Passes (fast) block (0.0.8.1): the network once a frame, its change strengthened. */
+        uint32_t reno_passes_mode;
+        uint32_t reno_fast_method;
+        float reno_fast_passes_0;
+        float reno_fast_passes_1;
+        float reno_fast_passes_2;
+        uint32_t reno_fast_halo_limit_0;
+        uint32_t reno_fast_halo_limit_1;
+        uint32_t reno_fast_halo_limit_2;
+        float reno_fast_fine_0;
+        float reno_fast_fine_1;
+        float reno_fast_fine_2;
+        float reno_fast_edit_strength;
     } MochizukiNrControls;
 
     /* What the session is doing, for a menu. Safe to ask from any thread, at any rate. */

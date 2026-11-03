@@ -442,7 +442,7 @@ static void ResetMochizuki(Config* c)
           c->MochizukiUseDepth, c->MochizukiDynamicResolution, c->MochizukiPreprocess, c->MochizukiPreprocessExposure,
           c->MochizukiPreprocessBias, c->MochizukiPreprocessCurve, c->MochizukiPreprocessContrast,
           c->MochizukiPreprocessSaturation, c->MochizukiLayerMode, c->MochizukiNoiseEveryFrame,
-          c->MochizukiStyleGrade);
+          c->MochizukiStyleGrade, c->MochizukiHistoryPrecision, c->MochizukiPreprocessInverse);
 #define MZR_F(name, def, lo, hi, group, label, member, help) Unset(c->name);
 #define MZR_U MZR_F
 #define MZR_B MZR_F
@@ -948,6 +948,11 @@ void RenderMenu(Config* config, float menuResScale)
                         config->MochizukiPreprocessCurve = uint32_t(curve);
                     DeferredSlider("Contrast##prep", &config->MochizukiPreprocessContrast, 0.5f, 2.0f, 1.0f);
                     DeferredSlider("Saturation##prep", &config->MochizukiPreprocessSaturation, 0.05f, 2.0f, 1.0f);
+                    bool inverse = config->MochizukiPreprocessInverse.value_or_default();
+                    if (ImGui::Checkbox("Inverse##prep", &inverse))
+                        config->MochizukiPreprocessInverse = inverse;
+                    HelpMarker("On, the network's change comes back through the curve's bounded inverse. Off, as"
+                               "\nits ratio in the picture the network was shown. RenoDX stage, HDR frames.");
                     ImGui::EndDisabled();
                     if (ImGui::SmallButton("Reset##prep"))
                     {
@@ -982,6 +987,11 @@ void RenderMenu(Config* config, float menuResScale)
                            "\nfetched where the last frame's sample really was: finer detail may hold steadier."
                            "\nNeeds Temporal history. No effect without an upscaler.");
                 ImGui::EndDisabled();
+                bool hist16 = config->MochizukiHistoryPrecision.value_or_default() != 32;
+                if (ImGui::Checkbox("16-bit history", &hist16))
+                    config->MochizukiHistoryPrecision = hist16 ? 16u : 32u;
+                HelpMarker("The network's history in RGBA16F, as NVIDIA's DLL keeps it (half the memory). Off keeps"
+                           "\nRGBA32F, the picture before. An RX 9000 with ACO off keeps 32-bit. Rebuilds the network.");
                 bool noise = config->MochizukiNoiseEveryFrame.value_or_default();
                 if (ImGui::Checkbox("Vary noise without motion vectors", &noise))
                     config->MochizukiNoiseEveryFrame = noise;

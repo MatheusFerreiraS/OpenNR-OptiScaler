@@ -131,6 +131,8 @@ void FillMochizukiControls(const Config& cfg, MochizukiNrControls& c)
     c.anti_halo_margin = .25f * (1.f - MzSetting(cfg.MochizukiAntiHaloStrength.value_or_default(), 0.f, 1.f, .8f));
     c.noise_every_frame = cfg.MochizukiNoiseEveryFrame.value_or_default() ? 1u : 0u;
     c.style_grade = cfg.MochizukiStyleGrade.value_or_default() ? 1u : 0u;
+    c.history_precision = cfg.MochizukiHistoryPrecision.value_or_default() == 32 ? 32u : 16u;
+    c.preprocess_inverse = cfg.MochizukiPreprocessInverse.value_or_default() ? 1u : 0u;
     c.renodx = 1u;
     // RenoDX's NeuralUplift switch: Enable NR already turns the stage off, so it has no key of its own
     c.reno_nr_enabled = 1u;

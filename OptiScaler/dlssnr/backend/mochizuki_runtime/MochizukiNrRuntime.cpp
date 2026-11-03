@@ -644,6 +644,7 @@ struct SessionControls
     bool renodx = true;      // MochizukiNrControls::renodx: the RenoDX stage, with `reno` in place of `model`
     nr::renodx::Settings reno;
     bool styleGrade = true;  // Runtime::set_style_grade
+    bool historyF16 = true;  // RuntimeConfig::history_f16 (MochizukiNrControls::history_precision)
 };
 
 void DefaultControls(MochizukiNrControls& c)
@@ -675,6 +676,8 @@ void DefaultControls(MochizukiNrControls& c)
     c.classic_scaler = uint32_t(model.classic_scaler);
     c.renodx = 1;
     c.style_grade = 1;
+    c.history_precision = 16;
+    c.preprocess_inverse = 1;
 #define RDX_F(member, field, def, low, high) c.member = def;
 #define RDX_U RDX_F
 #define RDX_B RDX_F
@@ -726,6 +729,8 @@ SessionControls Sanitise(const MochizukiNrControls& c)
     m.noise_every_frame = c.noise_every_frame != 0;
     out.renodx = c.renodx != 0;
     out.styleGrade = c.style_grade != 0;
+    out.historyF16 = c.history_precision != 32;
+    prep.inverse = c.preprocess_inverse != 0;
 #define RDX_F(member, field, def, low, high) out.reno.field = San(c.member, low, high, def);
 #define RDX_U(member, field, def, low, high) out.reno.field = std::clamp(c.member, uint32_t(low), uint32_t(high));
 #define RDX_B(member, field, def, low, high) out.reno.field = c.member != 0;
@@ -1634,6 +1639,7 @@ struct NetworkKey
     bool cascade = false;   // RuntimeConfig::cascade_detail_only (LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL), with passes
     bool original = false;  // RuntimeConfig::network 0, the 310.8 model (LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL)
     bool firstPass = false; // RuntimeConfig::first_pass_output (LMXXF_NR_FRAME_FLAG_FIRST_PASS), with passes
+    bool hist16 = true;     // RuntimeConfig::history_f16 (MochizukiNrControls::history_precision)
     // MochizukiNrControls::renodx: the network runs inside the RenoDX stage (ProductRuntime::reno), at the stage's
     // extent (renoWidth x renoHeight), one pass at a time, maxPasses being the stage's pass count. The source encoding
     // and the linear unit decide the stage's units for its life.
@@ -3303,6 +3309,7 @@ struct Session
             config.network = key.original ? 0 : 1;
             config.cascade_detail_only = key.cascade;
             config.first_pass_output = key.firstPass;
+            config.history_f16 = key.hist16;
             // The linear path's frame is a proxy made with the soft knee, which the preprocess undoes first.
             config.preprocess_unknee = key.linear;
             // The game's vectors at the nearest texel, as NVIDIA's DLL binds them (upstream 0.0.7, its NGX route).
@@ -4631,7 +4638,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             nr::Controls model;
             float history = 1.f, white = 1.f;
             uint32_t linearMode = 0, maxPassesSetting = 0, drsMode = 0;
-            bool renodx = false, styleGrade = true;
+            bool renodx = false, styleGrade = true, historyF16 = true;
             nr::renodx::Settings reno;
             const float exposure = s->gameExposure.load(std::memory_order_relaxed);
             {
@@ -4647,6 +4654,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 renodx = s->controls.renodx;
                 reno = s->controls.reno;
                 styleGrade = s->controls.styleGrade;
+                historyF16 = s->controls.historyF16;
             }
             // The RenoDX stage runs its own stack, whatever the frame asks for.
             const uint32_t passes = renodx ? nr::renodx::stack_passes(reno) : framePasses;
@@ -4736,7 +4744,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 fullJob && (info->flags & LMXXF_NR_FRAME_FLAG_FIRST_PASS) && (renodx ? passes : maxPasses) > 1;
             g.firstPass = firstPass;
             NetworkKey key { g.width,       g.height, netVk,   scale,    maxPasses, linear,
-                             s->prepWanted, int4,     cascade, original, firstPass };
+                             s->prepWanted, int4,     cascade, original, firstPass, historyF16 };
             // The RenoDX stage: its own extent, pass count, preprocess and units; the model scale and the pass extras
             // are the native route's.
             if (renodx)
@@ -5112,8 +5120,8 @@ int32_t GetLastError(char* buf, uint32_t chars)
 // MochizukiNrControls.h. Every Controls field is 4 bytes and 4-aligned and the struct ends at its last field, so the
 // whole fields a caller's struct holds are its first struct_size & ~3 bytes.
 static_assert(alignof(MochizukiNrControls) == 4 &&
-              sizeof(MochizukiNrControls) ==
-                  offsetof(MochizukiNrControls, style_grade) + sizeof(MochizukiNrControls::style_grade) &&
+              sizeof(MochizukiNrControls) == offsetof(MochizukiNrControls, reno_fast_edit_strength) +
+                                                 sizeof(MochizukiNrControls::reno_fast_edit_strength) &&
               offsetof(MochizukiNrControls, pass) == 72 && offsetof(MochizukiNrControls, preprocess) == 136 &&
               offsetof(MochizukiNrControls, enlarge_mode) == 164 && offsetof(MochizukiNrControls, renodx) == 176 &&
               sizeof(MochizukiNrPassControls) == 32);
