@@ -336,8 +336,10 @@ static bool RenoChoice(std::string_view key, const char* label, int* v, int lo, 
 static void MochizukiRenoGroup(Config* config, int wanted, std::string_view only = {}, std::string_view skip = {})
 {
     const bool unlock = config->MochizukiRenoUnlockPasses.value_or_default();
+    // The fast mode's own settings go in a folder under Passes mode, drawn after the group.
+    const auto fast = [](std::string_view key) { return key.starts_with("MochizukiRenoFast"); };
     const auto shown = [&](std::string_view key, int group)
-    { return only.empty() ? group == wanted && key != skip : key == only; };
+    { return only.empty() ? group == wanted && key != skip && !fast(key) : key == only; };
     const auto rebuilds = [](std::string_view key)
     { return key == "MochizukiRenoResolutionScale" || key == "MochizukiRenoLinearUnitNits"; };
 #define MZR_F(name, def, lo, hi, group, label, member, help)                                                           \
@@ -369,6 +371,20 @@ static void MochizukiRenoGroup(Config* config, int wanted, std::string_view only
 #undef MZR_F
 #undef MZR_U
 #undef MZR_B
+    if (only.empty() && wanted == 2 && ImGui::TreeNode("Fast mode options"))
+    {
+        static constexpr std::string_view keys[] = {
+            "MochizukiRenoFastMethod",           "MochizukiRenoFastExtrapolationPasses",
+            "MochizukiRenoFastFeedbackPasses",   "MochizukiRenoFastHybridPasses",
+            "MochizukiRenoFastExtrapolationHaloLimit", "MochizukiRenoFastFeedbackHaloLimit",
+            "MochizukiRenoFastHybridHaloLimit",  "MochizukiRenoFastExtrapolationFine",
+            "MochizukiRenoFastFeedbackFine",     "MochizukiRenoFastHybridFine",
+            "MochizukiRenoFastEditStrength",
+        };
+        for (const auto key : keys)
+            MochizukiRenoGroup(config, 2, key);
+        ImGui::TreePop();
+    }
     // Locked again, the stack goes back to RenoDX's own four passes at most.
     if (!config->MochizukiRenoUnlockPasses.value_or_default() && config->MochizukiRenoPasses.value_or_default() > 4)
         config->MochizukiRenoPasses = 4u;
