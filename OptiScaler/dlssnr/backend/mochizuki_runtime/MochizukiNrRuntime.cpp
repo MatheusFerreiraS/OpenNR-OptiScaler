@@ -23,7 +23,9 @@
 // rounded up to 64 within the allocation. The frame's buffers are then keyed on the allocation, each frame copies only
 // its subrect, the part of the bucket past it repeats the subrect's edge, the motion vectors are laid over the subrect
 // in the bucket's uv, and the history restarts whenever the subrect changes. A subrect equal to the bucket runs as it
-// does in exact. Always buckets every frame, also across allocations.
+// does in exact. A game that reallocates its colour at every step instead (Cyberpunk 2077) engages auto too: allocations
+// of one format and aspect share a bucket held at the largest of them, and the frame's buffers and Super Resolution's
+// texture stay at that size. Always buckets every frame, also across allocations.
 //
 // Errors (NrError): only a lost device ends the session. It, and a Vulkan side that stops finishing frames (the
 // watchdog), releases every game queue waiting on fromVk. A failed network build or buffer allocation is retried
@@ -1684,10 +1686,17 @@ struct ProductRuntime : nr::Runtime
     }
 };
 
-// Super Resolution's texture for a frame whose colour is `colour`: its extent and format, one mip, UAV.
-D3D12_RESOURCE_DESC ResultDesc(ID3D12Resource* colour)
+// Super Resolution's texture for a frame whose colour is `colour`: its extent and format, one mip, UAV. A bucketed
+// geometry keeps it at the largest allocation it holds (Geometry::colourWidth), so a game that reallocates its colour
+// at every dynamic resolution step gets the same texture; the frame is copied into its top-left.
+D3D12_RESOURCE_DESC ResultDesc(ID3D12Resource* colour, const Geometry& g)
 {
     D3D12_RESOURCE_DESC td = colour->GetDesc();
+    if (g.bucketed)
+    {
+        td.Width = (std::max) (td.Width, g.colourWidth);
+        td.Height = (std::max) (td.Height, g.colourHeight);
+    }
     td.MipLevels = 1;
     td.DepthOrArraySize = 1;
     td.SampleDesc = { 1, 0 };
@@ -2014,6 +2023,16 @@ struct Session
         bool engaged = false;             // auto: a subrect smaller than that allocation came
         UINT maxWidth = 0, maxHeight = 0; // the largest subrect seen
         UINT capWidth = 0, capHeight = 0; // the largest allocation seen (always)
+        // Auto: the largest colour allocation of one format and aspect, and whether the game has reallocated it at
+        // another size since (Cyberpunk 2077 makes a new colour texture at every step of its dynamic resolution):
+        // those steps are then buckets too, held at bigWidth x bigHeight.
+        UINT bigWidth = 0, bigHeight = 0;
+        DXGI_FORMAT bigFormat = DXGI_FORMAT_UNKNOWN;
+        bool reallocated = false;
+        // The allocation a bucketed geometry is keyed on (Geometry::colourWidth), and the largest motion allocation it
+        // has seen: the frame's buffers stay across the steps.
+        UINT limitWidth = 0, limitHeight = 0;
+        UINT motionWidth = 0, motionHeight = 0;
         // Bucketed frames of this allocation, all kBucketShrinkMargin inside the bucket, since lowSince (0: the last
         // frame was not one of them, or the allocation changed), and the largest subrect among them.
         ULONGLONG lowSince = 0;
@@ -2955,7 +2974,7 @@ struct Session
         FrameBuffers b;
         try
         {
-            MakeBuffers(b, g, ResultDesc(colour));
+            MakeBuffers(b, g, ResultDesc(colour, g));
         }
         catch (...)
         {
@@ -3236,7 +3255,7 @@ struct Session
         {
             buffers = std::make_unique<FrameBuffers>();
             buffers->geometry = g;
-            buffers->resultDesc = ResultDesc(colour);
+            buffers->resultDesc = ResultDesc(colour, g);
         }
         // A network the frames do not keep goes on the builder thread before the build, once the Vulkan side has
         // finished the frames that used it: the render thread waits for neither that nor its release.
@@ -3638,7 +3657,7 @@ struct Session
     bool MakeGeometry(const Geometry& g, ID3D12Resource* colour, std::string& why)
     {
         std::unique_ptr<FrameBuffers> made = std::move(prepared);
-        if (made && !(made->geometry == g && SameDesc(made->resultDesc, ResultDesc(colour))))
+        if (made && !(made->geometry == g && SameDesc(made->resultDesc, ResultDesc(colour, g))))
         {
             made->Release(vk.device); // no GPU work has used them
             made.reset();
@@ -3737,20 +3756,53 @@ struct Session
             b.engaged = false;
             b.lowSince = 0; // the shrink counts only this allocation's frames
         }
+        // Auto: a colour allocation of the same format and aspect at another size is a dynamic resolution step, as a
+        // smaller subrect is. Another format or aspect (a new window size, say) starts over.
+        if (mode == 1)
+        {
+            const bool sameKind =
+                b.bigFormat == desc.Format && b.bigHeight && allocHeight &&
+                std::abs(double(allocWidth) / allocHeight - double(b.bigWidth) / b.bigHeight) < .02;
+            if (!sameKind)
+            {
+                b.bigWidth = allocWidth;
+                b.bigHeight = allocHeight;
+                b.bigFormat = desc.Format;
+                b.reallocated = false;
+                b.maxWidth = b.maxHeight = 0;
+                b.motionWidth = b.motionHeight = 0;
+            }
+            else if (allocWidth != b.bigWidth || allocHeight != b.bigHeight)
+            {
+                if (!b.reallocated)
+                    nr::logf("[mochizuki] dynamic resolution (auto): the game reallocates its colour (%ux%u, then "
+                             "%ux%u); each size is a step in one bucket",
+                             b.bigWidth, b.bigHeight, allocWidth, allocHeight);
+                b.reallocated = true;
+                b.bigWidth = std::max(b.bigWidth, allocWidth);
+                b.bigHeight = std::max(b.bigHeight, allocHeight);
+            }
+        }
         b.maxWidth = std::max(b.maxWidth, w);
         b.maxHeight = std::max(b.maxHeight, h);
         b.capWidth = std::max(b.capWidth, allocWidth);
         b.capHeight = std::max(b.capHeight, allocHeight);
-        b.engaged |= mode == 2 || w < allocWidth || h < allocHeight;
+        b.engaged |= mode == 2 || (mode == 1 && b.reallocated) || w < allocWidth || h < allocHeight;
         if (!b.engaged)
         {
             b.lowSince = 0; // a whole frame is not inside the bucket
             return;
         }
-        const auto extent = [&](UINT seen, UINT cap, UINT alloc)
-        { return std::min(mode == 2 ? cap : alloc, (seen + kBucketAlign - 1) / kBucketAlign * kBucketAlign); };
-        W = extent(b.maxWidth, b.capWidth, allocWidth);
-        H = extent(b.maxHeight, b.capHeight, allocHeight);
+        // What the bucket may grow to: this allocation, or the largest of its kind once it is reallocated (auto), or
+        // the largest seen (always).
+        const auto limit = [&](UINT cap, UINT big, UINT alloc)
+        { return mode == 2 ? cap : b.reallocated ? big : alloc; };
+        const auto extent = [&](UINT seen, UINT most)
+        { return std::min(most, (seen + kBucketAlign - 1) / kBucketAlign * kBucketAlign); };
+        b.limitWidth = limit(b.capWidth, b.bigWidth, allocWidth);
+        b.limitHeight = limit(b.capHeight, b.bigHeight, allocHeight);
+        W = extent(b.maxWidth, b.limitWidth);
+        H = extent(b.maxHeight, b.limitHeight);
         const ULONGLONG now = GetTickCount64();
         if (w + kBucketShrinkMargin > W || h + kBucketShrinkMargin > H)
             b.lowSince = 0;
@@ -3770,9 +3822,17 @@ struct Session
                 b.maxHeight = b.lowHeight;
                 b.capWidth = allocWidth; // the only allocation since lowSince
                 b.capHeight = allocHeight;
+                if (b.reallocated)
+                {
+                    b.bigWidth = allocWidth;
+                    b.bigHeight = allocHeight;
+                }
+                b.motionWidth = b.motionHeight = 0;
                 b.lowSince = 0;
-                W = extent(b.maxWidth, b.capWidth, allocWidth);
-                H = extent(b.maxHeight, b.capHeight, allocHeight);
+                b.limitWidth = limit(b.capWidth, b.bigWidth, allocWidth);
+                b.limitHeight = limit(b.capHeight, b.bigHeight, allocHeight);
+                W = extent(b.maxWidth, b.limitWidth);
+                H = extent(b.maxHeight, b.limitHeight);
                 nr::logf("[mochizuki] dynamic resolution: the render subrect stayed at most %ux%u for %llu s; the "
                          "bucket shrinks",
                          b.maxWidth, b.maxHeight, static_cast<unsigned long long>(kBucketShrinkMs / 1000));
@@ -4605,11 +4665,25 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 g.colourWidth = 0;
                 g.colourHeight = 0;
             }
+            else
+            {
+                // Keyed on the largest allocation the bucket holds, not this one: a game that reallocates its colour
+                // and vectors at every step (Cyberpunk 2077) keeps the frame's buffers.
+                g.colourWidth = std::max<UINT64>(g.colourWidth, s->bucket.limitWidth);
+                g.colourHeight = std::max(g.colourHeight, s->bucket.limitHeight);
+            }
             if (mf.vk)
             {
                 g.motionFormat = md.Format;
-                g.motionWidth = g.bucketed ? UINT(md.Width) : motionW;
-                g.motionHeight = g.bucketed ? md.Height : motionH;
+                g.motionWidth = motionW;
+                g.motionHeight = motionH;
+                if (g.bucketed)
+                {
+                    s->bucket.motionWidth = std::max(s->bucket.motionWidth, UINT(md.Width));
+                    s->bucket.motionHeight = std::max(s->bucket.motionHeight, md.Height);
+                    g.motionWidth = s->bucket.motionWidth;
+                    g.motionHeight = s->bucket.motionHeight;
+                }
             }
             // A frame without vectors on a geometry made with them (a menu, a cut) keeps its buffers: it runs without
             // the history, and the next frame with vectors needs no new ones.

@@ -87,7 +87,10 @@ subrect is smaller than the colour texture, the network runs at a bucket: per ax
 seen, rounded up to 64 px, within the texture. A subrect change inside the bucket only restarts the
 history, with no rebuild and no settle (the gate in `AmdBridge::Run` then settles on the colour texture).
 The bucket grows with a larger subrect, and shrinks after 30 s of frames of one colour texture whose
-subrects all stay at least 128 px inside it on both axes. `exact` rebuilds for every render resolution,
+subrects all stay at least 128 px inside it on both axes. A game that makes a new colour texture at every
+step instead (Cyberpunk 2077) is bucketed in `auto` too: textures of one format and aspect share one bucket
+at the largest of them, the frame's buffers and the texture handed to SR stay that size, and the gate in
+`AmdBridge::Run` folds the smaller textures into it as it does for danielblnc and lmxxf. `exact` rebuilds for every render resolution,
 as before; `always` buckets every frame, also across colour texture reallocations. Motion vectors in a
 format the bucket cannot blit run as `exact` (logged once a session). The runtime's own default, for a
 host that does not send `drs_mode`, is `exact`.
