@@ -306,13 +306,16 @@ int main(int argc, char** argv)
             if (rc == LMXXF_NR_OK)
                 break;
             api.GetLastError(err, sizeof err);
-            // Up to 15 min for a cold build; a failed one is not tried again, so stop there.
-            if (rc == LMXXF_NR_UNAVAILABLE && tries < 9000 && !strstr(err, "build failed") && !strstr(err, "network off"))
+            // Up to 15 min for a cold build (E2E_WAIT_MIN: longer, for the RDNA2 network's); a failed one is not tried
+            // again, so stop there.
+            static const int maxTries = 600 * (std::getenv("E2E_WAIT_MIN") ? std::atoi(std::getenv("E2E_WAIT_MIN")) : 15);
+            if (rc == LMXXF_NR_UNAVAILABLE && tries < maxTries && !strstr(err, "build failed") && !strstr(err, "network off"))
             {
                 Sleep(100);
                 continue;
             }
             std::fprintf(stderr, "FAIL: PrepareFrame rc=%d: %s\n", rc, err);
+            api.Destroy(ctx); // a cold build stopped here keeps the pipeline cache it has so far
             return 1;
         }
         if (f == 0)
@@ -372,6 +375,18 @@ int main(int argc, char** argv)
     }
     api.GetStatus(ctx, err, sizeof err);
     std::printf("status: %s\n", err);
+    // The network the session runs, and the line OptiScaler's mochizuki page shows for it (DlssNr_Menu.cpp).
+    if (auto info = reinterpret_cast<PFN_MochizukiNrGetInfo>(GetProcAddress(dll, "MochizukiNrGetInfo")))
+    {
+        MochizukiNrInfo mi {};
+        mi.struct_size = sizeof mi;
+        if (info(ctx, &mi) == LMXXF_NR_OK)
+            std::printf("network %u, menu: %s\n", mi.network,
+                        mi.network == 3   ? "RX 6000 (experimental, FP16 network)"
+                        : mi.network == 2 ? "RX 7000 (experimental, FP16 network, ACO)"
+                        : mi.network == 1 ? "RX 7000 (experimental, FP16 network)"
+                                          : "(no line: the FP8 network)");
+    }
     std::vector<double> warm(times.begin() + std::min<size_t>(10, times.size() - 1), times.end());
     std::sort(warm.begin(), warm.end());
     std::printf("frame times ms:");

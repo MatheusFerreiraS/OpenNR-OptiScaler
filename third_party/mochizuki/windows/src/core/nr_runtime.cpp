@@ -120,7 +120,7 @@ void dispatch(VkCommandBuffer cmd, const nrvk::Kernel& k, uint32_t x, uint32_t y
 // first, then images in binding order, exactly as nrvk::Kernel::create writes
 // its own (a sampler makes a combined image sampler, none a storage image). The e4m3 bindings
 // read the FP16 twin of their arena and the alias bindings the arena itself, as `create` binds
-// them (RDNA3); a set that skipped this made the kernel treat a byte arena as FP16.
+// them (the FP16 networks); a set that skipped this made the kernel treat a byte arena as FP16.
 VkDescriptorSet kernel_set(VkDevice device, VkDescriptorPool pool, const nrvk::Kernel& k,
                            const std::vector<VkBuffer>& buffers,
                            const std::vector<const nrvk::Context::Image*>& images) {
@@ -551,6 +551,42 @@ struct Runtime::Impl {
     uint32_t timing_stride{2};             // queries per slot: 2 + 2 x max_passes
     uint32_t slot_passes[kTimingSlots]{};  // passes timed in each slot
     float net_ms{}, net_ms_avg{};
+    // NR_STEP_TIMES=n (diagnostic): a timestamp after every network dispatch of pass 1, read one recording later
+    // (the frame before must have finished), summed by pipeline over n frames and logged once. The barriers between
+    // dispatches are full, so each interval is that dispatch's own time.
+    VkQueryPool step_pool{};
+    uint32_t step_count{}, step_frames{}, step_want{};
+    bool step_pending{}, step_logged{};
+    std::vector<std::string> step_names;
+    std::map<std::string, std::pair<double, uint32_t>> step_sum;   // ms, dispatches
+    void read_steps() {
+        if (!step_pending || step_logged) return;
+        std::vector<uint64_t> ts(step_count + 1);
+        if (vkGetQueryPoolResults(session.ctx.device, step_pool, 0, step_count + 1, ts.size() * sizeof(uint64_t),
+                                  ts.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+            return;
+        step_pending = false;
+        std::string slow;
+        for (uint32_t i = 0; i < step_count; ++i) {
+            auto& r = step_sum[step_names[i]];
+            const double ms = double(ts[i + 1] - ts[i]) * timestamp_ns * 1e-6;
+            r.first += ms;
+            r.second += 1;
+            if (ms >= 5.0) slow += " " + std::to_string(i) + ":" + step_names[i] + "=" + std::to_string(int(ms));
+        }
+        nr::logf("[nr] NR_STEP_TIMES frame %u, dispatches over 5 ms:%s", step_frames, slow.c_str());
+        if (++step_frames < step_want) return;
+        step_logged = true;
+        double total = 0;
+        std::vector<std::pair<double, std::string>> rows;
+        for (const auto& [k, v] : step_sum) { total += v.first; rows.push_back({v.first, k}); }
+        std::sort(rows.rbegin(), rows.rend());
+        nr::logf("[nr] NR_STEP_TIMES: %u frames, %.3f ms a frame in %u dispatches", step_frames, total / step_frames,
+                 step_count);
+        for (const auto& [ms, k] : rows)
+            nr::logf("[nr]   %-28s %3u x  %9.3f ms a frame  %5.1f%%", k.c_str(), step_sum[k].second / step_frames,
+                     ms / step_frames, 100.0 * ms / (total > 0 ? total : 1));
+    }
     // Read the oldest slot in the ring, if its recording has finished. Called
     // once per recording, from the thread that records.
     void read_timing() {
@@ -1103,7 +1139,7 @@ struct Runtime::Impl {
         }
         const VkDevice dev = s.ctx.device;
         const auto twin = s.ctx.fp16_twin.find(s.act.handle);
-        const VkBuffer twin_buf = s.ctx.rdna3 && twin != s.ctx.fp16_twin.end() ? twin->second : VK_NULL_HANDLE;
+        const VkBuffer twin_buf = (s.ctx.arch == nr::Arch::rdna3) && twin != s.ctx.fp16_twin.end() ? twin->second : VK_NULL_HANDLE;
         d.views = twin_buf ? 4u : 3u;
         for (const auto& u : s.voff.used) {
             const int key = u.first;
@@ -1242,7 +1278,7 @@ struct Runtime::Impl {
         static const char* kView[4] = {"arena-e4m3", "arena-f16", "arena-f32", "twin-f16"};
         if (FILE* f = std::fopen(path("stages.txt").c_str(), "w")) {
             std::fprintf(f, "MZSTAGE 1\nnetwork %s\nframe %ux%u\nmodel %ux%u\nrecording %llu\nchunks %u\nwords %u\n",
-                         s.ctx.rdna3 ? "rdna3" : "fp8", width, height, mw, mh, (unsigned long long)d.frame, d.chunks,
+                         (s.ctx.arch == nr::Arch::rdna3) ? "rdna3" : "fp8", width, height, mw, mh, (unsigned long long)d.frame, d.chunks,
                          kStageWords);
             std::fprintf(f, "views");
             for (uint32_t v = 0; v < d.views; ++v) std::fprintf(f, " %s", kView[v]);
@@ -1332,7 +1368,7 @@ struct Runtime::Impl {
         if (!k.on || k.after != after || i != k.disp || recordings != k.frame || k.written_at != ~0ull) return;
         try {
             std::string m = "MZKCAP 1\n";
-            m += "network " + std::string(s.ctx.rdna3 ? "rdna3" : "fp8") + "\n";
+            m += "network " + std::string((s.ctx.arch == nr::Arch::rdna3) ? "rdna3" : "fp8") + "\n";
             m += "frame " + std::to_string(width) + "x" + std::to_string(height) + "\n";
             m += "dispatch " + std::to_string(i) + "\n";
             m += "when " + std::string(after ? "after" : "before") + "\n";
@@ -1691,6 +1727,7 @@ struct Runtime::Impl {
         if (post_grade.device) post_grade.destroy();
         if (mask_resolve.device) mask_resolve.destroy();
         if (timing) { vkDestroyQueryPool(s.ctx.device, timing, nullptr); timing = VK_NULL_HANDLE; }
+        if (step_pool) { vkDestroyQueryPool(s.ctx.device, step_pool, nullptr); step_pool = VK_NULL_HANDLE; }
         if (check.buf.handle) s.ctx.destroy(check.buf);
         incheck.destroy(s.ctx);
         temporal.destroy(s.ctx);
@@ -2193,7 +2230,7 @@ void Runtime::Impl::seq_run() {
             return i == none ? std::string("none") : seq_fmt("dispatch %zu (%s)", i, name(i).c_str());
         };
         head += seq_fmt("MZSEQ 1\nnetwork %s\nframe %ux%u\nmodel %ux%u\nrecording %llu\ndispatches %zu..%zu of %zu\n",
-                        s.ctx.rdna3 ? "rdna3" : "fp8", width, height, mw, mh, (unsigned long long)q.frame, q.from, last, n);
+                        (s.ctx.arch == nr::Arch::rdna3) ? "rdna3" : "fp8", width, height, mw, mh, (unsigned long long)q.frame, q.from, last, n);
         head += seq_fmt("barrier %s\nruns %u alone %u\n", q.exec ? "execution only" : q.inv ? "invalidate only" : "full",
                         q.runs, q.iso);
         if (!q.ref) {
@@ -2263,12 +2300,16 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
     // was not (a game's device made before we could add them) builds with the driver's compiler.
     if (!nr::binary::directory().empty() && !nr::binary::enabled(host.device))
         nr::binary::disable("the device was created without pipeline binaries");
-    // The RDNA3 network runs only gfx11 records (the host's dlssnr-amd/aco-gfx11, none yet), never RDNA4's.
-    if (config.rdna3 && !nr::binary::directory().empty() &&
+    // The RDNA3 network runs only gfx11 records (the host's dlssnr-amd/aco-gfx11), the RDNA2 network only gfx10.3
+    // ones (dlssnr-amd/aco-gfx103x), never RDNA4's.
+    if (config.arch == Arch::rdna3 && !nr::binary::directory().empty() &&
         std::filesystem::path(nr::binary::directory()).filename() != "aco-gfx11")
         nr::binary::disable("the RDNA3 network has no ACO records");
+    if (config.arch == Arch::rdna2 && !nr::binary::directory().empty() &&
+        std::filesystem::path(nr::binary::directory()).filename() != "aco-gfx103x")
+        nr::binary::disable("the RDNA2 network has no ACO records");
     const std::string aco = nr::binary::directory();
-    const auto native_shaders = installed ? data / (config.rdna3 ? "shaders-rdna3" : "shaders") : root / "build";
+    const auto native_shaders = installed ? data / arch_shaders(config.arch) : root / "build";
     const auto network_shaders = !aco.empty() ? std::filesystem::path(aco) / "shaders" : native_shaders;
     // Shaders are read from inside the NR root, or from the ACO bundle when one is in use.
     const auto inside = [&](const std::filesystem::path& p) {
@@ -2370,7 +2411,7 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
     if (transfer != Transfer::Identical && !(props[host.queue_family].queueFlags & VK_QUEUE_GRAPHICS_BIT))
         throw std::invalid_argument("NR colour format conversion requires a graphics-capable queue");
     std::string why;
-    s.ctx.rdna3 = config.rdna3;
+    s.ctx.arch = config.arch;
     if (!s.ctx.adopt(host.instance, host.physical, host.device, host.queue, host.queue_family, &why))
         throw std::runtime_error("NR device unsupported: " + why);
     s.ctx.queue_lock = host.queue_lock; s.ctx.queue_unlock = host.queue_unlock;
@@ -2473,7 +2514,7 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
         "--spv-dir", network_shaders.string(),
         "--host-boundary", arena_reuse() ? "--reuse" : "--no-reuse", "--source-width", std::to_string(mw),
         "--source-height", std::to_string(mh), "--accumulation", config.accumulation,
-        "--pipeline-cache", (installed ? data / (config.rdna3 ? "pipeline-rdna3.cache" : "pipeline.cache") : root / "dlssnr-amd.pipelinecache").string()};
+        "--pipeline-cache", (installed ? data / arch_cache(config.arch) : root / "dlssnr-amd.pipelinecache").string()};
 #if NR_INT4
     if (int4)   // the int4 network: its own shaders and its own pipeline cache
         for (size_t i = 0; i + 1 < arguments.size(); ++i) {
@@ -3288,7 +3329,7 @@ bool download_network_weights(const HostDevice& host, const RuntimeCore& core, s
     const GraphArenas* a = core.slot ? core.slot.get() : core.graph ? core.graph->arenas.get() : nullptr;
     if (!a || !a->wgt.handle || !a->weights_end) return false;
     if (a->wgt_twin.handle) {   // the FP16 twins would have to go and come back with it
-        nr::logf("[nr] the RDNA3 network stays in VRAM (not offloaded)");
+        nr::logf("[nr] an FP16 network (RDNA3, RDNA2) stays in VRAM (not offloaded)");
         return false;
     }
     nrvk::Context ctx;
@@ -4205,6 +4246,25 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
         const bool time_net = impl_->timing_ok && impl_->split_timing;
         const uint32_t net_query = timing_slot * impl_->timing_stride + 2 + 2 * pass;
         if (time_net) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, impl_->timing, net_query);
+        static const uint32_t step_want = std::getenv("NR_STEP_TIMES") ? uint32_t(std::atoi(std::getenv("NR_STEP_TIMES"))) : 0u;
+        bool time_steps = false;
+        if (step_want && pass == 0 && impl_->timing_ok && !impl_->step_logged) {
+            impl_->read_steps();
+            if (!impl_->step_pool) {
+                impl_->step_count = uint32_t(s.steps.size());
+                impl_->step_want = step_want;
+                VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+                qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+                qi.queryCount = impl_->step_count + 1;
+                if (vkCreateQueryPool(s.ctx.device, &qi, nullptr, &impl_->step_pool) != VK_SUCCESS) impl_->step_pool = VK_NULL_HANDLE;
+            }
+            time_steps = impl_->step_pool && !impl_->step_pending && impl_->step_count == s.steps.size();
+            if (time_steps) {
+                impl_->step_names.clear();
+                vkCmdResetQueryPool(cmd, impl_->step_pool, 0, impl_->step_count + 1);
+                vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, impl_->step_pool, 0);
+            }
+        }
         for (size_t i = 0; i < s.steps.size(); ++i) {
             const auto& step = s.steps[i];
             const nrvk::Kernel* use = step.k;
@@ -4256,12 +4316,16 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
             const bool nobar = !last && i < s.runner.no_barrier_after.size() && s.runner.no_barrier_after[i];
             if (impl_->seq.on && pass == 0) impl_->seq_take(cmd, i, *use, set, step, push, nobar);
             // RDNA3 (local patch 21): the barrier NR_RDNA3_SYNC names, and with `zero` the scrub before each step.
-            const int sync = s.ctx.rdna3 ? impl_->rdna3_sync_mode() : int(Impl::kSyncReleased);
+            const int sync = (s.ctx.arch == nr::Arch::rdna3) ? impl_->rdna3_sync_mode() : int(Impl::kSyncReleased);
             if (sync == Impl::kSyncZero) {
                 impl_->scrub_setup();
                 impl_->scrub_record(cmd, 0, true);
             }
             dispatch(cmd, *use, step.gx, step.gy, step.gz, push, step.push_bytes, set);
+            if (time_steps) {
+                impl_->step_names.push_back(use->name);
+                vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, impl_->step_pool, uint32_t(i) + 1);
+            }
             // Execution-only between network steps when the arena is coherent,
             // invalidate-only when it is not; the barrier after the last step
             // stays full, because the passes that follow it are not part of
@@ -4276,6 +4340,7 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
             if (impl_->kcap.on && pass == 0) impl_->kcap_take(cmd, i, *use, step, push, true);
         }
         if (time_net) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, impl_->timing, net_query + 1);
+        if (time_steps) impl_->step_pending = true;
         if (pass == 0) impl_->seq_end_frame();
         if (pass == 0 && passes > 1 && (c.anti_halo || estimate)) copy_general(s.surf0, impl_->first_answer);
         if (pass == 0 && passes > 1 && impl_->first_transfer.device && !prep_on && !mask && c.apply_model) {

@@ -1,4 +1,5 @@
-// CPU-only gfx1200/gfx1201 PAL code-object adapter. No Vulkan or driver dependency.
+// CPU-only PAL code-object adapter: gfx1200/gfx1201 (NRPAL001 records), gfx11 and gfx10.3 (NRPAL002 records).
+// No Vulkan or driver dependency.
 #pragma once
 #include <algorithm>
 #include <array>
@@ -84,9 +85,12 @@ inline Value decode(const Bytes& b,size_t& p,unsigned depth=0) {
     else if(map) {
         v.kind=Value::Map;
         for(size_t i=0;i<n;++i) {
-            auto k=decode(b,p,depth+1); require(k.kind==Value::String,"non-string metadata key");
-            for(const auto& f:v.fields) require(f.first!=k.s,"duplicate metadata key");
-            v.fields.emplace_back(std::move(k.s),decode(b,p,depth+1));
+            // AMD's proprietary compiler (the RX 6000 driver) keys .registers by register number: such a key is
+            // kept as a NUL and its MessagePack bytes, which no named lookup matches and encode writes back.
+            const size_t ks=p; auto k=decode(b,p,depth+1);
+            std::string key=k.kind==Value::String?std::move(k.s):std::string(1,'\0')+std::string(b.begin()+ks,b.begin()+p);
+            for(const auto& f:v.fields) require(f.first!=key,"duplicate metadata key");
+            v.fields.emplace_back(std::move(key),decode(b,p,depth+1));
         }
     } return v;
 }
@@ -98,27 +102,53 @@ inline void encode(Bytes& b,const Value& v) {
     case Value::String: b.push_back(0xdb);putbig(b,v.s.size(),4);b.insert(b.end(),v.s.begin(),v.s.end());break;
     case Value::Array: b.push_back(0xdd);putbig(b,v.items.size(),4);for(const auto& x:v.items)encode(b,x);break;
     case Value::Map: b.push_back(0xdf);putbig(b,v.fields.size(),4);for(const auto& f:v.fields) {
-        Value k;k.kind=Value::String;k.s=f.first;encode(b,k);encode(b,f.second);
+        if(!f.first.empty() && f.first[0]=='\0') b.insert(b.end(),f.first.begin()+1,f.first.end());
+        else {Value k;k.kind=Value::String;k.s=f.first;encode(b,k);}
+        encode(b,f.second);
     } break;
     }
 }
 inline Value unpack(const Bytes& b) { size_t p=0;auto v=decode(b,p);require(p==b.size(),"trailing metadata");return v; }
 inline Value array(std::initializer_list<uint64_t> xs) { Value v;v.kind=Value::Array;for(auto x:xs)v.items.emplace_back(x);return v; }
 
+// The code objects' ELF e_flags (LLVM EF_AMDGPU_MACH). gfx12: gfx1200 0x48 (RX 9060), gfx1201 0x4e (RX 9070,
+// Radeon AI PRO R9700). gfx11: gfx1100 0x41 (RX 7900), gfx1101 0x46 (RX 7800/7700), gfx1102 0x47 (RX 7600),
+// gfx1103 0x44 (780M); gfx11.5: gfx1150 0x43, gfx1151 0x4a, gfx1152 0x55, gfx1153 0x58. gfx10.3: gfx1030 0x36
+// (RX 6800/6900), gfx1031 0x37 (RX 6700), gfx1032 0x38 (RX 6600), gfx1033 0x39, gfx1034 0x3e (RX 6400/6500),
+// gfx1035 0x3d, gfx1036 0x45.
+inline bool is_gfx12(uint32_t m) { return m==0x48 || m==0x4e; }
+inline bool is_gfx11(uint32_t m) { return m==0x41 || m==0x46 || m==0x47 || m==0x44 || m==0x43 || m==0x4a || m==0x55 || m==0x58; }
+inline bool is_gfx103(uint32_t m) { return m==0x36 || m==0x37 || m==0x38 || m==0x39 || m==0x3e || m==0x3d || m==0x45; }
+// One generation's code runs on every chip of it: ACO's gfx11 code differs between chips only in how many VGPRs
+// it aims to leave free (gfx1100/1101/1151 have 1.5x the register file), never in the instructions.
+inline bool same_generation(uint32_t a, uint32_t b) {
+    return (is_gfx12(a) && is_gfx12(b)) || (is_gfx11(a) && is_gfx11(b)) || (is_gfx103(a) && is_gfx103(b));
+}
+// The machine of a code object's e_flags. gfx10.3 objects from AMD's proprietary compiler (the RX 6000 driver
+// branch) also carry the xnack/sramecc fields (EF_AMDGPU_FEATURE_*_V4, bits 8-11: 0x938 on an RX 6600 = gfx1032,
+// xnack any, sramecc off); gfx11 and gfx12 take exact values only.
+inline uint32_t elf_machine(uint32_t flags) { return is_gfx103(flags&0xff) && !(flags&~0xfffu) ? flags&0xff : flags; }
+inline const char* gfx103_isa(uint32_t m) {
+    switch(m) {
+    case 0x36: return "amdgcn--amdpal--gfx1030"; case 0x37: return "amdgcn--amdpal--gfx1031";
+    case 0x38: return "amdgcn--amdpal--gfx1032"; case 0x39: return "amdgcn--amdpal--gfx1033";
+    case 0x3e: return "amdgcn--amdpal--gfx1034"; case 0x3d: return "amdgcn--amdpal--gfx1035";
+    case 0x45: return "amdgcn--amdpal--gfx1036"; default: return nullptr;
+    }
+}
+
 struct Record {
     uint64_t spv_hash=0,code_hash=0;
     uint32_t rsrc1=0,rsrc2=0,rsrc3=0,exec=0,wg=0,shared=0,push_bytes=0,user=0;
     int set0=-1,push=-1,grid=-1;
-    uint32_t mach=0;
-    uint32_t scratch_bytes=0;
-    bool scratch_en=false;
+    // NRPAL002: the code object machine the code was made for, and the scratch it needs (bytes a lane).
+    uint32_t mach=0,scratch=0;
     std::vector<std::pair<int,int>> inlines;
     Bytes code;
     static Record parse(const Bytes& b) {
         range(b,0,96);
-        bool v1 = std::memcmp(b.data(),"NRPAL001",8)==0;
-        bool v2 = std::memcmp(b.data(),"NRPAL002",8)==0;
-        require(v1 || v2, "bad adapter record version");
+        const bool v2=std::memcmp(b.data(),"NRPAL002",8)==0;
+        require(v2 || std::memcmp(b.data(),"NRPAL001",8)==0,"bad adapter record version");
         Record r;r.spv_hash=read<uint64_t>(b,8);r.code_hash=read<uint64_t>(b,16);
         r.rsrc1=read<uint32_t>(b,24);r.rsrc2=read<uint32_t>(b,28);r.rsrc3=read<uint32_t>(b,32);
         r.exec=read<uint32_t>(b,36);r.wg=read<uint32_t>(b,40);r.shared=read<uint32_t>(b,44);
@@ -126,27 +156,28 @@ struct Record {
         r.set0=read<int32_t>(b,56);r.push=read<int32_t>(b,60);r.grid=read<int32_t>(b,64);
         auto n=read<uint32_t>(b,68),sz=read<uint32_t>(b,72);
         require(n<=32 && sz && sz%4==0 && uint64_t(96)+8*n+sz==b.size(),"adapter record sizes");
-        if (v1) {
-            for(size_t i=76;i<96;++i)require(b[i]==0,"adapter reserved field");
-            r.mach = 0;
-            r.scratch_bytes = 0;
-            r.scratch_en = false;
-        } else {
-            r.mach = read<uint32_t>(b,76);
-            r.scratch_bytes = read<uint32_t>(b,80);
-            r.scratch_en = (r.rsrc2 & 1) != 0;
-            for(size_t i=84;i<96;++i)require(b[i]==0,"adapter reserved field");
-            if (r.scratch_en) {
-                require(r.scratch_bytes > 0, "scratch_en set but scratch_bytes is 0");
-            }
-        }
+        if(v2) {r.mach=read<uint32_t>(b,76);r.scratch=read<uint32_t>(b,80);}
+        for(size_t i=v2?84:76;i<96;++i)require(b[i]==0,"adapter reserved field");
         for(unsigned i=0;i<n;++i)r.inlines.emplace_back(read<int32_t>(b,96+8*i),read<int32_t>(b,100+8*i));
         r.code=Bytes(b.begin()+96+8*n,b.end());
         require(hash(r.code.data(),r.code.size())==r.code_hash,"adapter code checksum");
+        if(v2) {
+            // gfx11/gfx10.3: scratch only on gfx11 (the SPI sets the scratch base; gfx10.3 code would need a ring
+            // table PAL does not have). LDS is allocated in 512-byte units there and may exceed the shader's use.
+            require(is_gfx11(r.mach) || is_gfx103(r.mach),"NRPAL002 record for an unsupported machine");
+            const bool scratch_en=r.rsrc2&1;
+            require(!(r.rsrc2&~uint32_t(0x00ff9fbf)) && !(r.rsrc3&~uint32_t(0xff0)) && r.user==((r.rsrc2>>1)&31) &&
+                    scratch_en==(r.scratch!=0) && (!scratch_en || is_gfx11(r.mach)) && r.scratch%4==0 &&
+                    r.scratch<=256*1024,"unsupported scratch/config");
+            require(r.exec && r.exec<=sz && r.exec%4==0 && r.wg && r.wg<=1024 && r.push_bytes<=128,"adapter resource limits");
+            require(r.shared<=(((r.rsrc2>>15)&511)*512),"adapter LDS allocation mismatch");
+        } else {
+        // NRPAL001 (gfx12) as upstream checks it.
         require(!(r.rsrc2&~uint32_t(0x00ff9fbf)) && !(r.rsrc3&~uint32_t(0xff0)) &&
                 r.user==((r.rsrc2>>1)&31),"unsupported scratch/config");
         require(r.exec && r.exec<=sz && r.exec%4==0 && r.wg && r.wg<=1024 && r.push_bytes<=128,"adapter resource limits");
-        require(r.shared <= (((r.rsrc2>>15)&511)*512),"adapter LDS allocation mismatch");
+        require(r.shared<=(((r.rsrc2>>15)&511)*512),"adapter LDS allocation mismatch");
+        }
         std::vector<bool> used(r.user,false);
         auto take=[&](int reg) {require(reg>=0 && uint32_t(reg)<r.user && !used[reg],"overlapping adapter arguments");used[reg]=true;};
         take(r.set0);if(r.push>=0)take(r.push);
@@ -178,19 +209,52 @@ struct Arguments {
         for(auto [dst,src]:moves)require(dst<=src,"unsupported parallel argument copy");
     }
 };
-// EF_AMDGPU_MACH. RDNA3: gfx1100 0x41 (RX 7900), gfx1101 0x46 (RX 7800 / 7700), gfx1102 0x47 (RX 7600), gfx1103 0x44
-// (780M); RDNA3.5: gfx1150 0x43 (890M), gfx1151 0x4a (8060S), gfx1152 0x55, gfx1153 0x58. RDNA4: gfx1200 0x48 (RX 9060),
-// gfx1201 0x4e (RX 9070, Radeon AI PRO R9700). One gfx11 record set serves every gfx11 machine (as gfx12's does both).
-inline bool is_gfx11(uint32_t m) {
-    return m == 0x41 || m == 0x44 || m == 0x46 || m == 0x47 || m == 0x43 || m == 0x4a || m == 0x55 || m == 0x58;
+// gfx11 and gfx10.3: the workgroup IDs, the workgroup info and the scratch wave offset arrive in SGPRs right after
+// the user SGPRs (in that order, each when its rsrc2 bit is set), so they follow the user SGPR count: PAL's
+// (a.user) to the record's (r.user). The instructions are the same as gfx12's but for the encodings: gfx10.3's
+// SOP1/SOPP opcodes differ and its m0 and null are 124 and 125 (gfx11/12: 125 and 124). The address32 high word
+// is the PC's high dword as it is (gfx12 sign-extends its low half).
+inline Bytes prologue_gfx11(const Record& r,unsigned descriptor_slot,uint32_t mach) {
+    Bytes b;Arguments a(r,descriptor_slot);
+    const bool g10=is_gfx103(mach);
+    const uint32_t op_mov=g10?0x03:0x00,op_getpc=g10?0x1f:0x47,null_reg=g10?125:124,m0_reg=g10?124:125;
+    auto mov=[&](unsigned dst,unsigned src){word(b,0xbe800000|(dst<<16)|(op_mov<<8)|src);};
+    auto nop=[&](unsigned n){word(b,0xbf800000|n);};
+    auto ld=[&](unsigned dst,unsigned base,unsigned off) {
+        word(b,0xf4000000|(dst<<6)|(base>>1));word(b,(null_reg<<25)|off);
+    };
+    std::vector<std::pair<unsigned,unsigned>> sys;   // (record SGPR, PAL SGPR) of each system SGPR
+    {
+        unsigned k=0;
+        for(unsigned bit:{7u,8u,9u,10u,0u}) if(r.rsrc2&(1u<<bit)) {sys.emplace_back(r.user+k,a.user+k);++k;}
+    }
+    if(a.spill>=0)mov(96,a.spill);
+    if(a.grid>=0) {mov(100,a.grid);mov(101,a.grid+1);}
+    // Upward (the record has more user SGPRs): highest first, before the argument copies, whose sources lie below.
+    if(r.user>a.user) for(size_t i=sys.size();i-->0;) mov(sys[i].first,sys[i].second);
+    word(b,0xbe800000|(98<<16)|(op_getpc<<8)); // s_getpc_b64 s[98:99]
+    nop(2);
+    mov(97,99); // s97 = PAL address32 high (the spill table pointer's high half)
+    nop(2);mov(m0_reg,97); // m0 = the same, for the body
+    nop(2);
+    for(auto [dst,src]:a.moves)mov(dst,src);
+    // Downward: lowest first, after the argument copies (their targets lie below the record's user count).
+    if(r.user<a.user) for(auto [dst,src]:sys) mov(dst,src);
+    for(auto [reg,offset]:a.loads)ld(reg,96,offset);
+    if(r.push>=0) {word(b,0x80000000|(uint32_t(r.push)<<16)|(0x84<<8)|96);nop(2);}
+    if(r.grid>=0)for(unsigned j=0;j<3;++j)ld(r.grid+j,100,j*4);
+    word(b,g10?0xbf8cc07fu:0xbf89fc07u); // s_waitcnt lgkmcnt(0)
+    nop(3);
+    // Branch over alignment padding rather than executing one nop per dword.
+    size_t end=(b.size()+4+255)&~size_t(255);
+    word(b,(g10?0xbf820000u:0xbfa00000u)|uint32_t((end-b.size()-4)/4));
+    while(b.size()<end)nop(0);
+    return b;
 }
-inline bool is_gfx12(uint32_t m) {
-    return m == 0x48 || m == 0x4e;
-}
-
 // Incoming pointers are saved before argument copies; the body keeps its
 // relative branch offsets and uses m0 for the 32-bit address high word.
-inline Bytes prologue(const Record& r, unsigned descriptor_slot = 33, uint32_t mach = 0x4e) {
+inline Bytes prologue(const Record& r,unsigned descriptor_slot=33,uint32_t mach=0x4e) {
+    if(!is_gfx12(mach))return prologue_gfx11(r,descriptor_slot,mach);
     Bytes b;Arguments a(r,descriptor_slot);
     auto mov=[&](unsigned dst,unsigned src){word(b,0xbe800000|(dst<<16)|src);};
     if(a.spill>=0)mov(96,a.spill);
@@ -198,43 +262,17 @@ inline Bytes prologue(const Record& r, unsigned descriptor_slot = 33, uint32_t m
     if(r.rsrc2&(1<<10)) mov(102,a.user);
     word(b,0xbe804700|(98<<16)); // s_getpc_b64 s[98:99]
     word(b,0xbf800002); // dependency spacing, also safe before sext/m0
-    // The address32 high word, the way the target driver itself derives it from the PC
-    // (the templates say so): gfx12 sign-extends the PC high dword's low half, gfx11 uses
-    // the full high dword.
-    if (is_gfx11(mach))
-        word(b, 0xbe800000 | (97u << 16) | 99u);   // s_mov_b32 s97, s99
-    else
-        word(b, 0xbe800f00 | (97u << 16) | 99u);   // s_sext_i32_i16 s97, s99
-    word(b, 0xbf800002);mov(125,97); // m0 = the address32 high word
+    word(b,0xbe800f00|(97<<16)|99); // s_sext_i32_i16 s97, s99
+    word(b,0xbf800002);mov(125,97); // m0 = PAL address32 high
     word(b,0xbf800002);
     auto ld=[&](unsigned dst,unsigned base,unsigned off) {
         word(b,0xf4000000|(dst<<6)|(base>>1));word(b,0xf8000000|off);
     };
     for(auto [dst,src]:a.moves)mov(dst,src);
-    if (is_gfx11(mach)) {
-        std::vector<std::pair<unsigned, unsigned>> tgid_moves;
-        unsigned pal_tgid = a.user;
-        unsigned aco_tgid = r.user;
-        if ((r.rsrc2 >> 7) & 1) tgid_moves.emplace_back(aco_tgid++, pal_tgid++);
-        if ((r.rsrc2 >> 8) & 1) tgid_moves.emplace_back(aco_tgid++, pal_tgid++);
-        if ((r.rsrc2 >> 9) & 1) tgid_moves.emplace_back(aco_tgid++, pal_tgid++);
-
-        if (pal_tgid > aco_tgid) {
-            for (size_t i = 0; i < tgid_moves.size(); ++i)
-                mov(tgid_moves[i].first, tgid_moves[i].second);
-        } else if (pal_tgid < aco_tgid) {
-            for (size_t i = tgid_moves.size(); i > 0; --i)
-                mov(tgid_moves[i - 1].first, tgid_moves[i - 1].second);
-        }
-    }
     for(auto [reg,offset]:a.loads)ld(reg,96,offset);
     if(r.push>=0) {word(b,0x80000000|(uint32_t(r.push)<<16)|(0x84<<8)|96);word(b,0xbf800002);}
     if(r.grid>=0)for(unsigned j=0;j<3;++j)ld(r.grid+j,100,j*4);
-    // The wait before the first use of the loaded arguments. gfx12 has the split waits
-    // (s_wait_kmcnt 0); gfx11 has the classic one (s_waitcnt lgkmcnt(0)). The gfx12 word is
-    // an illegal instruction on gfx11 and the pipeline silently does nothing.
-    word(b, is_gfx11(mach) ? 0xbf89fc07u : 0xbfc70000u);
-    word(b, 0xbf800003);
+    word(b,0xbfc70000);word(b,0xbf800003);
     if(r.rsrc2&(1<<10))mov(r.user,102);
     // Branch over alignment padding rather than executing one nop per dword.
     size_t end=(b.size()+4+255)&~size_t(255);
@@ -243,24 +281,19 @@ inline Bytes prologue(const Record& r, unsigned descriptor_slot = 33, uint32_t m
     return b;
 }
 
-// The code objects the adapter takes (is_gfx12, is_gfx11 above). MochizukiNrRuntime.cpp asks before it would take an
-// RDNA3 network's records; the RDNA3 network here runs ACO only from its own aco-gfx11 bundle.
-inline bool takes_machine(uint32_t mach) { return is_gfx12(mach) || is_gfx11(mach); }
+// The code objects the adapter takes, by ELF e_flags: gfx12 (NRPAL001 records, upstream's), gfx11 and gfx10.3
+// (NRPAL002). MochizukiNrRuntime.cpp asks before it would take an RDNA3 network's records.
+inline bool takes_machine(uint32_t mach) { return is_gfx12(mach) || is_gfx11(mach) || is_gfx103(mach); }
 
 struct Section { uint32_t name,type;uint64_t flags,addr,offset,size;uint32_t link,info;uint64_t align,entsize; };
 static_assert(sizeof(Section)==64);
 struct Elf {
-    uint32_t mach = 0;   // the AMD GPU generation of the container (e_flags)
+    uint32_t mach=0;   // e_flags' machine (elf_machine): the machine the container's code is for
     Bytes header;std::vector<Section> sections;std::vector<Bytes> data;std::vector<std::string> names;
+    Elf()=default;
     explicit Elf(const Bytes& b) {
         range(b,0,64);
-        // e_flags: the AMD GPU generation the container's code is for. gfx12: gfx1200 0x48 (RX
-        // 9060), gfx1201 0x4e (RX 9070, Radeon AI PRO R9700); gfx11: gfx1100 0x41, gfx1103 0x44
-        // (phoenix, the 780M), gfx1102 0x46, gfx1101 0x47; gfx115x (RDNA 3.5): gfx1150 0x43
-        // (Strix Point / 890M), gfx1151 0x4a (Strix Halo / AI MAX+ 395). The machine says how
-        // the code in the container is read; a record still has to match it to be used.
-        const auto mach=read<uint32_t>(b,48);
-        this->mach = mach;
+        mach=elf_machine(read<uint32_t>(b,48));
         require(std::memcmp(b.data(),"\x7f" "ELF",4)==0 && b[4]==2 && b[5]==1 && b[7]==65 &&
                 read<uint16_t>(b,16)==1 && read<uint16_t>(b,18)==224 && takes_machine(mach) &&
                 read<uint64_t>(b,32)==0 && read<uint16_t>(b,56)==0 && read<uint16_t>(b,58)==64,"unsupported PAL ELF");
@@ -293,23 +326,17 @@ struct Elf {
         for(const auto& s:sections) {size_t p=out.size();out.resize(p+64);write(out,p,s);}return out;
     }
 };
-inline Bytes splice(const Bytes& binary,const Record& r,unsigned push_bytes=128,
-                    std::array<uint32_t,3> workgroup={0,0,0}) {
+// The record's code in a PAL container (the driver's own, or synthesize's), its metadata set to the record's.
+inline Bytes splice_elf(Elf& e,const Record& r,unsigned push_bytes,std::array<uint32_t,3> workgroup) {
     require(push_bytes<=128 && push_bytes%4==0 && r.push_bytes<=push_bytes,"unsupported pipeline push range");
     const unsigned descriptor_slot=push_bytes/4+1;
-    Elf e(binary);
-    if(r.mach!=0) {
-        bool compatible = (r.mach == e.mach) ||
-                          (is_gfx11(r.mach) && is_gfx11(e.mach)) ||
-                          (is_gfx12(r.mach) && is_gfx12(e.mach));
-        require(compatible, "record target architecture mismatch");
-    }
     auto text=e.find(".text"),note=e.find(".note"),sym=e.find(".symtab");
+    // NRPAL001 records are gfx12 code (upstream's); NRPAL002 name their machine.
+    require(r.mach ? same_generation(r.mach,e.mach) : is_gfx12(e.mach),"record and GPU are different generations");
     require(e.sections[text].align==256 && e.sections[text].addr==0,"PAL entry alignment");
     // Exactly one compute entry, no relocations, no secondary functions/data.
     const auto& sy=e.sections[sym];require(sy.entsize==24 && sy.link<e.data.size() && e.data[sym].size()%24==0,"ELF symbols");
     unsigned found=0;
-    size_t cs_sym_pos=0;
     for(size_t p=0;p<e.data[sym].size();p+=24) {
         auto ix=read<uint16_t>(e.data[sym],p+6);if(ix!=text)continue;
         auto off=read<uint32_t>(e.data[sym],p);range(e.data[sy.link],off,1);
@@ -318,14 +345,10 @@ inline Bytes splice(const Bytes& binary,const Record& r,unsigned push_bytes=128,
         std::string name(e.data[sy.link].begin()+off,end);
         require(name=="_amdgpu_cs_main" && (e.data[sym][p+4]&15)==2 && read<uint64_t>(e.data[sym],p+8)==0,
                 "unsupported PAL text symbol");
-        cs_sym_pos=p;
-        ++found;
+        auto pre=prologue(r,descriptor_slot,e.mach);write(e.data[sym],p+16,uint64_t(pre.size()+r.exec));++found;
     }
     require(found==1,"PAL compute entry count");
-    auto pre=prologue(r,descriptor_slot,e.mach);
-    write(e.data[sym],cs_sym_pos+16,uint64_t(pre.size()+r.exec));
-    e.data[text]=pre;
-    e.data[text].insert(e.data[text].end(),r.code.begin(),r.code.end());
+    auto pre=prologue(r,descriptor_slot,e.mach);e.data[text]=pre;e.data[text].insert(e.data[text].end(),r.code.begin(),r.code.end());
     Bytes notes;size_t pos=0;unsigned metadata=0;
     while(pos<e.data[note].size()) {
         auto& src=e.data[note];size_t start=pos;range(src,pos,12);
@@ -365,7 +388,7 @@ inline Bytes splice(const Bytes& binary,const Record& r,unsigned push_bytes=128,
         cs.set(".mem_ordered",Value::boolean((r.rsrc1>>30)&1));
         cs.set(".forward_progress",Value::boolean((r.rsrc1>>31)&1));
         cs.set(".fp16_overflow",Value::boolean((r.rsrc1>>26)&1));
-        cs.set(".scratch_en",Value::boolean(r.scratch_en));cs.set(".scratch_memory_size",Value(r.scratch_bytes));
+        cs.set(".scratch_en",Value::boolean(r.scratch!=0));cs.set(".scratch_memory_size",Value(r.scratch));
         auto& cr=p.at(".compute_registers");
         for(unsigned i=0;i<3;++i)cr.set(i==0?".tgid_x_en":i==1?".tgid_y_en":".tgid_z_en",Value::boolean((r.rsrc2>>(7+i))&1));
         cr.set(".tg_size_en",Value::boolean((r.rsrc2>>10)&1));cr.set(".tidig_comp_cnt",Value((r.rsrc2>>11)&3));
@@ -377,5 +400,74 @@ inline Bytes splice(const Bytes& binary,const Record& r,unsigned push_bytes=128,
         notes.insert(notes.end(),md.begin(),md.end());while(notes.size()%4)notes.push_back(0);++metadata;
     }
     require(metadata==1,"PAL metadata note count");e.data[note]=std::move(notes);return e.build();
+}
+inline Bytes splice(const Bytes& binary,const Record& r,unsigned push_bytes=128,
+                    std::array<uint32_t,3> workgroup={0,0,0}) {
+    Elf e(binary);return splice_elf(e,r,push_bytes,workgroup);
+}
+
+// gfx10.3 (RX 6000): the driver's own code objects come from AMD's proprietary compiler, with metadata of its own
+// (registers keyed by number, no global table entry, other keys), and are not spliced. What that driver (26.8.1 on
+// an RX 6600, probe 2) imports bit-exact is the LLPC container instead: the RX 9070 XT's layout and metadata keys,
+// with the GPU's machine in e_flags (no feature bits) and EI_ABIVERSION 0 (1-3 are refused). It is built here, so a
+// gfx10.3 pipeline needs no compile of its template. mach: the GPU's machine, from a code object the driver made.
+inline Bytes synthesize(const Record& r,uint32_t mach,unsigned push_bytes,std::array<uint32_t,3> workgroup) {
+    const char* isa=gfx103_isa(mach);
+    require(isa && r.mach && is_gfx103(r.mach),"record and GPU are different generations");
+    require(workgroup[0] && workgroup[1] && workgroup[2],"literal SPIR-V local size required");
+    // IEEE mode is not in this container's metadata; ACO's gfx10.3 compute code never sets it.
+    require(!((r.rsrc1>>23)&1),"IEEE mode unsupported on gfx10.3");
+    const unsigned slot=push_bytes/4+1;
+    Elf e;e.mach=mach;e.header=Bytes(64,0);
+    std::memcpy(e.header.data(),"\x7f" "ELF\x02\x01\x01\x41",8);
+    write(e.header,16,uint16_t(1));write(e.header,18,uint16_t(224));write(e.header,20,uint32_t(1));
+    write(e.header,48,mach);write(e.header,52,uint16_t(64));write(e.header,58,uint16_t(64));
+    const std::string strtab=std::string("\0.text\0.AMDGPU.gpr_maximums\0_amdgpu_cs_main\0.note.GNU-stack\0.note\0.strtab\0.symtab\0",82);
+    auto at=[&](const char* n){return uint32_t(strtab.find(std::string(n)+'\0',1));};
+    auto add=[&](const char* n,uint32_t type,uint64_t flags,uint64_t align,Bytes d,uint32_t link=0,uint32_t info=0,uint64_t ent=0) {
+        Section s{};s.name=*n?at(n):0;s.type=type;s.flags=flags;s.align=align;s.link=link;s.info=info;s.entsize=ent;
+        e.sections.push_back(s);e.data.push_back(std::move(d));e.names.emplace_back(n);
+    };
+    add("",0,0,0,{});
+    add(".strtab",3,0,1,Bytes(strtab.begin(),strtab.end()));
+    add(".text",1,6,256,{});
+    add(".AMDGPU.gpr_maximums",1,0,1,{});
+    add(".note.GNU-stack",1,0,1,{});
+    // Notes: the ISA name (owner AMD, type 11), then the PAL metadata (owner AMDGPU, type 32).
+    Bytes notes;word(notes,4);word(notes,uint32_t(std::strlen(isa)));word(notes,11);
+    notes.insert(notes.end(),{'A','M','D',0});notes.insert(notes.end(),isa,isa+std::strlen(isa));
+    while(notes.size()%4)notes.push_back(0);
+    {
+        auto map=[](std::vector<std::pair<std::string,Value>> f){Value v;v.kind=Value::Map;v.fields=std::move(f);return v;};
+        auto str=[](const char* s){Value v;v.kind=Value::String;v.s=s;return v;};
+        auto f=Value::boolean(false);
+        Value reg;reg.kind=Value::Array;reg.items.emplace_back(uint64_t(0x10000000));
+        for(int i=1;i<32;++i)reg.items.emplace_back(uint64_t(0xffffffff));
+        Value hw_map;hw_map.kind=Value::Array;hw_map.items.push_back(str(".cs"));
+        Value cs=map({{".checksum_value",Value(0)},{".debug_mode",f},{".entry_point_symbol",str("_amdgpu_cs_main")},
+            {".excp_en",Value(0)},{".float_mode",Value(0)},{".forward_progress",f},{".image_op",f},{".lds_size",Value(0)},
+            {".mem_ordered",f},{".scratch_en",f},{".scratch_memory_size",Value(0)},{".sgpr_count",Value(0)},
+            {".sgpr_limit",Value(106)},{".threadgroup_dimensions",array({workgroup[0],workgroup[1],workgroup[2]})},
+            {".trap_present",f},{".user_data_reg_map",reg},{".user_sgprs",Value(0)},{".vgpr_count",Value(0)},
+            {".vgpr_limit",Value(256)},{".wavefront_size",Value(32)},{".wg_round_robin",f},{".wgp_mode",f}});
+        Value p=map({{".api",str("Vulkan")},
+            {".compute_registers",map({{".tg_size_en",f},{".tgid_x_en",f},{".tgid_y_en",f},{".tgid_z_en",f},
+                                       {".tidig_comp_cnt",Value(0)},{".x_interleave",Value(0)},{".y_interleave",Value(0)}})},
+            {".hardware_stages",map({{".cs",cs}})},{".internal_pipeline_hash",array({0,0})},
+            {".shaders",map({{".compute",map({{".api_shader_hash",array({r.spv_hash,0})},{".hardware_mapping",hw_map}})}})},
+            {".spill_threshold",Value(65535)},{".type",str("Cs")},{".user_data_limit",Value(slot+1)},
+            {".xgl_cache_info",map({{".128_bit_cache_hash",array({r.spv_hash,r.code_hash})},{".llpc_version",str("89.0")}})}});
+        Value ps;ps.kind=Value::Array;ps.items.push_back(std::move(p));
+        Bytes md;encode(md,map({{"amdpal.pipelines",std::move(ps)},{"amdpal.version",array({3,6})}}));
+        word(notes,7);word(notes,uint32_t(md.size()));word(notes,32);
+        notes.insert(notes.end(),{'A','M','D','G','P','U',0,0});notes.insert(notes.end(),md.begin(),md.end());
+        while(notes.size()%4)notes.push_back(0);
+    }
+    add(".note",7,0,4,std::move(notes));
+    // The null symbol and _amdgpu_cs_main (FUNC GLOBAL in .text at 0; splice_elf sets its size).
+    Bytes sym(48,0);write(sym,24,at("_amdgpu_cs_main"));sym[28]=0x12;write(sym,30,uint16_t(2));
+    add(".symtab",2,0,8,std::move(sym),1,1,24);
+    write(e.header,60,uint16_t(e.sections.size()));write(e.header,62,uint16_t(1));
+    return splice_elf(e,r,push_bytes,workgroup);
 }
 } // namespace nr::pal

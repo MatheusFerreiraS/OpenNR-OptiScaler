@@ -224,12 +224,13 @@ extern "C"
         float preprocess_ev;         /* the preprocess's auto exposure in EV, bias included; NaN when not metering */
         float white_point; /* the white point the last frame used, the game's exposure applied (linear colour) */
         /* While building: 1 planning, 2 reading the weights, 3 uploading them, 4 making the pipelines (build_done of
-           build_total), 5 finishing, 6 the RX 7000's pipeline check (once per driver); 0 otherwise. */
+           build_total), 5 finishing, 6 the RX 7000's or RX 6000's pipeline check (once per driver); 0 otherwise. */
         uint32_t build_stage;
         uint32_t build_done, build_total;
         uint32_t renodx_effective; /* 1: the network the frames run on is the RenoDX stage's */
         /* The session's network: 0 the FP8 one (RX 9000), 1 the RDNA3 one on FP16 matrices, compiled by the driver
-           (RX 7000, experimental), 2 the RDNA3 one from ACO's gfx11 machine code. */
+           (RX 7000, experimental), 2 the RDNA3 one from ACO's gfx11 machine code, 3 the RDNA2 one, its matrices emulated
+           in ALU (RX 6000, experimental). */
         uint32_t network;
         /* The fields end at byte 352, sizeof. */
     } MochizukiNrInfo;

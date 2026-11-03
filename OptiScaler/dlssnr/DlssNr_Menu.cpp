@@ -432,18 +432,22 @@ static void ResetLmxxf(Config* c)
 }
 
 // The mochizuki runtime's network, for its page: 1 the RX 7000 one (RDNA3: FP16 matrices, compiled by the driver), 2
-// the same from ACO's gfx11 code, 0 the FP8 one or no session. `off`: why the RX 7000 network stays off, when the
-// runtime said so (its self-check failed: the status carries the reason, "[unsupported] ..." at the start).
-static uint32_t MochizukiNetwork(std::string& off)
+// the same from ACO's gfx11 code, 3 the RX 6000 one (RDNA2: the matrices emulated in ALU), 0 the FP8 one or no
+// session. `off`: why the RX 7000 or RX 6000 network stays off, when the runtime said so (its self-check failed: the
+// status carries the reason, "[unsupported] ..." at the start); `offCard` then names the card family.
+static uint32_t MochizukiNetwork(std::string& off, const char*& offCard)
 {
-    static constexpr std::string_view kOff = "RDNA3 network off: ", kNoNr = " (NO NR)";
+    static constexpr std::string_view kNoNr = " (NO NR)";
     const std::string status = DlssNr::AmdBridge::Status();
-    if (const size_t at = status.find(kOff); at != std::string::npos)
-    {
-        off = status.substr(at + kOff.size());
-        if (off.ends_with(kNoNr))
-            off.resize(off.size() - kNoNr.size());
-    }
+    for (const auto& [tag, card] : { std::pair<std::string_view, const char*> { "RDNA3 network off: ", "RX 7000" },
+                                     std::pair<std::string_view, const char*> { "RDNA2 network off: ", "RX 6000" } })
+        if (const size_t at = status.find(tag); at != std::string::npos)
+        {
+            off = status.substr(at + tag.size());
+            offCard = card;
+            if (off.ends_with(kNoNr))
+                off.resize(off.size() - kNoNr.size());
+        }
     MochizukiNrInfo info {};
     return DlssNr::Backend::LmxxfBackend::MochizukiInfo(info) &&
                    info.struct_size >= offsetof(MochizukiNrInfo, network) + sizeof info.network
@@ -806,18 +810,36 @@ void RenderMenu(Config* config, float menuResScale)
                                    "\n\nThe fps is 1000 divided by that time: how many frames per second the"
                                    "\nmodel alone could keep up with. The game runs slower than that, because"
                                    "\nthe rest of the frame takes time too.");
-            // The RX 7000's network (no FP8 there: mauri870's port to FP16 matrices), or why it stays off.
-            std::string rdna3Off;
-            const uint32_t network = MochizukiNetwork(rdna3Off);
-            const bool rdna3 = network != 0 || !rdna3Off.empty();
-            if (!rdna3Off.empty())
+            // The RX 7000's network (no FP8 there: mauri870's port to FP16 matrices) or the RX 6000's (no matrices
+            // either: the same network, its matrices emulated in ALU), or why it stays off.
+            std::string fp16Off;
+            const char* offCard = "RX 7000";
+            const uint32_t network = MochizukiNetwork(fp16Off, offCard);
+            const bool fp16Net = network != 0 || !fp16Off.empty();
+            const char* card = network == 3 || (!network && !std::strcmp(offCard, "RX 6000")) ? "RX 6000" : "RX 7000";
+            if (!fp16Off.empty())
             {
-                ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "RX 7000 network off: %s", rdna3Off.c_str());
-                HelpMarker("Before the RX 7000 network runs, the runtime checks how the driver lays out the GPU's"
-                           "\nmatrices and compiles every one of its pipelines once, apart from the game. One of"
-                           "\nthose failed, so NR stays off rather than draw a wrong picture or crash. The verdict"
-                           "\nis kept for this driver (dlssnr-amd\\rdna3-check.txt); a new driver is checked again."
-                           "\nmochizuki_nr.log has the details.");
+                ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s network off: %s", offCard, fp16Off.c_str());
+                if (!std::strcmp(offCard, "RX 6000"))
+                    HelpMarker("Before the RX 6000 network runs, the runtime compiles every one of its pipelines"
+                               "\nonce, apart from the game. One of them failed, so NR stays off rather than crash."
+                               "\nThe verdict is kept for this driver (dlssnr-amd\\rdna2-check.txt); a new driver is"
+                               "\nchecked again. mochizuki_nr.log has the details.");
+                else
+                    HelpMarker("Before the RX 7000 network runs, the runtime checks how the driver lays out the GPU's"
+                               "\nmatrices and compiles every one of its pipelines once, apart from the game. One of"
+                               "\nthose failed, so NR stays off rather than draw a wrong picture or crash. The verdict"
+                               "\nis kept for this driver (dlssnr-amd\\rdna3-check.txt); a new driver is checked again."
+                               "\nmochizuki_nr.log has the details.");
+            }
+            else if (network == 3)
+            {
+                ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "RX 6000 (experimental, FP16 network)");
+                HelpMarker("The RX 6000 has neither FP8 nor matrix units, so this runs the RX 7000's FP16"
+                           "\nnetwork with its matrices worked out in ordinary FP16 dot products: much slower"
+                           "\nthan on an RX 9000 or RX 7000, and about 2 GB more VRAM at 1080p. Every pipeline"
+                           "\nwas compiled once apart from the game before the first build."
+                           "\nExperimental: if the picture looks wrong or the game stutters, turn NR off and report it.");
             }
             else if (network)
             {
@@ -840,7 +862,12 @@ void RenderMenu(Config* config, float menuResScale)
                 float progress = stage <= 1 || stage == 6 ? 0.02f : stage == 2 ? 0.05f : stage == 3 ? 0.10f : 0.98f;
                 if (stage == 4)
                     progress = 0.12f + 0.85f * (info.build_total ? float(info.build_done) / info.build_total : 0.f);
-                if (stage == 6)
+                if (stage == 6 && network == 3)
+                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
+                                       "Checking the RX 6000 network: on a new driver every pipeline is compiled"
+                                       "\nonce apart from the game first. Its pipelines are large: this can take"
+                                       "\nhalf an hour or more; NR shows when it is ready.");
+                else if (stage == 6)
                     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
                                        "Checking the RX 7000 network: on a new driver every pipeline is compiled"
                                        "\nonce apart from the game first. This takes 1 to 2 minutes; NR shows"
@@ -857,7 +884,8 @@ void RenderMenu(Config* config, float menuResScale)
                                   stage == 2   ? "reading the weights"
                                   : stage == 3 ? "uploading the weights"
                                   : stage == 5 ? "finishing"
-                                  : stage == 6 ? "checking the RX 7000 pipelines"
+                                  : stage == 6 ? (network == 3 ? "checking the RX 6000 pipelines"
+                                                               : "checking the RX 7000 pipelines")
                                                : "planning");
                 ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f), label);
             }
@@ -1031,24 +1059,28 @@ void RenderMenu(Config* config, float menuResScale)
             {
                 ScopedIndent indent {};
                 MochizukiRenoGroup(config, 7);
-                // Neither is made for the RX 7000 network yet: the driver compiles it, and it has no int4 variant.
-                ImGui::BeginDisabled(rdna3);
+                // Neither is made for the RX 7000 or RX 6000 network yet: the driver compiles it, and it has no int4
+                // variant.
+                ImGui::BeginDisabled(fp16Net);
                 bool aco = config->MochizukiAco.value_or_default();
                 if (ImGui::Checkbox("ACO machine code (restart)", &aco))
                     config->MochizukiAco = aco;
                 ImGui::EndDisabled();
-                HelpMarker(rdna3 ? "Not on the RX 7000: ACO's machine code is made for the RX 9000 only, so the"
-                                   "\ndriver compiles the RX 7000 network."
+                const std::string acoOff = std::string("Not on the ") + card +
+                                           ": ACO's machine code is made for the RX 9000 only, so the\ndriver compiles "
+                                           "the " + card + " network.";
+                const std::string int4Off = std::string("Not on the ") + card + ": there is no int4 mixed network for it.";
+                HelpMarker(fp16Net ? acoOff.c_str()
                                  : "Runs the network as machine code made in advance by ACO, the Linux driver's compiler,"
                                    "\ninstead of compiling it with AMD's Windows one: about a fifth faster, the same picture."
                                    "\nTested by its author on AMD Software 26.9.2 only; if the game crashes or the picture is"
                                    "\nwrong, turn it off. Save Settings and start the game again to apply it.");
-                ImGui::BeginDisabled(!aco || rdna3);
+                ImGui::BeginDisabled(!aco || fp16Net);
                 bool int4 = config->MochizukiInt4.value_or_default();
                 if (ImGui::Checkbox("int4 mixed network (old model only)", &int4))
                     config->MochizukiInt4 = int4;
                 ImGui::EndDisabled();
-                HelpMarker(rdna3 ? "Not on the RX 7000: there is no int4 mixed network for it."
+                HelpMarker(fp16Net ? int4Off.c_str()
                                  : "Runs part of the network in 4-bit integers: about a tenth faster than ACO alone, the"
                                    "\npicture close to the default network's but not the same. Needs ACO. Switching builds"
                                    "\nthe other network in a few seconds while the current one keeps running; no restart."

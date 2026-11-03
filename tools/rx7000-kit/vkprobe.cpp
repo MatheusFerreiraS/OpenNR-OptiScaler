@@ -152,7 +152,8 @@ static void Device(VkInstance inst, uint32_t index, VkPhysicalDevice p)
 
     VkPhysicalDeviceDriverProperties drv { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
     VkPhysicalDeviceVulkan13Properties p13 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, &drv };
-    VkPhysicalDeviceSubgroupProperties sub { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES, &p13 };
+    VkPhysicalDeviceVulkan12Properties p12 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES, &p13 };
+    VkPhysicalDeviceVulkan11Properties sub { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES, &p12 };
     VkPhysicalDevicePipelineBinaryPropertiesKHR binp { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_BINARY_PROPERTIES_KHR, &sub };
     VkPhysicalDeviceCooperativeMatrixPropertiesKHR coopp { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_PROPERTIES_KHR,
                                                            bin ? static_cast<void*>(&binp) : &sub };
@@ -170,8 +171,21 @@ static void Device(VkInstance inst, uint32_t index, VkPhysicalDevice p)
     std::printf("  subgroup size %u, size control %u..%u, required-size stages 0x%x, compute workgroup subgroups %u\n",
                 sub.subgroupSize, p13.minSubgroupSize, p13.maxSubgroupSize, p13.requiredSubgroupSizeStages,
                 p13.maxComputeWorkgroupSubgroups);
-    std::printf("  max shared memory %u, max push constants %u\n", pr.limits.maxComputeSharedMemorySize,
-                pr.limits.maxPushConstantsSize);
+    std::printf("  subgroup operations 0x%x (shuffle %u), stages 0x%x (compute %u)\n", sub.subgroupSupportedOperations,
+                !!(sub.subgroupSupportedOperations & VK_SUBGROUP_FEATURE_SHUFFLE_BIT), sub.subgroupSupportedStages,
+                !!(sub.subgroupSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT));
+    std::printf("  max shared memory %u, max push constants %u, max workgroup invocations %u\n",
+                pr.limits.maxComputeSharedMemorySize, pr.limits.maxPushConstantsSize,
+                pr.limits.maxComputeWorkGroupInvocations);
+    std::printf("  float16 controls: roundingModeRTE %u, roundingModeRTZ %u, denormPreserve %u, denormFlushToZero %u,"
+                " signedZeroInfNanPreserve %u\n",
+                p12.shaderRoundingModeRTEFloat16, p12.shaderRoundingModeRTZFloat16, p12.shaderDenormPreserveFloat16,
+                p12.shaderDenormFlushToZeroFloat16, p12.shaderSignedZeroInfNanPreserveFloat16);
+    std::printf("  integer dot product accelerated: 4x8 packed signed %u, accumulating saturating 4x8 packed signed %u,"
+                " 8-bit signed %u, 16-bit signed %u\n",
+                p13.integerDotProduct4x8BitPackedSignedAccelerated,
+                p13.integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated,
+                p13.integerDotProduct8BitSignedAccelerated, p13.integerDotProduct16BitSignedAccelerated);
 
     VkPhysicalDeviceShaderFloat8FeaturesEXT f8 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT };
     VkPhysicalDevicePipelineBinaryFeaturesKHR binf { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_BINARY_FEATURES_KHR };
@@ -195,11 +209,11 @@ static void Device(VkInstance inst, uint32_t index, VkPhysicalDevice p)
     vkGetPhysicalDeviceFeatures2(p, &ff);
     std::printf("  shaderFloat16 %u, shaderInt8 %u, shaderInt16 %u, storageBuffer8BitAccess %u, storageBuffer16BitAccess %u,"
                 " bufferDeviceAddress %u, vulkanMemoryModel %u (device scope %u), subgroupSizeControl %u,"
-                " computeFullSubgroups %u, synchronization2 %u, maintenance4 %u\n",
+                " computeFullSubgroups %u, synchronization2 %u, maintenance4 %u, shaderIntegerDotProduct %u\n",
                 f12.shaderFloat16, f12.shaderInt8, ff.features.shaderInt16, f12.storageBuffer8BitAccess,
                 f11.storageBuffer16BitAccess, f12.bufferDeviceAddress, f12.vulkanMemoryModel,
                 f12.vulkanMemoryModelDeviceScope, f13.subgroupSizeControl, f13.computeFullSubgroups,
-                f13.synchronization2, f13.maintenance4);
+                f13.synchronization2, f13.maintenance4, f13.shaderIntegerDotProduct);
     std::printf("  VK_KHR_cooperative_matrix %s", coop ? "yes" : "no");
     if (coop)
         std::printf(" (cooperativeMatrix %u, robustBufferAccess %u, stages 0x%x)", coopf.cooperativeMatrix,
@@ -241,14 +255,24 @@ static void Device(VkInstance inst, uint32_t index, VkPhysicalDevice p)
         std::printf("  heap %u: %llu MB%s\n", i, (unsigned long long) (mp.memoryHeaps[i].size >> 20),
                     mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT ? " device local" : "");
 
-    // What MochizukiNrRuntime.dll decides for this device (Vulkan::Create).
+    // What MochizukiNrRuntime.dll decides for this device (Vulkan::Create), without MZ_FORCE_*: an RDNA2 device id
+    // (Navi 21/22/23/24 and the RDNA2 APUs) never takes the RDNA3 network, even when its driver reports (and emulates)
+    // FP16 matrices.
     const bool amd = pr.vendorID == 0x1002, rdna4 = amd && (pr.deviceID & 0xFF00) == 0x7500;
+    const uint32_t id = pr.deviceID;
+    const bool rdna2 = amd && ((id >= 0x73A0 && id <= 0x73FF) || (id >= 0x7420 && id <= 0x743F) || id == 0x163F ||
+                               id == 0x1681 || id == 0x164E || id == 0x1506);
     const bool fp8ok = fp8 && f8.shaderFloat8 && f8.shaderFloat8CooperativeMatrix;
+    const bool rdna2ok = (sub.subgroupSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT) &&
+                         (sub.subgroupSupportedOperations & VK_SUBGROUP_FEATURE_SHUFFLE_BIT) &&
+                         p12.shaderRoundingModeRTEFloat16;
     const char* net = !amd ? "none (not AMD)"
-                      : fp8ok ? "FP8 network"
+                      : fp8ok && !rdna2 ? "FP8 network"
                       : rdna4 ? "refused (RX 9000 without FP8)"
-                      : HasConfig(cm, VK_COMPONENT_TYPE_FLOAT32_KHR) ? "RDNA3 network (FP16 matrices)"
-                                                                     : "refused (no FP16 x FP16 -> FP32 16x16x16 matrices)";
+                      : !rdna2 && coop && coopf.cooperativeMatrix && HasConfig(cm, VK_COMPONENT_TYPE_FLOAT32_KHR)
+                          ? "RDNA3 network (FP16 matrices)"
+                      : rdna2ok ? (rdna2 ? "RDNA2 network (an RDNA2 device id)" : "RDNA2 network (no FP8, no FP16 matrices)")
+                                : "refused (the RDNA2 network needs compute subgroup shuffles and RTE float16 rounding)";
     std::printf("  runtime would pick: %s\n", net);
 }
 
@@ -700,6 +724,7 @@ int wmain(int argc, wchar_t** argv)
         return Check(name, argv[3]);
     }
     const std::wstring dir = argc > 1 ? argv[1] : L"probe";
+    const bool reportOnly = dir == L"--report"; // the RX 6000 kit: no matrix layout checks
     if (!LoadLibraryW(L"vulkan-1.dll"))
     {
         Windows();
@@ -710,6 +735,8 @@ int wmain(int argc, wchar_t** argv)
         return 0;
     }
     Report();
+    if (reportOnly)
+        return 0;
     std::printf("\nfragment layout checks (wave32):\n");
     for (const char* c : kChecks)
     {

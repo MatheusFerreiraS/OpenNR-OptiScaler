@@ -530,7 +530,9 @@ void Child(const LUID& luid, unsigned threads, const std::wstring& listPath, Lin
     vkGetPhysicalDeviceFeatures2(physical, &has);
     const bool robust = robustExtension && hasRobust.pipelineRobustness;
 
-    // What the network's device enables (MochizukiNrRuntime.cpp Vulkan::Create), FP8 left out.
+    // What the network's device enables (MochizukiNrRuntime.cpp Vulkan::Create), FP8 left out, and the matrices too
+    // where the driver has none (an RX 6000: the RDNA2 network has no cooperative matrices).
+    const bool coopExtension = HasExtension(offered, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR };
     VkPhysicalDeviceVulkan11Features f11 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
     VkPhysicalDeviceVulkan12Features f12 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
@@ -553,9 +555,11 @@ void Child(const LUID& luid, unsigned threads, const std::wstring& listPath, Lin
     f13.pNext = &wml;
     if (robust)
         wml.pNext = &rob;
-    VkPhysicalDeviceFeatures2 f2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &coop };
-    std::vector<const char*> extensions = { VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME,
-                                            VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME };
+    VkPhysicalDeviceFeatures2 f2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                                   coopExtension ? static_cast<void*>(&coop) : &f11 };
+    std::vector<const char*> extensions = { VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME };
+    if (coopExtension)
+        extensions.insert(extensions.begin(), VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
     if (robust)
         extensions.push_back(VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
     const float priority = 1.f;
@@ -846,12 +850,12 @@ std::string LayoutCheck(VkPhysicalDevice physical, VkDevice device, VkQueue queu
 }
 
 std::string PipelineCheck(const LUID& luid, const std::vector<std::wstring>& files, const std::wstring& work,
-                          const std::atomic<bool>* stop, bool& ran, std::string& note)
+                          const std::atomic<bool>* stop, bool& ran, std::string& note, unsigned timeout)
 {
     const auto t0 = std::chrono::steady_clock::now();
     ran = false;
     CreateDirectoryW(work.c_str(), nullptr);
-    DWORD timeoutMs = kPipelineTimeoutMs;
+    DWORD timeoutMs = timeout;
     if (char t[16] {}; GetEnvironmentVariableA("MZ_TEST_RDNA3_TIMEOUT_MS", t, sizeof t))
         timeoutMs = DWORD(std::strtoul(t, nullptr, 10));
     // As the prewarm: below-normal priority, a few threads, so the game keeps its CPU.
