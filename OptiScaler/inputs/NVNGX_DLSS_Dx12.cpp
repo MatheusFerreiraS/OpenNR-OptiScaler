@@ -15,6 +15,7 @@
 #include <upscalers/FeatureProvider_Dx12.h>
 #include "upscalers/dlss/DLSSFeature_Dx12.h"
 #include "upscalers/dlssd/DLSSDFeature.h"
+#include "upscalers/opennr_rr/OpenNrRrFeature_Dx12.h"
 
 #include <framegen/nvngx/Nvngx_FG.h>
 #include "FG/FSR3_Dx12_FG.h"
@@ -629,9 +630,9 @@ static Upscaler GetUpscalerBackend()
     if (Config::Instance()->Dx12Upscaler.has_value())
         upscaler = Config::Instance()->Dx12Upscaler.value();
 
-    // FSR-RR is only ever created for Ray Reconstruction requests; fall back to the
-    // regular FFX backend for ordinary upscaling requests while it is configured.
-    if (upscaler == Upscaler::FSR_RR)
+    // FSR-RR and OpenNR RR are only ever created for Ray Reconstruction requests; fall back to the
+    // regular FFX backend for ordinary upscaling requests while one is configured.
+    if (upscaler == Upscaler::FSR_RR || upscaler == Upscaler::OpenNrRr)
         upscaler = Upscaler::FFX;
 
     return upscaler;
@@ -692,13 +693,30 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
             (dlssdCapable && (preferredUpscaler == Upscaler::DLSS || preferredUpscaler == Upscaler::DLSSD ||
                               !FfxApiProxy::IsDenoiserApiImplementedDx12()));
 
-        if (preferDlssd)
+        // OpenNR RR when enabled and the runtime takes this GPU and nvngx_dlssd.dll
+        if (primaryGpu.vendorId != VendorId::Nvidia && cfg.OpenNrRrEnabled.value_or_default() && D3D12Device &&
+            OpenNrRr::SplitReady() && OpenNrRr::Usable(D3D12Device->GetAdapterLuid()))
         {
+            upscalerBackend = Upscaler::OpenNrRr;
+            LOG_INFO("Creating OpenNR RR (Ray Reconstruction) feature");
+        }
+        else if (preferDlssd)
+        {
+            if (cfg.OpenNrRrEnabled.value_or_default())
+                LOG_INFO("OpenNR RR not used: {}", OpenNrRr::SplitReady()
+                                                       ? OpenNrRr::Reason()
+                                                       : "the game's command lists are not split proxies");
+
             upscalerBackend = Upscaler::DLSSD;
             LOG_INFO("Creating DLSSD (Ray Reconstruction) feature");
         }
         else
         {
+            if (cfg.OpenNrRrEnabled.value_or_default())
+                LOG_INFO("OpenNR RR not used: {}", OpenNrRr::SplitReady()
+                                                       ? OpenNrRr::Reason()
+                                                       : "the game's command lists are not split proxies");
+
             upscalerBackend = Upscaler::FSR_RR;
             LOG_INFO("Creating FSR_RR (Ray Regeneration) feature");
         }
@@ -764,7 +782,24 @@ static NVSDK_NGX_Result TryCreateOptiFeature(ID3D12GraphicsCommandList* InCmdLis
     {
         LOG_ERROR("Feature '{}' initialization failed falling back to FSR 2.1.2", UpscalerDisplayName(upscalerBackend));
         state.newBackend = Upscaler::FSR21;
-        Dx12Contexts[handleId].featureKey = Upscaler::FSR21;
+
+        // OpenNR RR falls back to the provider Ray Reconstruction would have had without it
+        if (upscalerBackend == Upscaler::OpenNrRr)
+        {
+            OpenNrRr::Block("it did not initialise");
+            state.newBackend = FfxApiProxy::IsDenoiserApiImplementedDx12() ? Upscaler::FSR_RR : Upscaler::FSR21;
+            ImGui::InsertNotification({ ImGuiToastType::Warning, 10000, "OpenNR RR did not start, see the log" });
+        }
+        // FSR-RR that does not start hands Ray Reconstruction to OpenNR RR when the runtime takes this GPU, even
+        // with OpenNR RR switched off
+        else if (upscalerBackend == Upscaler::FSR_RR && IdentifyGpu::getPrimaryGpu().vendorId != VendorId::Nvidia &&
+                 OpenNrRr::SplitReady() && OpenNrRr::Usable(D3D12Device->GetAdapterLuid()))
+        {
+            LOG_INFO("FSR-RR did not initialise, trying OpenNR RR");
+            state.newBackend = Upscaler::OpenNrRr;
+        }
+
+        Dx12Contexts[handleId].featureKey = state.newBackend;
         Dx12Contexts[handleId].featureID = InFeatureID;
         state.changeBackend[handleId] = true;
     }
@@ -1353,9 +1388,12 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
         InParameters->Set("DLSSG.CameraFar", lastDlssgCameraFar.value());
 
     // FSR-RR runs the before-SR pass itself, between its denoise and its upscale (FSRDFeatureDx12::EvaluateInternal).
+    // OpenNR RR needs the list's one split for itself, so the before-SR pass does not run on its frames.
     const auto ctxIt = Dx12Contexts.find(InFeatureHandle->Id);
-    const bool nrInsideFeature = ctxIt != Dx12Contexts.end() && ctxIt->second.feature != nullptr &&
-                                 ctxIt->second.feature->GetUpscalerType() == Upscaler::FSR_RR;
+    const Upscaler featureType = ctxIt != Dx12Contexts.end() && ctxIt->second.feature != nullptr
+                                     ? ctxIt->second.feature->GetUpscalerType()
+                                     : Upscaler::Reset;
+    const bool nrInsideFeature = featureType == Upscaler::FSR_RR || featureType == Upscaler::OpenNrRr;
 
     if ((feature == NVSDK_NGX_Feature_SuperSampling || feature == NVSDK_NGX_Feature_RayReconstruction) &&
         !nrInsideFeature)
@@ -1363,7 +1401,8 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
 
     // OptiScaler internal handling
     PreUpscaleNr preNr;
-    preNr.run(InCmdList, InParameters, feature);
+    if (featureType != Upscaler::OpenNrRr)
+        preNr.run(InCmdList, InParameters, feature);
 
     const NVSDK_NGX_Result optiResult = TryEvaluateOptiFeature(InCmdList, InFeatureHandle, InParameters, InCallback);
 

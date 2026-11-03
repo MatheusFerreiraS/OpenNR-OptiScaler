@@ -1093,6 +1093,31 @@ class Config
     CustomOptional<float> FsrAccAddPerFrame { 0.333f };
     CustomOptional<float> FsrMinDisOccAcc { -0.333f };
 
+    // OpenNR RR: Ray Reconstruction on the DLSS-RR network (OpenNrRrRuntime.dll), D3D12, RDNA4. On by default: it
+    // only takes over where the runtime accepts the GPU and nvngx_dlssd.dll, FSR-RR otherwise
+    CustomOptional<bool> OpenNrRrEnabled { true };
+    // mochizuki NR on the denoised render-size image, between the network and its temporal post: off, loop (the
+    // history takes the NR) or display (the network keeps its own history, the shown image adds the NR as a delta)
+    CustomOptional<std::string> OpenNrRrNrOnDenoised { "off" };
+    // what runs the network: auto (D3D12 in the game's own command list when the runtime's check passes, otherwise
+    // Vulkan), d3d12 or vulkan; read when the runtime is created
+    CustomOptional<std::string> OpenNrRrBackend { "auto" };
+    // diagnostics (RE Requiem's rain): feed DLSS.DisocclusionMask and the SSS guide (or ColorBeforeFog) to the
+    // network, and read the mask as 1 - mask; applied on the next frame. The scale multiplies the mask and the clamp
+    // keeps it in 0..1 afterwards (RE Requiem writes values up to 3000; DLSS-RR takes them as they are)
+    CustomOptional<bool> OpenNrRrUseDisocclusionMask { true };
+    CustomOptional<bool> OpenNrRrUseSssGuide { true }; // RE Requiem's image needs it; off only to compare
+    CustomOptional<bool> OpenNrRrInvertDisocclusionMask { false };
+    CustomOptional<bool> OpenNrRrClampDisocclusionMask { true };
+    CustomOptional<float> OpenNrRrDisocclusionMaskScale { 1.0f };
+    // the rest of the DLSS-D inputs nvngx_dlssd.dll feeds rr2 (docs/NOTA-ENTRADAS.md in OpenNR-Denoiser), each used when
+    // the game gives it; off for diagnosis, applied on the next frame
+    CustomOptional<bool> OpenNrRrUseResponsivityMask { true };
+    CustomOptional<bool> OpenNrRrUseColorBeforeTransparency { true };
+    CustomOptional<bool> OpenNrRrUseDepthOfFieldGuide { true };
+    CustomOptional<bool> OpenNrRrUseReflectionMotionVectors { true };
+    CustomOptional<bool> OpenNrRrUseLayerOpacityAndMotion { true };
+
     // FSR-RR
     CustomOptional<int> FfxDenoiserIndex { 0 };
     CustomOptional<uint64_t> FfxDenoiserDebugMode { 0 };

@@ -24,6 +24,7 @@
 #include <proxies/XeFG_Proxy.h>
 #include <proxies/FfxApi_Proxy.h>
 #include <upscalers/ffx/FFXFeature.h>
+#include <upscalers/opennr_rr/OpenNrRrFeature_Dx12.h>
 #include <fsr4/FSR4Models.h>
 #include <fsr4/FSR4Presets.h>
 #include <fsr4/FSR4DriverProviderVk.h>
@@ -1039,10 +1040,33 @@ void MenuCommon::AddDx11Backends(Upscaler upscaler)
                           Upscaler::FSR22_on12, Upscaler::FFX_on12, Upscaler::DLSS, Upscaler::DLSS_on12 });
 }
 
+// Whether OpenNR RR can take over this game's Ray Reconstruction; reason says why not. Asks the runtime once.
+static bool OpenNrRrOffered(std::string* reason)
+{
+    if (!OpenNrRr::SplitReady())
+    {
+        *reason = "set Enabled=true under [OpenNR-RR] and restart the game";
+        return false;
+    }
+
+    if (!OpenNrRr::Checked())
+        OpenNrRr::Usable(IdentifyGpu::getPrimaryGpu().luid);
+
+    *reason = OpenNrRr::Reason();
+    return reason->empty();
+}
+
 void MenuCommon::AddDx12Backends(Upscaler upscaler)
 {
-    RenderUpscalerCombo(API::DX12, upscaler,
-                        { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::DLSS });
+    std::vector<Upscaler> options { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::DLSS };
+    std::string reason;
+
+    // Ray Reconstruction is running: OpenNR RR is one more provider for it
+    if ((upscaler == Upscaler::FSR_RR || upscaler == Upscaler::DLSSD || upscaler == Upscaler::OpenNrRr) &&
+        OpenNrRrOffered(&reason))
+        options.push_back(Upscaler::OpenNrRr);
+
+    RenderUpscalerCombo(API::DX12, upscaler, options);
 }
 
 void MenuCommon::AddVulkanBackends(Upscaler upscaler)
@@ -3281,9 +3305,14 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
     ImGui::PushItemWidth(150.0f * menuResScale);
 
     const bool usesDlssd = currentFeature->GetUpscalerType() == Upscaler::DLSSD;
-    // FSR-RR on DX12 can take over from DLSSD on a non-Nvidia GPU
-    const bool canSwitchRrOnDx12 =
-        state.api == DX12 && primaryGpu.vendorId != VendorId::Nvidia && FfxApiProxy::IsDenoiserApiImplementedDx12();
+    const bool usesRr = usesDlssd || currentFeature->GetUpscalerType() == Upscaler::FSR_RR ||
+                        currentFeature->GetUpscalerType() == Upscaler::OpenNrRr;
+    std::string openNrRrReason;
+    const bool openNrRrOffered =
+        state.api == DX12 && usesRr && primaryGpu.vendorId != VendorId::Nvidia && OpenNrRrOffered(&openNrRrReason);
+    // FSR-RR or OpenNR RR on DX12 can take over from DLSSD on a non-Nvidia GPU
+    const bool canSwitchRrOnDx12 = state.api == DX12 && primaryGpu.vendorId != VendorId::Nvidia &&
+                                   (FfxApiProxy::IsDenoiserApiImplementedDx12() || openNrRrOffered);
 
     // DLSSD can't be switched to another upscaler
     if (usesDlssd && !canSwitchRrOnDx12)
@@ -3332,8 +3361,19 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                 config->DlssReactiveMaskBias.reset();
             }
 
+            // The Ray Reconstruction provider picked here is the one the next launch starts with
+            if (usesRr && state.api == DX12 &&
+                (state.newBackend == Upscaler::OpenNrRr || currentBackend == Upscaler::OpenNrRr))
+                config->OpenNrRrEnabled = state.newBackend == Upscaler::OpenNrRr;
+
             MARK_ALL_BACKENDS_CHANGED();
         }
+    }
+
+    if (state.api == DX12 && usesRr && primaryGpu.vendorId != VendorId::Nvidia && !openNrRrOffered)
+    {
+        ImGui::Spacing();
+        ImGui::TextDisabled("OpenNR RR: %s", openNrRrReason.c_str());
     }
 
     if (primaryGpu.dlssCapable && !state.NVNGX_DLSS_Path.has_value())
@@ -3434,6 +3474,141 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             }
 
             ImGui::PopItemWidth();
+
+            ImGui::Spacing();
+            ImGui::Spacing();
+        }
+    }
+
+    // OpenNR RR -----------------------------
+    if (currentFeature->GetUpscalerType() == Upscaler::OpenNrRr)
+    {
+        ImGui::Spacing();
+        if (auto ch = ScopedCollapsingHeader("OpenNR RR"); ch.IsHeaderOpen())
+        {
+            ScopedIndent indent {};
+            ImGui::Spacing();
+
+            const char* nrModes[] = { "Off", "In the loop", "Display only" };
+            const auto nrMode = config->OpenNrRrNrOnDenoised.value_or_default();
+            int nr = nrMode == "loop" ? 1 : nrMode == "display" ? 2 : 0;
+
+            ImGui::PushItemWidth(150.0f * menuResScale);
+            if (ImGui::Combo("NR on denoised image", &nr, nrModes, 3))
+                config->OpenNrRrNrOnDenoised = nr == 1 ? "loop" : nr == 2 ? "display" : "off";
+            ImGui::PopItemWidth();
+            ShowTooltip("mochizuki NR (NrBackend=mochizuki and its settings) on the denoised render-size image,\n"
+                        "before the temporal accumulation and the upscale.\n"
+                        "In the loop: the accumulated history takes the NR as well; may flicker with strong NR models.\n"
+                        "Display only: the NR goes onto the shown image, following it from the first frame; the RR keeps\n"
+                        "its own history.");
+
+            const char* backends[] = { "Auto", "D3D12", "Vulkan" };
+            const auto backendName = config->OpenNrRrBackend.value_or_default();
+            int backend = backendName == "d3d12" ? 1 : backendName == "vulkan" ? 2 : 0;
+
+            ImGui::PushItemWidth(150.0f * menuResScale);
+            if (ImGui::Combo("Backend", &backend, backends, 3))
+            {
+                config->OpenNrRrBackend = backend == 1 ? "d3d12" : backend == 2 ? "vulkan" : "auto";
+                // the runtime picks its backend at creation
+                state.newBackend = currentBackend;
+                MARK_ALL_BACKENDS_CHANGED();
+            }
+            ImGui::PopItemWidth();
+            ShowTooltip("D3D12: the network runs on the game's own device, recorded into its command list\n"
+                        "(no second device, no copies through shared memory, no queue crossings).\n"
+                        "Vulkan: the network runs on a Vulkan device of its own beside the game.\n"
+                        "Auto: D3D12 when the runtime's check on this GPU and driver passes, otherwise Vulkan.\n"
+                        "Changing it recreates OpenNR RR.");
+
+            if (bool useMask = config->OpenNrRrUseDisocclusionMask.value_or_default();
+                ImGui::Checkbox("Use disocclusion mask", &useMask))
+                config->OpenNrRrUseDisocclusionMask = useMask;
+            ShowTooltip("Feeds the game's DLSS.DisocclusionMask to the network, as DLSS-RR does.\n"
+                        "Diagnostic: turn it off to see whether trails or ghosting change.");
+
+            if (bool invertMask = config->OpenNrRrInvertDisocclusionMask.value_or_default();
+                ImGui::Checkbox("Invert disocclusion mask", &invertMask))
+                config->OpenNrRrInvertDisocclusionMask = invertMask;
+            ShowTooltip("Diagnostic: reads the mask as 1 - mask (DLSS-RR takes it as it is).\n"
+                        "Only does something while the mask is in use.");
+
+            if (bool clampMask = config->OpenNrRrClampDisocclusionMask.value_or_default();
+                ImGui::Checkbox("Clamp disocclusion mask to 0..1", &clampMask))
+                config->OpenNrRrClampDisocclusionMask = clampMask;
+            ShowTooltip("Keeps the mask in 0..1 before the network sees it (after the invert).\n"
+                        "Some games (Resident Evil Requiem) write values up to 3000, which DLSS-RR takes as they are\n"
+                        "and which leave trails and shimmering here. Only does something while the mask is in use.");
+
+            if (float maskScale = config->OpenNrRrDisocclusionMaskScale.value_or_default();
+                ImGui::SliderFloat("Mask scale", &maskScale, 1e-4f, 1.0f, "%.6f", ImGuiSliderFlags_Logarithmic))
+                config->OpenNrRrDisocclusionMaskScale = maskScale;
+            ShowTooltip("Multiplies the disocclusion mask before the invert and the clamp (1 = as the game gives it).\n"
+                        "Lower it until thin moving objects stay solid without rain trails.\n"
+                        "Ctrl+click to type a value.");
+            const std::pair<const char*, float> scalePresets[] = { { "1", 1.0f },
+                                                                   { "0.1", 0.1f },
+                                                                   { "0.01", 0.01f },
+                                                                   { "1/3000", 1.0f / 3000.0f } };
+            for (int i = 0; i < 4; i++)
+            {
+                if (i)
+                    ImGui::SameLine();
+                if (ImGui::SmallButton(scalePresets[i].first))
+                    config->OpenNrRrDisocclusionMaskScale = scalePresets[i].second;
+            }
+
+            if (bool useSss = config->OpenNrRrUseSssGuide.value_or_default(); ImGui::Checkbox("Use SSS guide", &useSss))
+                config->OpenNrRrUseSssGuide = useSss;
+            ShowTooltip("Feeds the game's subsurface scattering guide (or ColorBeforeFog) to the network, as DLSS-RR does.\n"
+                        "Diagnostic: turn it off to see whether skin or trails change.\n"
+                        "opennr_rr.log gets a summary of what the game puts in the mask and the guide every 3 s.");
+
+            // the other DLSS-D inputs rr2 reads, each used when the game gives it (the log's inventory says which)
+            const struct { CustomOptional<bool>* opt; const char* label; const char* tip; } extras[] = {
+                { &config->OpenNrRrUseResponsivityMask, "Use responsivity mask",
+                  "Feeds the game's DLSSD.ResponsivityMask to the network, as DLSS-RR does.\n"
+                  "Diagnostic: turn it off to see whether ghosting or smearing change." },
+                { &config->OpenNrRrUseColorBeforeTransparency, "Use colour before transparency",
+                  "Feeds the game's DLSSD.ColorBeforeTransparency to the network, as DLSS-RR does.\n"
+                  "Diagnostic: turn it off to see whether glass, water or particles change." },
+                { &config->OpenNrRrUseDepthOfFieldGuide, "Use depth of field guide",
+                  "Feeds the game's DLSSD.DepthOfFieldGuide to the network, as DLSS-RR does.\n"
+                  "Diagnostic: turn it off to see whether out-of-focus areas change." },
+                { &config->OpenNrRrUseReflectionMotionVectors, "Use reflection motion vectors",
+                  "Takes the game's GBuffer.SpecularMvec for how reflections move, as DLSS-RR does,\n"
+                  "instead of deriving it from depth, normals and the hit distance.\n"
+                  "Diagnostic: turn it off to see whether reflections smear or lag." },
+                { &config->OpenNrRrUseLayerOpacityAndMotion, "Use transparency layer opacity and motion",
+                  "Takes the transparency layer's own opacity and motion vectors when the game gives them, as DLSS-RR does.\n"
+                  "Diagnostic: turn it off to see whether particles or transparent effects change." },
+            };
+            for (const auto& e : extras)
+            {
+                if (bool on = e.opt->value_or_default(); ImGui::Checkbox(e.label, &on))
+                    *e.opt = on;
+                ShowTooltip(e.tip);
+            }
+
+            if (const auto nrStatus = OpenNrRr::DenoisedNrStatus(); !nrStatus.empty())
+                ImGui::TextWrapped("NR: %s", nrStatus.c_str());
+
+            if (OnrRrInfo info {}; OpenNrRr::Info(info))
+            {
+                const char* stateName = info.state == ONR_RR_STATE_READY      ? "ready"
+                                        : info.state == ONR_RR_STATE_BUILDING ? "building"
+                                                                              : "failed";
+                ImGui::Text("State: %s, GPU %.2f ms (average)", stateName, info.gpu_ms_average);
+                ImGui::Text("Running on: %s", info.backend == ONR_RR_BACKEND_D3D12 ? "D3D12 (the game's command list)" : "Vulkan");
+                if (info.backend != ONR_RR_BACKEND_D3D12 && info.backend_message[0] != 0)
+                    ImGui::TextWrapped("D3D12 not used: %s", info.backend_message);
+
+                if (info.message[0] != 0)
+                    ImGui::TextWrapped("%s", info.message);
+
+                ImGui::TextDisabled("Weights: %s", info.weights_source);
+            }
 
             ImGui::Spacing();
             ImGui::Spacing();

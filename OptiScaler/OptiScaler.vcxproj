@@ -321,6 +321,8 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDInputConv_Shader.h" />
     <ClInclude Include="shaders\fsrd_preprocess\precompile\FSRDOutputComp_Shader.h" />
     <ClInclude Include="upscalers\fsr31\FSRDFeature_Dx12.h" />
+    <ClInclude Include="upscalers\opennr_rr\opennr_rr_api.h" />
+    <ClInclude Include="upscalers\opennr_rr\OpenNrRrFeature_Dx12.h" />
     <ClInclude Include="framegen\reprojection\Reprojection_Dx12.h" />
     <ClInclude Include="shaders\reproject\mouseInputs\RawInputHook.h" />
     <ClInclude Include="shaders\magnifier\Magnifier_Dx11.h" />
@@ -663,6 +665,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="shaders\hud_copy\HudCopy_Vk.cpp" />
     <ClCompile Include="shaders\fsrd_preprocess\FSRDPreprocessor_Dx12.cpp" />
     <ClCompile Include="upscalers\fsr31\FSRDFeature_Dx12.cpp" />
+    <ClCompile Include="upscalers\opennr_rr\OpenNrRrFeature_Dx12.cpp" />
     <ClCompile Include="upscalers\fsr31\FSR31Feature_Dx12.cpp" />
     <ClCompile Include="shaders\reproject\mouseInputs\InputCollection.cpp" />
     <ClCompile Include="inputs\FG\Streamline_Inputs_Sl1_Dx12.cpp" />

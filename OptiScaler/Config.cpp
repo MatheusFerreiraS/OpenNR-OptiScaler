@@ -452,6 +452,20 @@ bool Config::Reload(std::filesystem::path iniPath)
                 FfxDenoiserFloorEnvelopeBias.set_from_config(readFloat("FSR-RR", "FloorEnvelopeBias"));
                 FfxDenoiserFloorSoftMin.set_from_config(readFloat("FSR-RR", "FloorSoftMin"));
             }
+
+            OpenNrRrEnabled.set_from_config(readBool("OpenNR-RR", "Enabled"));
+            OpenNrRrNrOnDenoised.set_from_config(readString("OpenNR-RR", "NrOnDenoised", true));
+            OpenNrRrBackend.set_from_config(readString("OpenNR-RR", "Backend", true));
+            OpenNrRrUseDisocclusionMask.set_from_config(readBool("OpenNR-RR", "UseDisocclusionMask"));
+            OpenNrRrUseSssGuide.set_from_config(readBool("OpenNR-RR", "UseSssGuide"));
+            OpenNrRrInvertDisocclusionMask.set_from_config(readBool("OpenNR-RR", "InvertDisocclusionMask"));
+            OpenNrRrClampDisocclusionMask.set_from_config(readBool("OpenNR-RR", "ClampDisocclusionMask"));
+            OpenNrRrDisocclusionMaskScale.set_from_config(readFloat("OpenNR-RR", "DisocclusionMaskScale"));
+            OpenNrRrUseResponsivityMask.set_from_config(readBool("OpenNR-RR", "UseResponsivityMask"));
+            OpenNrRrUseColorBeforeTransparency.set_from_config(readBool("OpenNR-RR", "UseColorBeforeTransparency"));
+            OpenNrRrUseDepthOfFieldGuide.set_from_config(readBool("OpenNR-RR", "UseDepthOfFieldGuide"));
+            OpenNrRrUseReflectionMotionVectors.set_from_config(readBool("OpenNR-RR", "UseReflectionMotionVectors"));
+            OpenNrRrUseLayerOpacityAndMotion.set_from_config(readBool("OpenNR-RR", "UseLayerOpacityAndMotion"));
         }
 
         // XeSS
@@ -1692,6 +1706,30 @@ bool Config::SaveIni()
             ini.SetValue("FSR-RR", "FloorSoftMin",
                          GetFloatValue(Instance()->FfxDenoiserFloorSoftMin.value_for_config()).c_str());
         }
+
+        ini.SetValue("OpenNR-RR", "Enabled", GetBoolValue(Instance()->OpenNrRrEnabled.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "NrOnDenoised",
+                     Instance()->OpenNrRrNrOnDenoised.value_for_config().value_or("auto").c_str());
+        ini.SetValue("OpenNR-RR", "Backend", Instance()->OpenNrRrBackend.value_for_config().value_or("auto").c_str());
+        ini.SetValue("OpenNR-RR", "UseDisocclusionMask",
+                     GetBoolValue(Instance()->OpenNrRrUseDisocclusionMask.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "UseSssGuide", GetBoolValue(Instance()->OpenNrRrUseSssGuide.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "InvertDisocclusionMask",
+                     GetBoolValue(Instance()->OpenNrRrInvertDisocclusionMask.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "ClampDisocclusionMask",
+                     GetBoolValue(Instance()->OpenNrRrClampDisocclusionMask.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "DisocclusionMaskScale",
+                     GetFloatValue(Instance()->OpenNrRrDisocclusionMaskScale.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "UseResponsivityMask",
+                     GetBoolValue(Instance()->OpenNrRrUseResponsivityMask.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "UseColorBeforeTransparency",
+                     GetBoolValue(Instance()->OpenNrRrUseColorBeforeTransparency.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "UseDepthOfFieldGuide",
+                     GetBoolValue(Instance()->OpenNrRrUseDepthOfFieldGuide.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "UseReflectionMotionVectors",
+                     GetBoolValue(Instance()->OpenNrRrUseReflectionMotionVectors.value_for_config()).c_str());
+        ini.SetValue("OpenNR-RR", "UseLayerOpacityAndMotion",
+                     GetBoolValue(Instance()->OpenNrRrUseLayerOpacityAndMotion.value_for_config()).c_str());
     }
 
     // XeSS
