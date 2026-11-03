@@ -1059,9 +1059,10 @@ void RenderMenu(Config* config, float menuResScale)
             {
                 ScopedIndent indent {};
                 MochizukiRenoGroup(config, 7);
-                // Neither is made for the RX 7000 or RX 6000 network yet: the driver compiles it, and it has no int4
-                // variant.
-                ImGui::BeginDisabled(fp16Net);
+                // ACO: the RX 6000 network takes dlssnr-amd\aco-gfx103x when it is there (MochizukiNrRuntime.cpp
+                // Rdna2Aco); none is made for the RX 7000 one yet. Neither has an int4 variant.
+                const bool rx6000 = fp16Net && !std::strcmp(card, "RX 6000");
+                ImGui::BeginDisabled(fp16Net && !rx6000);
                 bool aco = config->MochizukiAco.value_or_default();
                 if (ImGui::Checkbox("ACO machine code (restart)", &aco))
                     config->MochizukiAco = aco;
@@ -1070,7 +1071,10 @@ void RenderMenu(Config* config, float menuResScale)
                                            ": ACO's machine code is made for the RX 9000 only, so the\ndriver compiles "
                                            "the " + card + " network.";
                 const std::string int4Off = std::string("Not on the ") + card + ": there is no int4 mixed network for it.";
-                HelpMarker(fp16Net ? acoOff.c_str()
+                HelpMarker(rx6000 ? "On the RX 6000: runs ACO's gfx10.3 machine code when dlssnr-amd\\aco-gfx103x is"
+                                    "\ninstalled (experimental); without it, or with this off, the driver compiles the"
+                                    "\nnetwork. Save Settings and start the game again to apply it."
+                           : fp16Net ? acoOff.c_str()
                                  : "Runs the network as machine code made in advance by ACO, the Linux driver's compiler,"
                                    "\ninstead of compiling it with AMD's Windows one: about a fifth faster, the same picture."
                                    "\nTested by its author on AMD Software 26.9.2 only; if the game crashes or the picture is"
