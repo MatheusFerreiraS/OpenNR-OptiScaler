@@ -16,6 +16,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "nr_path_u8.hpp"
 
 namespace nrvk {
 
@@ -34,7 +35,7 @@ struct Telemetry {
     static std::string find(uint32_t vendor, uint32_t device) {
         for (int card = 0; card < 8; ++card) {
             const std::string base = "/sys/class/drm/card" + std::to_string(card) + "/device/";
-            std::ifstream v(base + "vendor"), d(base + "device");
+            std::ifstream v(nr::u8::path(base + "vendor")), d(nr::u8::path(base + "device"));
             std::string vs, ds;
             if (!(v >> vs) || !(d >> ds)) continue;
             if (std::stoul(vs, nullptr, 16) != vendor || std::stoul(ds, nullptr, 16) != device) continue;
@@ -50,7 +51,7 @@ struct Telemetry {
         return {};
     }
     static double read(const std::string& path, double scale) {
-        std::ifstream f(path);
+        std::ifstream f(nr::u8::path(path));
         double v;
         return (f >> v) ? v * scale : -1.0;
     }

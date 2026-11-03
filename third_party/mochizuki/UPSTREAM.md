@@ -4,12 +4,13 @@ The Vulkan network behind `MochizukiNrRuntime.dll` (`NrBackend=mochizuki`).
 
 - Source: https://gitlab.com/mochizuki0323/DLSSNR-AMD (moved from GitHub on 2026-10-30 with its history; the
   commits named here are the same on GitLab)
-- Pinned commit: `cc27501` (2026-10-19, tag v0.0.7): `windows/src/core/`, `windows/shaders/`, `windows/build/` and
-  `windows/data/aco/` as upstream has them, apart from the local patches below, and the Linux network ACO is made
-  from (`linux/build/build_network.py`, `linux/shaders/`) from the same tag (its Linux half, `29fda44`). See Sync to
-  v0.0.7
-- Before it: `8a70f7f4` (v0.0.5-win-preview) with the hotfix `f35f00f` (ACO on gfx1200, the RX 9060 series) and
-  `windows/src/core/` from `ab00d2b` (v0.0.6-win-preview-alpha, the 310.9.16 model); both are in v0.0.7
+- Pinned commit: `c53878b` (2026-11-02, tag v0.0.8.2; v0.0.8.1 is `339938c`): `windows/src/core/`,
+  `windows/shaders/` (rdna4, passes, renodx, renodx-prep, renodx-fast), `windows/build/` and `windows/data/aco/`
+  (records, int4) as upstream has them, apart from the local patches below, and the Linux network ACO is made from
+  (`linux/build/build_network.py`, `linux/shaders/rdna4`, `linux/shaders/passes`) from the same tag. See Sync to
+  v0.0.8.2
+- Before it: `cc27501` (v0.0.7, 2026-10-19), and before that `8a70f7f4` (v0.0.5-win-preview) with the hotfix
+  `f35f00f` and `windows/src/core/` from `ab00d2b` (v0.0.6-win-preview-alpha)
 - `linux/package/model-tools/` is still from `791b046` (v0.0.1); the model it makes has not changed
 - Licence: MIT, `LICENSE` beside this file
 
@@ -20,7 +21,7 @@ Only what the runtime build reads, at the upstream paths:
 | Path | Use |
 |---|---|
 | `windows/src/core/` | the network runtime (`nr::Runtime`), compiled into the DLL |
-| `windows/shaders/` | the network and the passes around it, GLSL |
+| `windows/shaders/` | the network and the passes around it, GLSL; `renodx*` the RenoDX stage's |
 | `windows/build/build_network.py`, `unroll_glsl.py`, `quad_quant_glsl.py` | GLSL to SPIR-V, the upstream way |
 | `windows/build/arch/rdna4.sh` | the constants host and shaders share; `tools/build-mochizuki-runtime.cmd` repeats them |
 | `linux/package/model-tools/` | makes `dlssnr.bin` from a user's `nvngx_dlssnr.dll` 310.8.0 |

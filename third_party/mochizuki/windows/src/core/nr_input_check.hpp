@@ -40,6 +40,7 @@
 #include <thread>
 #include <vector>
 
+#include "nr_path_u8.hpp"
 #include "nr_log.hpp"
 #include "nr_runtime.hpp"
 #include "nrvk.hpp"
@@ -220,7 +221,7 @@ inline bool write_png(const std::string& path, uint32_t w, uint32_t h, const std
     }
     const uint32_t adler = (b << 16) | a;
     for (int s = 24; s >= 0; s -= 8) z.push_back(uint8_t(adler >> s));
-    FILE* fp = std::fopen(path.c_str(), "wb");
+    FILE* fp = nr::u8::fopen(path.c_str(), "wb");
     if (!fp) return false;
     auto be32 = [](uint32_t v, uint8_t* o) { o[0] = uint8_t(v >> 24); o[1] = uint8_t(v >> 16); o[2] = uint8_t(v >> 8); o[3] = uint8_t(v); };
     auto chunk = [&](const char* type, const uint8_t* data, size_t n) {

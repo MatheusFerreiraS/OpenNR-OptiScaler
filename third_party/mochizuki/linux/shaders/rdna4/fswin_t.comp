@@ -2374,6 +2374,10 @@ shared fe4m3vec4 nr_wl[3072];
 #define NR_HS_B 0.505
 #endif
 float nr_act_horner(float x) {
+#if defined(NR_SACT) && NR_SACT == 1   // CC_SMALL_FP8_EXPERIMENTAL: ReLU (pipelines-experimental.json)
+    return max(x,0.0);
+#endif
+
 #if NR_ACT_HS == 2
     return x * clamp(fma(x, NR_HS_A, NR_HS_B), 0.0, 1.0);   // s folded into the next weights (host NR_HS_FOLD)
 #else
@@ -2402,6 +2406,10 @@ float nr_act_horner(float x) {
 #define NR_ALT_M (NR_ACT_ALT == 1 || NR_ACT_ALT == 2)
 #endif
 float nr_act_horner_b(float x) {
+#if defined(NR_SACT) && NR_SACT == 1   // CC_SMALL_FP8_EXPERIMENTAL: ReLU (pipelines-experimental.json)
+    return max(x,0.0);
+#endif
+
 #if NR_ACT_HS == 2
     return x * clamp(fma(x, NR_HS_A, NR_HS_B), 0.0, 1.0);   // s folded into the next weights (host NR_HS_FOLD)
 #else
@@ -3537,8 +3545,8 @@ void main() {
     // form `linux/shaders/passes/runtime_transfer.comp` already uses on the other route and
     // the same one OptiScaler's resolve calls "where detail strength above 1
     // goes". One scalar from luminance applied to the whole triple, so the hue
-    // is kept; bounded by the same guard of 2. At exactly 1 `pow(ratio,1)/ratio`
-    // is one, so this is bit-identical to what shipped.
+    // of nonnegative linear RGB is preserved before rounding; bounded by the guard of 2.
+    // At Intensity 1 the branch below is skipped; the original FMA blend is retained.
     rgb=clamp(fma(vec3(min(pc.image_intensity,1.0)),rgb-base,base),vec3(0.0),vec3(1.0));
     if(pc.image_intensity>1.0){
         const float fl=1.0/512.0, guard=2.0;
@@ -3561,13 +3569,10 @@ void main() {
 #if NR_DIAG_POSTSTORE != 2
 #if NR_POST_ALPHA
     {
-        // linux/shaders/passes/runtime_alpha.comp's arithmetic. Its rounding is
-        // floor(p + 0.5) / 255 with p = clamp(x) * 255 rounded on its own, which
-        // it keeps unfused with `precise`. Here `precise` would propagate back
-        // into the whole projection and unfuse ACO's v_fma_mix (a different
-        // picture), so the same number is spelled without an add after the
-        // multiply: p <= 255, so p + 0.5 is exact and its floor is
-        // floor(p) + (fract(p) >= 0.5).
+        // Round-half-up of the FP32 product, shared with runtime_alpha.comp.
+        // Adding 0.5 first would round some values just below a half-integer up.
+        // Keep `precise` out of this block: it propagates into the projection
+        // and unfuses ACO's v_fma_mix, changing the network's result.
         vec4 nr_o0=vec4(rgb,1.0);
         if((pc.image_w_off&0x80000000u)!=0u) {
             vec3 nr_r=rgb;

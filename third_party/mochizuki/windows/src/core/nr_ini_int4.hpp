@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstdio>
 #include <string>
+#include "nr_path_u8.hpp"
 #include "nr_ini_network.hpp"
 
 namespace nr {
@@ -18,7 +19,7 @@ struct Int4Ini {
 };
 inline Int4Ini ini_int4(const std::string& path) {
     Int4Ini r;
-    FILE* f = std::fopen(path.c_str(), "r");
+    FILE* f = nr::u8::fopen(path.c_str(), "r");
     if (!f) return r;
     auto trim = [](std::string s) {
         while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();

@@ -61,6 +61,9 @@ struct Preprocess {
     int curve = 3;
     float contrast = 1.0f;       // about mid grey, 0.5..2
     float saturation = 1.0f;     // 0.05..2
+    // The RenoDX stage's [Preprocess] (v0.0.8.2): the network's change comes back through the bounded inverse of
+    // curve, contrast and saturation (true), or as its ratio in the shown picture (false). runtime_prep.comp ignores it.
+    bool inverse = true;
     // Does any of it change anything? False records nothing.
     bool active() const {
         return enabled && (exposure == 1 || (exposure == 2 && bias_ev != 0.0f) || curve != 0 ||
@@ -68,7 +71,7 @@ struct Preprocess {
     }
     bool operator==(const Preprocess& o) const {
         return enabled == o.enabled && exposure == o.exposure && bias_ev == o.bias_ev && curve == o.curve &&
-               contrast == o.contrast && saturation == o.saturation;
+               contrast == o.contrast && saturation == o.saturation && inverse == o.inverse;
     }
     bool operator!=(const Preprocess& o) const { return !(*this == o); }
 };
@@ -233,6 +236,9 @@ struct RuntimeConfig {
     // 30.3 -> 43.9 dB vs NVIDIA with point). The NGX route sets it; the ReShade add-on's vectors (VORT, Lumenite)
     // are our own input and keep bilinear.
     bool motion_point = false;
+    // [Network] History Precision: true keeps the one-pass temporal history in RGBA16F as NVIDIA's DLL does (upstream's
+    // default since 0.0.8.2), false in RGBA32F. NR_HIST16 in the environment wins. A change takes a new runtime.
+    bool history_f16 = true;
     // Able to run Controls::preprocess. Costs the frame-format input copy and
     // the post block's direct store (the input has to be a float image the
     // preprocess can rewrite), whether or not a frame asks for it; off, the

@@ -5,13 +5,27 @@
 #include <cctype>
 #include <cstdio>
 #include <string>
+#include "nr_path_u8.hpp"
 
 namespace nr {
 // The networks a user picks, by the DLL's own codenames (dlssnr-amd.ini [Network] Model, NR Control, the log).
-enum NetworkChoice : int { kSmallFp8 = 0, kSilverAardwold = 1, kSilverAardwoldInt4 = 2, kNetworkChoices = 3 };
+// CC_SMALL_FP8_EXPERIMENTAL is ours, not the DLL's: the small model made faster (ReLU, fixed attention on three
+// decoder layers), its weights fitted from the small model's at install.
+enum NetworkChoice : int {
+    kSmallFp8 = 0, kSilverAardwold = 1, kSilverAardwoldInt4 = 2, kSmallFp8Experimental = 3, kNetworkChoices = 4
+};
+// The order the networks are listed and the hotkey cycles them in: the two small ones together, then the
+// 310.8 model's two.
+inline constexpr int kNetworkOrder[kNetworkChoices] = {kSmallFp8, kSmallFp8Experimental, kSilverAardwold,
+                                                       kSilverAardwoldInt4};
+inline int network_rank(int n) {
+    for (int i = 0; i < kNetworkChoices; ++i) if (kNetworkOrder[i] == n) return i;
+    return 0;
+}
 inline const char* network_codename(int n) {
     return n == kSmallFp8 ? "CC_SMALL_FP8" : n == kSilverAardwold ? "CC_SILVER_AARDWOLD"
-         : n == kSilverAardwoldInt4 ? "CC_SILVER_AARDWOLD_INT4_MIXED" : "?";
+         : n == kSilverAardwoldInt4 ? "CC_SILVER_AARDWOLD_INT4_MIXED"
+         : n == kSmallFp8Experimental ? "CC_SMALL_FP8_EXPERIMENTAL" : "?";
 }
 // A codename, or the old words (small, original); -1 for anything else (case-insensitive).
 inline int network_choice(std::string v) {
@@ -19,16 +33,17 @@ inline int network_choice(std::string v) {
     if (v == "CC_SMALL_FP8" || v == "SMALL") return kSmallFp8;
     if (v == "CC_SILVER_AARDWOLD" || v == "ORIGINAL") return kSilverAardwold;
     if (v == "CC_SILVER_AARDWOLD_INT4_MIXED") return kSilverAardwoldInt4;
+    if (v == "CC_SMALL_FP8_EXPERIMENTAL") return kSmallFp8Experimental;
     return -1;
 }
-// RuntimeConfig::network's numbering: 1 the small model (CC_SMALL_FP8), 0 the 310.8 model (both CC_SILVER_AARDWOLD
-// networks), -1 anything else.
+// RuntimeConfig::network's numbering: 1 the small model (CC_SMALL_FP8), 2 CC_SMALL_FP8_EXPERIMENTAL, 0 the 310.8 model
+// (both CC_SILVER_AARDWOLD networks), -1 anything else.
 inline int network_value(std::string v) {
     const int n = network_choice(v);
-    return n == kSmallFp8 ? 1 : n < 0 ? -1 : 0;
+    return n == kSmallFp8 ? 1 : n == kSmallFp8Experimental ? 2 : n < 0 ? -1 : 0;
 }
 inline int ini_network(const std::string& path) {
-    FILE* f = std::fopen(path.c_str(), "r");
+    FILE* f = nr::u8::fopen(path.c_str(), "r");
     if (!f) return -1;
     auto trim = [](std::string s) {
         while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
@@ -54,7 +69,7 @@ inline int ini_network(const std::string& path) {
 }
 // Another [Network] key's value, trimmed ("" when there is none): `key` lower case, as the file's keys are compared.
 inline std::string ini_network_key(const std::string& path, const std::string& key) {
-    FILE* f = std::fopen(path.c_str(), "r");
+    FILE* f = nr::u8::fopen(path.c_str(), "r");
     if (!f) return {};
     auto trim = [](std::string s) {
         while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();

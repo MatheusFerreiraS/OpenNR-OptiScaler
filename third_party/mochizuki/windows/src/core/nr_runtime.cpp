@@ -827,7 +827,7 @@ struct Runtime::Impl {
                 // (nr_graph.cpp), the caller's colour for tex_in.
                 const VkBuffer a = s.act.handle, w = s.wgt.handle;
                 nrvk::Context::Image surf1 = s.surf1;
-                d.pre[0] = kernel_set(dev, d.pool, *plain_pre, {a, a, w, w, w, a}, {&cim});
+                d.pre[0] = kernel_set(dev, d.pool, *plain_pre, {a, a, w, w, w, s.noise_buf.handle}, {&cim});
                 d.post[0] = kernel_set(dev, d.pool, *plain_post, {a, a, w, w, w}, {&surf0, &surf1, &cim});
                 ok = d.pre[0] && d.post[0];
             } else {
@@ -1702,6 +1702,8 @@ struct Runtime::Impl {
         s.ctx.destroy(mask_rect);
         if (s.runner.ctx) s.runner.destroy();
         for (auto& entry : s.kern) if (entry.second.device) entry.second.destroy();
+        if (s.noise_fill.device) s.noise_fill.destroy();
+        s.ctx.destroy(s.noise_buf);
         s.ctx.destroy(s.tex_in); s.ctx.destroy(s.surf0); s.ctx.destroy(s.surf1);
         s.ctx.destroy(encoded);
         // The arenas go with the last runtime that uses them (NrSession::arenas, the resize path).
@@ -2855,7 +2857,7 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
         if (s.kern.count(pre_name)) {
             impl_->original_pre=&s.kern.at(pre_name);
             k.create(s.ctx,(adapters/"mask_pre_fp32.spv").string(),
-                {s.act.handle,s.act.handle,s.wgt.handle,s.wgt.handle,s.wgt.handle,s.act.handle,impl_->mask_rect.handle},
+                {s.act.handle,s.act.handle,s.wgt.handle,s.wgt.handle,s.wgt.handle,s.noise_buf.handle,impl_->mask_rect.handle},
                 sizeof(PushFSwin)+sizeof(PushPreImage),{&s.tex_in,&impl_->mask_image});
         } else if (s.kern.count("imgin16fast")) {
             impl_->original_pre=&s.kern.at("imgin16fast");
@@ -2937,8 +2939,13 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
             NRVK_CHECK(vkCreateSampler(s.ctx.device, &si, nullptr, &sampler));
             return sampler;
         };
-        t.h16 = std::getenv("NR_HIST16") && std::atoi(std::getenv("NR_HIST16")) && config.max_passes == 1 &&
-                std::filesystem::exists(shaders / "temporal_post_fp32h16.spv");
+        // History Precision (RuntimeConfig::history_f16, NR_HIST16 wins): the one-pass history in RGBA16F as NVIDIA's
+        // DLL keeps it, where the folder has the RGBA16F post and, beside an RGBA32F grade twin, its own.
+        const char* h16_env = std::getenv("NR_HIST16");
+        t.h16 = (h16_env ? std::atoi(h16_env) != 0 : config.history_f16) && config.max_passes == 1 &&
+                std::filesystem::exists(shaders / "temporal_post_fp32h16.spv") &&
+                (!std::filesystem::exists(shaders / "temporal_post_fp32_grade.spv") ||
+                 std::filesystem::exists(shaders / "temporal_post_fp32h16_grade.spv"));
         const VkFormat hist_format = t.h16 ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R32G32B32A32_SFLOAT;
         t.history = s.ctx.image(mw, mh, hist_format, true);
         vkDestroySampler(s.ctx.device, t.history.sampler, nullptr);
@@ -2962,8 +2969,10 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
         t.flow0_sampled = t.flow[0];
         t.flow0_sampled.sampler = t.motion_sampler;
         // Single channel and float: a depth buffer's value is all this reads, and
-        // the blit converts whatever the game hands over.
-        t.depth = s.ctx.image(mw, mh, VK_FORMAT_R32_SFLOAT, true);
+        // the blit converts whatever the game hands over. With Motion Without Depth nothing copies into it or
+        // samples it: a 1x1 image fills the descriptor (4K: 33 MB).
+        t.depth = impl_->motion_without_depth ? s.ctx.image(1, 1, VK_FORMAT_R32_SFLOAT, true)
+                                              : s.ctx.image(mw, mh, VK_FORMAT_R32_SFLOAT, true);
         vkDestroySampler(s.ctx.device, t.depth.sampler, nullptr);
         t.depth.sampler = linear_sampler();
         s.ctx.transition(t.depth, VK_IMAGE_LAYOUT_GENERAL);
@@ -3019,7 +3028,7 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
         nrvk::Context::Image (&hist_store)[2] = t.hist_store;
         hist_store[0] = storage_of(t.hist(0)); hist_store[1] = storage_of(t.hist(1));
         t.pre_buffers = {s.act.handle, s.act.handle, s.wgt.handle, s.wgt.handle, s.wgt.handle,
-                         s.act.handle, t.params.handle};
+                         s.noise_buf.handle, t.params.handle};   // binding 5: the noise table (image_input.glsl)
         t.post_buffers = {s.act.handle, s.act.handle, s.wgt.handle, s.wgt.handle, s.wgt.handle,
                           t.params.handle};
         for (unsigned c = 0; c < (t.pingpong ? 2u : 1u); ++c) {
@@ -3030,9 +3039,7 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
             const bool tp_nh = pre_nh && std::filesystem::exists(shaders / "temporal_pre_fp32nh.spv");
             // (research NR_HPASS=1): the pre block hands the post its history.
             const std::string pre_spv = std::string(tp_nh ? "temporal_pre_fp32nh" : "temporal_pre_fp32") + (t.hp ? "hp.spv" : ".spv");
-            pre.create(s.ctx, (shaders / pre_spv).string(),
-                       {s.act.handle, s.act.handle, s.wgt.handle, s.wgt.handle, s.wgt.handle,
-                        s.act.handle, t.params.handle},
+            pre.create(s.ctx, (shaders / pre_spv).string(), t.pre_buffers,
                        sizeof(PushFSwin) + sizeof(PushPreImage),
                        t.hp ? std::vector<nrvk::Context::Image*>{&s.tex_in, &t.flow0_sampled, &t.hist(c), &t.depth, &t.hpass}
                             : std::vector<nrvk::Context::Image*>{&s.tex_in, &t.flow0_sampled, &t.hist(c), &t.depth});
