@@ -3515,73 +3515,77 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                         "Auto: D3D12 when the runtime's check on this GPU and driver passes, otherwise Vulkan.\n"
                         "Changing it recreates OpenRR.");
 
-            if (bool useMask = config->OpenNrRrUseDisocclusionMask.value_or_default();
-                ImGui::Checkbox("Use disocclusion mask", &useMask))
-                config->OpenNrRrUseDisocclusionMask = useMask;
-            ShowTooltip("Feeds the game's DLSS.DisocclusionMask to the network, as DLSS-RR does.\n"
-                        "Diagnostic: turn it off to see whether trails or ghosting change.");
-
-            if (bool invertMask = config->OpenNrRrInvertDisocclusionMask.value_or_default();
-                ImGui::Checkbox("Invert disocclusion mask", &invertMask))
-                config->OpenNrRrInvertDisocclusionMask = invertMask;
-            ShowTooltip("Diagnostic: reads the mask as 1 - mask (DLSS-RR takes it as it is).\n"
-                        "Only does something while the mask is in use.");
-
-            if (bool clampMask = config->OpenNrRrClampDisocclusionMask.value_or_default();
-                ImGui::Checkbox("Clamp disocclusion mask to 0..1", &clampMask))
-                config->OpenNrRrClampDisocclusionMask = clampMask;
-            ShowTooltip("Keeps the mask in 0..1 before the network sees it (after the invert).\n"
-                        "Some games (Resident Evil Requiem) write values up to 3000, which DLSS-RR takes as they are\n"
-                        "and which leave trails and shimmering here. Only does something while the mask is in use.");
-
-            if (float maskScale = config->OpenNrRrDisocclusionMaskScale.value_or_default();
-                ImGui::SliderFloat("Mask scale", &maskScale, 1e-4f, 1.0f, "%.6f", ImGuiSliderFlags_Logarithmic))
-                config->OpenNrRrDisocclusionMaskScale = maskScale;
-            ShowTooltip("Multiplies the disocclusion mask before the invert and the clamp (1 = as the game gives it).\n"
-                        "Lower it until thin moving objects stay solid without rain trails.\n"
-                        "Ctrl+click to type a value.");
-            const std::pair<const char*, float> scalePresets[] = { { "1", 1.0f },
-                                                                   { "0.1", 0.1f },
-                                                                   { "0.01", 0.01f },
-                                                                   { "1/3000", 1.0f / 3000.0f } };
-            for (int i = 0; i < 4; i++)
+            if (ImGui::TreeNode("Guides"))
             {
-                if (i)
-                    ImGui::SameLine();
-                if (ImGui::SmallButton(scalePresets[i].first))
-                    config->OpenNrRrDisocclusionMaskScale = scalePresets[i].second;
-            }
+                if (bool useMask = config->OpenNrRrUseDisocclusionMask.value_or_default();
+                    ImGui::Checkbox("Use disocclusion mask", &useMask))
+                    config->OpenNrRrUseDisocclusionMask = useMask;
+                ShowTooltip("Feeds the game's DLSS.DisocclusionMask to the network, as DLSS-RR does.\n"
+                            "Diagnostic: turn it off to see whether trails or ghosting change.");
 
-            if (bool useSss = config->OpenNrRrUseSssGuide.value_or_default(); ImGui::Checkbox("Use SSS guide", &useSss))
-                config->OpenNrRrUseSssGuide = useSss;
-            ShowTooltip("Feeds the game's subsurface scattering guide (or ColorBeforeFog) to the network, as DLSS-RR does.\n"
-                        "Diagnostic: turn it off to see whether skin or trails change.\n"
-                        "opennr_rr.log gets a summary of what the game puts in the mask and the guide every 3 s.");
+                if (bool invertMask = config->OpenNrRrInvertDisocclusionMask.value_or_default();
+                    ImGui::Checkbox("Invert disocclusion mask", &invertMask))
+                    config->OpenNrRrInvertDisocclusionMask = invertMask;
+                ShowTooltip("Diagnostic: reads the mask as 1 - mask (DLSS-RR takes it as it is).\n"
+                            "Only does something while the mask is in use.");
 
-            // the other DLSS-D inputs rr2 reads, each used when the game gives it (the log's inventory says which)
-            const struct { CustomOptional<bool>* opt; const char* label; const char* tip; } extras[] = {
-                { &config->OpenNrRrUseResponsivityMask, "Use responsivity mask",
-                  "Feeds the game's DLSSD.ResponsivityMask to the network, as DLSS-RR does.\n"
-                  "Diagnostic: turn it off to see whether ghosting or smearing change." },
-                { &config->OpenNrRrUseColorBeforeTransparency, "Use colour before transparency",
-                  "Feeds the game's DLSSD.ColorBeforeTransparency to the network, as DLSS-RR does.\n"
-                  "Diagnostic: turn it off to see whether glass, water or particles change." },
-                { &config->OpenNrRrUseDepthOfFieldGuide, "Use depth of field guide",
-                  "Feeds the game's DLSSD.DepthOfFieldGuide to the network, as DLSS-RR does.\n"
-                  "Diagnostic: turn it off to see whether out-of-focus areas change." },
-                { &config->OpenNrRrUseReflectionMotionVectors, "Use reflection motion vectors",
-                  "Takes the game's GBuffer.SpecularMvec for how reflections move, as DLSS-RR does,\n"
-                  "instead of deriving it from depth, normals and the hit distance.\n"
-                  "Diagnostic: turn it off to see whether reflections smear or lag." },
-                { &config->OpenNrRrUseLayerOpacityAndMotion, "Use transparency layer opacity and motion",
-                  "Takes the transparency layer's own opacity and motion vectors when the game gives them, as DLSS-RR does.\n"
-                  "Diagnostic: turn it off to see whether particles or transparent effects change." },
-            };
-            for (const auto& e : extras)
-            {
-                if (bool on = e.opt->value_or_default(); ImGui::Checkbox(e.label, &on))
-                    *e.opt = on;
-                ShowTooltip(e.tip);
+                if (bool clampMask = config->OpenNrRrClampDisocclusionMask.value_or_default();
+                    ImGui::Checkbox("Clamp disocclusion mask to 0..1", &clampMask))
+                    config->OpenNrRrClampDisocclusionMask = clampMask;
+                ShowTooltip("Keeps the mask in 0..1 before the network sees it (after the invert).\n"
+                            "Some games (Resident Evil Requiem) write values up to 3000, which DLSS-RR takes as they are\n"
+                            "and which leave trails and shimmering here. Only does something while the mask is in use.");
+
+                if (float maskScale = config->OpenNrRrDisocclusionMaskScale.value_or_default();
+                    ImGui::SliderFloat("Mask scale", &maskScale, 1e-4f, 1.0f, "%.6f", ImGuiSliderFlags_Logarithmic))
+                    config->OpenNrRrDisocclusionMaskScale = maskScale;
+                ShowTooltip("Multiplies the disocclusion mask before the invert and the clamp (1 = as the game gives it).\n"
+                            "Lower it until thin moving objects stay solid without rain trails.\n"
+                            "Ctrl+click to type a value.");
+                const std::pair<const char*, float> scalePresets[] = { { "1", 1.0f },
+                                                                       { "0.1", 0.1f },
+                                                                       { "0.01", 0.01f },
+                                                                       { "1/3000", 1.0f / 3000.0f } };
+                for (int i = 0; i < 4; i++)
+                {
+                    if (i)
+                        ImGui::SameLine();
+                    if (ImGui::SmallButton(scalePresets[i].first))
+                        config->OpenNrRrDisocclusionMaskScale = scalePresets[i].second;
+                }
+
+                if (bool useSss = config->OpenNrRrUseSssGuide.value_or_default(); ImGui::Checkbox("Use SSS guide", &useSss))
+                    config->OpenNrRrUseSssGuide = useSss;
+                ShowTooltip("Feeds the game's subsurface scattering guide (or ColorBeforeFog) to the network, as DLSS-RR does.\n"
+                            "Diagnostic: turn it off to see whether skin or trails change.\n"
+                            "opennr_rr.log gets a summary of what the game puts in the mask and the guide every 3 s.");
+
+                // the other DLSS-D inputs rr2 reads, each used when the game gives it (the log's inventory says which)
+                const struct { CustomOptional<bool>* opt; const char* label; const char* tip; } extras[] = {
+                    { &config->OpenNrRrUseResponsivityMask, "Use responsivity mask",
+                      "Feeds the game's DLSSD.ResponsivityMask to the network, as DLSS-RR does.\n"
+                      "Diagnostic: turn it off to see whether ghosting or smearing change." },
+                    { &config->OpenNrRrUseColorBeforeTransparency, "Use colour before transparency",
+                      "Feeds the game's DLSSD.ColorBeforeTransparency to the network, as DLSS-RR does.\n"
+                      "Diagnostic: turn it off to see whether glass, water or particles change." },
+                    { &config->OpenNrRrUseDepthOfFieldGuide, "Use depth of field guide",
+                      "Feeds the game's DLSSD.DepthOfFieldGuide to the network, as DLSS-RR does.\n"
+                      "Diagnostic: turn it off to see whether out-of-focus areas change." },
+                    { &config->OpenNrRrUseReflectionMotionVectors, "Use reflection motion vectors",
+                      "Takes the game's GBuffer.SpecularMvec for how reflections move, as DLSS-RR does,\n"
+                      "instead of deriving it from depth, normals and the hit distance.\n"
+                      "Diagnostic: turn it off to see whether reflections smear or lag." },
+                    { &config->OpenNrRrUseLayerOpacityAndMotion, "Use transparency layer opacity and motion",
+                      "Takes the transparency layer's own opacity and motion vectors when the game gives them, as DLSS-RR does.\n"
+                      "Diagnostic: turn it off to see whether particles or transparent effects change." },
+                };
+                for (const auto& e : extras)
+                {
+                    if (bool on = e.opt->value_or_default(); ImGui::Checkbox(e.label, &on))
+                        *e.opt = on;
+                    ShowTooltip(e.tip);
+                }
+                ImGui::TreePop();
             }
 
             if (const auto nrStatus = OpenNrRr::DenoisedNrStatus(); !nrStatus.empty())
