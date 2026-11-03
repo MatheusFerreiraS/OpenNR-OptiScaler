@@ -454,7 +454,9 @@ bool Config::Reload(std::filesystem::path iniPath)
             }
 
             OpenNrRrEnabled.set_from_config(readBool("OpenNR-RR", "Enabled"));
-            OpenNrRrNrOnDenoised.set_from_config(readString("OpenNR-RR", "NrOnDenoised", true));
+            // "loop" is gone; an ini that still has it gets display
+            OpenNrRrNrOnDenoised.set_from_config(readString("OpenNR-RR", "NrOnDenoised", true).transform(
+                [](std::string v) { return _stricmp(v.c_str(), "loop") == 0 ? std::string("display") : v; }));
             OpenNrRrBackend.set_from_config(readString("OpenNR-RR", "Backend", true));
             OpenNrRrUseDisocclusionMask.set_from_config(readBool("OpenNR-RR", "UseDisocclusionMask"));
             OpenNrRrUseSssGuide.set_from_config(readBool("OpenNR-RR", "UseSssGuide"));

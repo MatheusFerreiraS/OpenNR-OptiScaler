@@ -3489,19 +3489,12 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             ScopedIndent indent {};
             ImGui::Spacing();
 
-            const char* nrModes[] = { "Off", "In the loop", "Display only" };
-            const auto nrMode = config->OpenNrRrNrOnDenoised.value_or_default();
-            int nr = nrMode == "loop" ? 1 : nrMode == "display" ? 2 : 0;
-
-            ImGui::PushItemWidth(150.0f * menuResScale);
-            if (ImGui::Combo("NR on denoised image", &nr, nrModes, 3))
-                config->OpenNrRrNrOnDenoised = nr == 1 ? "loop" : nr == 2 ? "display" : "off";
-            ImGui::PopItemWidth();
-            ShowTooltip("mochizuki NR (NrBackend=mochizuki and its settings) on the denoised render-size image,\n"
-                        "before the temporal accumulation and the upscale.\n"
-                        "In the loop: the accumulated history takes the NR as well; may flicker with strong NR models.\n"
-                        "Display only: the NR goes onto the shown image, following it from the first frame; the RR keeps\n"
-                        "its own history.");
+            if (bool nrOn = config->OpenNrRrNrOnDenoised.value_or_default() == "display";
+                ImGui::Checkbox("NR on denoised image", &nrOn))
+                config->OpenNrRrNrOnDenoised = nrOn ? "display" : "off";
+            ShowTooltip("mochizuki NR (NrBackend=mochizuki and its settings) on the denoised render-size image.\n"
+                        "The NR goes onto the shown image from the first frame and is accumulated over frames as the\n"
+                        "image is; the RR keeps its own history.");
 
             const char* backends[] = { "Auto", "D3D12", "Vulkan" };
             const auto backendName = config->OpenNrRrBackend.value_or_default();

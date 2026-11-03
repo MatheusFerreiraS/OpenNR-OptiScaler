@@ -140,9 +140,8 @@ uint32_t EditFromConfig(std::string* why)
 {
     const auto& cfg = *Config::Instance();
     const auto mode = cfg.OpenNrRrNrOnDenoised.value_or_default();
-    const uint32_t edit = _stricmp(mode.c_str(), "loop") == 0      ? ONR_RR_EDIT_LOOP
-                          : _stricmp(mode.c_str(), "display") == 0 ? ONR_RR_EDIT_DISPLAY
-                                                                   : ONR_RR_EDIT_OFF;
+    // display only (the config maps an old "loop" to it)
+    const uint32_t edit = _stricmp(mode.c_str(), "display") == 0 ? ONR_RR_EDIT_DISPLAY : ONR_RR_EDIT_OFF;
     why->clear();
     if (edit == ONR_RR_EDIT_OFF)
         return edit;
@@ -525,7 +524,7 @@ std::string DenoisedNrStatus()
 {
     std::string why;
     const auto mode = Config::Instance()->OpenNrRrNrOnDenoised.value_or_default();
-    if (_stricmp(mode.c_str(), "loop") != 0 && _stricmp(mode.c_str(), "display") != 0)
+    if (_stricmp(mode.c_str(), "display") != 0)
         return {};
     if (EditFromConfig(&why) == ONR_RR_EDIT_OFF)
         return "not running: " + why;
@@ -1416,8 +1415,7 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
         loggedEdit = edit;
         loggedWhy = why;
         if (edit != ONR_RR_EDIT_OFF)
-            LOG_INFO("OpenRR: mochizuki on the denoised image, mode {}",
-                     edit == ONR_RR_EDIT_LOOP ? "loop" : "display");
+            LOG_INFO("OpenRR: mochizuki on the denoised image, display mode");
         else if (!why.empty())
             LOG_INFO("OpenRR: mochizuki on the denoised image is not running: {}", why);
     }
@@ -1670,7 +1668,7 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
         d.armedJob = job;
         d.armedSlot = slotIndex;
         d.armedFormat = uint32_t(format);
-        d.status = std::string(edit == ONR_RR_EDIT_LOOP ? "loop" : "display") + ": " + d.mz->Status();
+        d.status = d.mz->Status();
     }
     d.next = (d.next + 1) % DenoisedNr::kSlots;
     return uint32_t(format);
