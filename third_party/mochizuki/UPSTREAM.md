@@ -78,14 +78,6 @@ MochizukiNrRuntime.cpp` hosts the runtime instead, on a Vulkan device of its own
     off. The gain is now `exp2(trust * (TransferStrength * luma + ColorStrength * chroma))`, the split the divisor
     family already makes; at 1 and 1 the same gain as before. `nr_renodx.cpp` `chain_active` follows: a Display
     frame changes the image when either strength is above 0 (upstream: colour, or transfer with pedestal removal).
-25. (2026-11-03) `nr_runtime.hpp`/`.cpp`: `Runtime::rescale_history`, for the host's dynamic-resolution bucket
-    (`MochizukiDynamicResolution`). When the render subrect inside the bucket changes, every history the next
-    recording reads (the bound one, each feature's, a multi-pass network's later passes) is scaled bilinearly from
-    the old subrect onto the new one with `vkCmdBlitImage` through a model-sized copy, and the part past it repeats
-    its new edge, as the host pads the frame; latch, seed and parity go on. Upstream's 0.0.8.2 keeps one runtime a
-    render size and starts each size's history afresh (`carry_history` only behind `[Network] Resize History`, one
-    pass, between runtimes). No shader changes (the ACO records are untouched) and nothing is recorded unless the
-    host calls it, so a frame whose subrect did not change records what it did before.
 
 The new passes are in both `build_network.py` `RUNTIME` lists.
 
@@ -113,8 +105,7 @@ All eleven patches are kept; v0.0.7 does none of them. Taken as upstream has it:
   to the 310.8 model at 1080p then allocates no second 400 MB arena. Not used: `share_for`, deferred builds inside a
   frame and `carry_history`. The host keeps a dynamic-resolution game on one network built for its bucket (64 px,
   `MochizukiDynamicResolution`), which never rebuilds within it, so upstream's per-size runtimes are not needed;
-  Resize History has nothing to carry there (a subrect change inside the bucket scales the histories in place, local
-  patch 25);
+  Resize History has nothing to carry there;
 - a game whose colour switches format: upstream lets a runtime of another tex-in format share the network
   (`share_arguments` clears `--tex-in-format`/`--out0-format`), through `share_for`. The host's own fix
   (`float-colour-shared`, one RGBA16F network for R11G11B10_FLOAT and RGBA16F frames, a blit each way) stays: it
