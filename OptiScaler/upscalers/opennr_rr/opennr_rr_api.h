@@ -338,6 +338,12 @@ typedef int32_t (*PFN_OnrRrGetApi)(uint32_t abi_version, OnrRrApi* api);
 __declspec(dllexport)
 #endif
 int32_t OnrRrGetApi(uint32_t abi_version, OnrRrApi* api);
+// exported beside it, resolved by name (an older DLL has none): the rate the display's NR delta history blends at
+// where the camera moves, 0..1, default 0.05 (FASE5-NR section 13). Before Record, on the render thread.
+#ifdef ONR_RR_BUILDING
+__declspec(dllexport)
+#endif
+int32_t OnrRrSetDeltaRate(void* context, float rate);
 
 #ifdef __cplusplus
 }

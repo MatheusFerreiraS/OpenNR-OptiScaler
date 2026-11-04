@@ -59,6 +59,7 @@ class OpenNrRrFeatureDx12 : public IFeature_Dx12
     void* _context = nullptr;
     // The job armed on a list's between slot, until that list runs.
     void* _job = nullptr;
+    bool _jobIsToken = false; // NrImage=output: no job of the runtime, only the between slot's mark
     ID3D12CommandList* _jobList = nullptr;
     uint32_t _maxRenderWidth = 0;
     uint32_t _maxRenderHeight = 0;
@@ -76,7 +77,8 @@ class OpenNrRrFeatureDx12 : public IFeature_Dx12
     // NrOnDenoised: mochizuki's lists for this job, run by the between slot from EnqueueNetwork to EnqueuePost (D3D12:
     // between the halves of the game's list); image: the one Record gave (D3D12), null to ask PrepareDenoised. The
     // DXGI format the lists write back into the image, 0 when none were armed.
-    uint32_t RecordDenoisedNr(const NVSDK_NGX_Parameter& params, const OnrRrFrame& frame, void* job, const OnrRrDenoisedImage* image);
+    uint32_t RecordDenoisedNr(const NVSDK_NGX_Parameter& params, const OnrRrFrame& frame, void* job, const OnrRrDenoisedImage* image,
+                              bool onOutput = false);
     // the hop's GPU timeline of a timed frame of this slot into the log (render thread)
     void LogHopTiming(int slotIndex);
     // the NR span of a slot whose lists are done (render thread); the last one, when recent

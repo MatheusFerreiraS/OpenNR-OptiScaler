@@ -457,6 +457,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             // "loop" is gone; an ini that still has it gets display
             OpenNrRrNrOnDenoised.set_from_config(readString("OpenNR-RR", "NrOnDenoised", true).transform(
                 [](std::string v) { return _stricmp(v.c_str(), "loop") == 0 ? std::string("display") : v; }));
+            OpenNrRrNrImage.set_from_config(readString("OpenNR-RR", "NrImage", true));
+            OpenNrRrNrDeltaRate.set_from_config(readFloat("OpenNR-RR", "NrDeltaRate"));
             OpenNrRrBackend.set_from_config(readString("OpenNR-RR", "Backend", true));
             OpenNrRrVkInputLayout.set_from_config(readString("OpenNR-RR", "VkInputLayout", true));
             OpenNrRrUseDisocclusionMask.set_from_config(readBool("OpenNR-RR", "UseDisocclusionMask"));
@@ -1722,6 +1724,8 @@ bool Config::SaveIni()
         ini.SetValue("OpenNR-RR", "Enabled", GetBoolValue(Instance()->OpenNrRrEnabled.value_for_config()).c_str());
         ini.SetValue("OpenNR-RR", "NrOnDenoised",
                      Instance()->OpenNrRrNrOnDenoised.value_for_config().value_or("auto").c_str());
+        ini.SetValue("OpenNR-RR", "NrImage", Instance()->OpenNrRrNrImage.value_for_config().value_or("auto").c_str());
+        ini.SetValue("OpenNR-RR", "NrDeltaRate", GetFloatValue(Instance()->OpenNrRrNrDeltaRate.value_for_config()).c_str());
         ini.SetValue("OpenNR-RR", "Backend", Instance()->OpenNrRrBackend.value_for_config().value_or("auto").c_str());
         ini.SetValue("OpenNR-RR", "VkInputLayout", Instance()->OpenNrRrVkInputLayout.value_for_config().value_or("read").c_str());
         ini.SetValue("OpenNR-RR", "UseDisocclusionMask",

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "OpenNrRrFeature_Dx12.h"
+#include "OpenNrRrOutputNr.h"
 
 #include <Config.h>
 #include <Util.h>
@@ -37,6 +38,7 @@ decltype(OnrRrApi3::GetHopTiming) s_getHopTiming = nullptr;
 // ABI 4: the D3D12 backend (Record / RecordPost into the game's list); null with an older runtime
 decltype(OnrRrApi4::GetBackend) s_getBackend = nullptr;
 decltype(OnrRrApi4::Record) s_record = nullptr;
+decltype(&OnrRrSetDeltaRate) s_setDeltaRate = nullptr;
 decltype(OnrRrApi4::RecordPost) s_recordPost = nullptr;
 // ABI 5: the Vulkan host backend (PrepareVkDevice / FinishVkDevice / RecordVk); null with an older runtime
 OnrRrApi5 s_api5 {};
@@ -102,6 +104,11 @@ struct DenoisedNr
     AmdPreSr::Foveation::Grid foveationGrid;
     float foveationJitterX = 0, foveationJitterY = 0;
     bool foveationJitter = false, foveationFailed = false;
+    // [OpenNR-RR] NrImage=output: the network on RR's finished picture instead of the denoised image
+    std::unique_ptr<OpenNrRrOutputNr::Passes> outputNr;
+    bool outputFailed = false;
+    bool lastOnOutput = false;
+    uintptr_t outputJobs = 0; // what the between slot knows such a frame by: it has no job of the runtime
     bool broken = false;
     ID3D12Device* device = nullptr;
     ID3D12Fence* fence = nullptr;
@@ -148,6 +155,16 @@ DenoisedNr& Denoised()
 {
     static auto* d = new DenoisedNr();
     return *d;
+}
+
+// NrImage=output for this frame's picture: the frame is recorded whole and the NR's lists come after it, so this needs the
+// D3D12 backend, and a picture format the composite can write.
+bool OnOutputFromConfig(const OnrRrFrame& frame)
+{
+    if (_stricmp(Config::Instance()->OpenNrRrNrImage.value_or_default().c_str(), "output") != 0 || Denoised().outputFailed)
+        return false;
+    const auto format = AmdPreSr::ReadFormat(static_cast<ID3D12Resource*>(frame.output.resource)->GetDesc().Format);
+    return OpenNrRrOutputNr::PictureFormat(format);
 }
 
 uint32_t EditFromConfig(std::string* why)
@@ -270,6 +287,7 @@ bool Load()
     s_getHopTiming = api3.GetHopTiming;
     s_getBackend = api4.GetBackend;
     s_record = api4.Record;
+    s_setDeltaRate = reinterpret_cast<decltype(&OnrRrSetDeltaRate)>(GetProcAddress(module, "OnrRrSetDeltaRate"));
     s_recordPost = api4.RecordPost;
     if (has5)
         s_api5 = api5;
@@ -755,7 +773,8 @@ void OpenNrRrFeatureDx12::DropStaleJob()
 
     if (stillArmed)
     {
-        s_api.Cancel(_context, _job);
+        if (!_jobIsToken)
+            s_api.Cancel(_context, _job);
 
         auto& d = Denoised();
         bool hop = false;
@@ -1107,6 +1126,9 @@ bool OpenNrRrFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandL
         return false;
     }
 
+    if (s_setDeltaRate != nullptr)
+        s_setDeltaRate(_context, std::clamp(Config::Instance()->OpenNrRrNrDeltaRate.value_or_default(), .01f, 1.f));
+
     void* job = nullptr;
 
     if (const int32_t rc = s_api.RecordInputs(_context, &frame, list, &job); rc != ONR_RR_OK || job == nullptr)
@@ -1139,6 +1161,7 @@ bool OpenNrRrFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandL
     LmxxfCut::SetPendingEnqueue(this, job, &OpenNrRrFeatureDx12::Between, s_api.GetLastError, list);
     LmxxfCut::ArmBetweenSlot();
     _job = job;
+    _jobIsToken = false;
     _jobList = list;
 
     _hasColor = true;
@@ -1158,6 +1181,9 @@ bool OpenNrRrFeatureDx12::EvaluateD3d12(ID3D12GraphicsCommandList* InCommandList
 
     if (!FillFrame(*InParameters, frame))
         return false;
+
+    if (s_setDeltaRate != nullptr)
+        s_setDeltaRate(_context, std::clamp(Config::Instance()->OpenNrRrNrDeltaRate.value_or_default(), .01f, 1.f));
 
     std::string why;
     uint32_t edit = s_api2.PrepareDenoised != nullptr ? EditFromConfig(&why) : ONR_RR_EDIT_OFF;
@@ -1190,15 +1216,38 @@ bool OpenNrRrFeatureDx12::EvaluateD3d12(ID3D12GraphicsCommandList* InCommandList
     // Half floats: half the bytes for every copy of the hop, and a format mochizuki takes as a game's colour.
     image.format = DXGI_FORMAT_R16G16B16A16_FLOAT;
     void* job = nullptr;
+    // edit is off when the list cannot be split
+    const bool onOutput = edit != ONR_RR_EDIT_OFF && OnOutputFromConfig(frame);
+    const uint32_t hop = onOutput ? uint32_t(ONR_RR_EDIT_OFF) : edit;
 
-    if (const int32_t rc = s_record(_context, &frame, list, edit, edit != ONR_RR_EDIT_OFF ? &image : nullptr, &job);
+    if (const int32_t rc = s_record(_context, &frame, list, hop, hop != ONR_RR_EDIT_OFF ? &image : nullptr, &job);
         rc != ONR_RR_OK)
     {
         FallBack(std::format("Record rc={}: {}", rc, RuntimeError()));
         return false;
     }
 
-    if (job != nullptr)
+    if (onOutput)
+    {
+        // The whole frame is in the first half; the second half follows mochizuki's lists, which read and write the
+        // output.
+        const HRESULT hr = LmxxfCut::TrySplitAtEvaluate(list);
+
+        if (SUCCEEDED(hr) && hr != S_FALSE)
+        {
+            auto& d = Denoised();
+            void* token = reinterpret_cast<void*>(++d.outputJobs);
+            RecordDenoisedNr(*InParameters, frame, token, nullptr, true);
+            LmxxfCut::SetPendingEnqueue(this, token, &OpenNrRrFeatureDx12::BetweenD3d12, s_api.GetLastError, list);
+            LmxxfCut::ArmBetweenSlot();
+            _job = token;
+            _jobIsToken = true;
+            _jobList = list;
+        }
+        else
+            LOG_WARN("OpenRR: the split for the NR on the output was refused (hr {:#x}); frame without NR", (uint32_t) hr);
+    }
+    else if (job != nullptr)
     {
         uint32_t format = 0;
         const HRESULT hr = LmxxfCut::TrySplitAtEvaluate(list);
@@ -1221,6 +1270,7 @@ bool OpenNrRrFeatureDx12::EvaluateD3d12(ID3D12GraphicsCommandList* InCommandList
             LmxxfCut::SetPendingEnqueue(this, job, &OpenNrRrFeatureDx12::BetweenD3d12, s_api.GetLastError, list);
             LmxxfCut::ArmBetweenSlot();
             _job = job;
+            _jobIsToken = false;
             _jobList = list;
         }
     }
@@ -1529,8 +1579,10 @@ void OpenNrRrFeatureDx12::LogHopTiming(int slotIndex)
 // NrOnDenoised (render thread): asks the runtime for the denoised image of this job and records mochizuki on it into
 // OptiScaler's own lists: the image into a texture, mochizuki's inputs (producer), and its output back into the
 // runtime's buffer (consumer). The between slot runs them. Any refusal leaves the frame with the network's image.
+// onOutput (NrImage=output, D3D12 backend, the whole frame already recorded): mochizuki reads the output scaled to the
+// render size and the consumer puts its change, with a history of its own, back on the output (OpenNrRrOutputNr.h).
 uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params, const OnrRrFrame& frame, void* job,
-                                                const OnrRrDenoisedImage* given)
+                                                const OnrRrDenoisedImage* given, bool onOutput)
 {
     auto& d = Denoised();
     std::string why;
@@ -1543,7 +1595,7 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
         loggedEdit = edit;
         loggedWhy = why;
         if (edit != ONR_RR_EDIT_OFF)
-            LOG_INFO("OpenRR: mochizuki on the denoised image, display mode");
+            LOG_INFO("OpenRR: mochizuki on RR's image, display mode");
         else if (!why.empty())
             LOG_INFO("OpenRR: mochizuki on the denoised image is not running: {}", why);
     }
@@ -1623,6 +1675,13 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
         return 0;
     }
 
+    if (onOutput != d.lastOnOutput)
+    {
+        LOG_INFO("OpenRR: the NR reads {}", onOutput ? "RR's output" : "the denoised image");
+        d.lastOnOutput = onOutput;
+        d.mz->InvalidateHistory();
+    }
+
     OnrRrDenoisedImage image {};
     image.size = sizeof(image);
     // Half floats: half the bytes for every copy of the hop, and a format mochizuki takes as a game's colour.
@@ -1630,7 +1689,12 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
     if (given != nullptr)
         image = *given;
 
-    if ((given == nullptr && s_api2.PrepareDenoised(_context, job, edit, &image) != ONR_RR_OK) || image.buffer == nullptr)
+    if (onOutput)
+    {
+        image.width = frame.render_width;
+        image.height = frame.render_height;
+    }
+    else if ((given == nullptr && s_api2.PrepareDenoised(_context, job, edit, &image) != ONR_RR_OK) || image.buffer == nullptr)
     {
         d.SetStatus("waiting for the network");
         return 0;
@@ -1648,7 +1712,8 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
     ReadNrTime(slotIndex);
     LogHopTiming(slotIndex);
 
-    if (d.colour == nullptr || d.width != image.width || d.height != image.height || d.format != DXGI_FORMAT(image.format))
+    if (!onOutput &&
+        (d.colour == nullptr || d.width != image.width || d.height != image.height || d.format != DXGI_FORMAT(image.format)))
     {
         for (auto& s : d.slots)
         {
@@ -1687,27 +1752,54 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
         d.format = DXGI_FORMAT(image.format);
     }
 
-    D3D12_TEXTURE_COPY_LOCATION bufferLoc { buffer, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
-    bufferLoc.PlacedFootprint = { 0, { DXGI_FORMAT(image.format), image.width, image.height, 1, image.row_pitch } };
-    D3D12_TEXTURE_COPY_LOCATION colourLoc { d.colour, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
-
     slot.allocator->Reset();
     // the hop's timeline needs the runtime's half (ABI 3), which only the Vulkan backend has
-    slot.timed = given == nullptr && d.queue.load(std::memory_order_acquire) != nullptr && ++d.frames % DenoisedNr::kTimedEvery == 0;
+    slot.timed = !onOutput && given == nullptr && d.queue.load(std::memory_order_acquire) != nullptr &&
+                 ++d.frames % DenoisedNr::kTimedEvery == 0;
     slot.hop = 0;
     const UINT stamp = UINT(slotIndex * DenoisedNr::kStamps);
     slot.producer->Reset(slot.allocator, nullptr);
     slot.producer->EndQuery(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, stamp + 1);
-    Transition(slot.producer, buffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    Transition(slot.producer, d.colour, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
-    slot.producer->CopyTextureRegion(&colourLoc, 0, 0, 0, &bufferLoc, nullptr);
-    Transition(slot.producer, d.colour, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    Transition(slot.producer, buffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+    // RR's output, as OpenNrRrOutputNr takes it
+    AmdPreSr::Frame picture {};
+    ID3D12Resource* reduced = nullptr;
+    if (onOutput)
+    {
+        picture.colour = static_cast<ID3D12Resource*>(frame.output.resource);
+        picture.colourState = D3D12_RESOURCE_STATES(frame.output.state);
+        picture.width = DisplayWidth();
+        picture.height = DisplayHeight();
+        try
+        {
+            if (!d.outputNr)
+                d.outputNr = std::make_unique<OpenNrRrOutputNr::Passes>(d.device);
+            reduced = d.outputNr->Reduce(slot.producer, picture, image.width, image.height);
+        }
+        catch (const std::exception& e)
+        {
+            d.outputFailed = true;
+            slot.producer->Close();
+            LOG_ERROR("OpenRR: NR on the output off for this session: {}", e.what());
+            d.SetStatus(std::string("NR on the output failed: ") + e.what());
+            return 0;
+        }
+    }
+    else
+    {
+        D3D12_TEXTURE_COPY_LOCATION bufferLoc { buffer, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
+        bufferLoc.PlacedFootprint = { 0, { DXGI_FORMAT(image.format), image.width, image.height, 1, image.row_pitch } };
+        D3D12_TEXTURE_COPY_LOCATION colourLoc { d.colour, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
+        Transition(slot.producer, buffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        Transition(slot.producer, d.colour, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+        slot.producer->CopyTextureRegion(&colourLoc, 0, 0, 0, &bufferLoc, nullptr);
+        Transition(slot.producer, d.colour, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        Transition(slot.producer, buffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+    }
 
     // The denoised image stands where the game's colour would before Super Resolution: same grid, same jitter, same
-    // colour space; the guides are the game's.
+    // colour space; the guides are the game's. The scaled output is the same, without the jitter.
     AmdPreSr::Frame f {};
-    f.colour = d.colour;
+    f.colour = onOutput ? reduced : d.colour;
     f.colourState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     f.width = image.width;
     f.height = image.height;
@@ -1723,8 +1815,8 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
     f.depth = static_cast<ID3D12Resource*>(frame.depth.resource);
     f.depthState = D3D12_RESOURCE_STATES(frame.depth.state);
     f.depthInverted = DepthInverted();
-    f.jitterX = frame.jitter_x;
-    f.jitterY = frame.jitter_y;
+    f.jitterX = onOutput ? 0.f : frame.jitter_x;
+    f.jitterY = onOutput ? 0.f : frame.jitter_y;
     f.reset = (frame.flags & ONR_RR_FRAME_RESET) != 0;
 
     // NGX applies the exposure texture to HDR input only; the image keeps the game's input's encoding.
@@ -1809,6 +1901,8 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
 
     if (result == nullptr)
     {
+        if (onOutput)
+            d.outputNr->Invalidate();
         d.SetStatus(d.mz->Status());
         return 0;
     }
@@ -1839,18 +1933,52 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
         }
     }
 
-    // mochizuki's output (the colour's format) back into the buffer, at offset 0 with the pitch the runtime expects
-    const DXGI_FORMAT format = result->GetDesc().Format;
-    D3D12_TEXTURE_COPY_LOCATION outLoc { buffer, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
-    outLoc.PlacedFootprint = { 0,
-                               { format, image.width, image.height, 1, (image.width * TexelBytes(format) + 255) & ~255u } };
-    D3D12_TEXTURE_COPY_LOCATION resultLoc { result, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
-    const D3D12_BOX box { 0, 0, 0, image.width, image.height, 1 };
-    Transition(slot.consumer, result, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    Transition(slot.consumer, buffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
-    slot.consumer->CopyTextureRegion(&outLoc, 0, 0, 0, &resultLoc, &box);
-    Transition(slot.consumer, buffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
-    Transition(slot.consumer, result, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    DXGI_FORMAT format = result->GetDesc().Format;
+    if (onOutput)
+    {
+        // the change on the picture, into the output
+        picture.motion = f.motion;
+        picture.motionState = f.motionState;
+        picture.motionWidth = f.motionWidth;
+        picture.motionHeight = f.motionHeight;
+        picture.motionScaleX = f.motionScaleX;
+        picture.motionScaleY = f.motionScaleY;
+        format = AmdPreSr::ReadFormat(picture.colour->GetDesc().Format);
+        try
+        {
+            result = d.outputNr->Compose(slot.consumer, picture, result, format, f.reset);
+        }
+        catch (const std::exception& e)
+        {
+            d.outputFailed = true;
+            slot.consumer->Close();
+            LOG_ERROR("OpenRR: NR on the output off for this session: {}", e.what());
+            d.SetStatus(std::string("NR on the output failed: ") + e.what());
+            return 0;
+        }
+        D3D12_TEXTURE_COPY_LOCATION dstLoc { picture.colour, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
+        D3D12_TEXTURE_COPY_LOCATION resultLoc { result, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
+        const D3D12_BOX box { 0, 0, 0, picture.width, picture.height, 1 };
+        Transition(slot.consumer, result, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        Transition(slot.consumer, picture.colour, picture.colourState, D3D12_RESOURCE_STATE_COPY_DEST);
+        slot.consumer->CopyTextureRegion(&dstLoc, 0, 0, 0, &resultLoc, &box);
+        Transition(slot.consumer, picture.colour, D3D12_RESOURCE_STATE_COPY_DEST, picture.colourState);
+        Transition(slot.consumer, result, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }
+    else
+    {
+        // mochizuki's output (the colour's format) back into the buffer, at offset 0 with the pitch the runtime expects
+        D3D12_TEXTURE_COPY_LOCATION outLoc { buffer, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, {} };
+        outLoc.PlacedFootprint = { 0,
+                                   { format, image.width, image.height, 1, (image.width * TexelBytes(format) + 255) & ~255u } };
+        D3D12_TEXTURE_COPY_LOCATION resultLoc { result, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
+        const D3D12_BOX box { 0, 0, 0, image.width, image.height, 1 };
+        Transition(slot.consumer, result, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        Transition(slot.consumer, buffer, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+        slot.consumer->CopyTextureRegion(&outLoc, 0, 0, 0, &resultLoc, &box);
+        Transition(slot.consumer, buffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+        Transition(slot.consumer, result, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    }
     slot.consumer->EndQuery(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, stamp + 4);
     // the NR span's two stamps (a timed frame resolves all of them again after EnqueuePost)
     for (const UINT i : { stamp + 1, stamp + 4 })

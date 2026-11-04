@@ -3542,6 +3542,26 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                             "The NR goes onto the shown image from the first frame and is accumulated over frames as the\n"
                             "image is; the RR keeps its own history.");
 
+                const char* nrImages[] = { "Denoised", "Output (experiment)" };
+                int nrImage = config->OpenNrRrNrImage.value_or_default() == "output" ? 1 : 0;
+                ImGui::PushItemWidth(150.0f * menuResScale);
+                if (ImGui::Combo("NR image", &nrImage, nrImages, 2))
+                    config->OpenNrRrNrImage = nrImage == 1 ? "output" : "denoised";
+                ImGui::PopItemWidth();
+                ShowTooltip("What the NR reads, D3D12 backend.\n"
+                            "Denoised: the network's image before its temporal post; the change is kept with RR's own\n"
+                            "vectors and gates.\n"
+                            "Output: RR's finished picture at the render size, without jitter; the change goes back on\n"
+                            "that picture with a history on OptiScaler's side.");
+
+                float deltaRate = config->OpenNrRrNrDeltaRate.value_or_default();
+                ImGui::PushItemWidth(150.0f * menuResScale);
+                if (ImGui::SliderFloat("NR delta rate", &deltaRate, .01f, 1.f, "%.2f"))
+                    config->OpenNrRrNrDeltaRate = deltaRate;
+                ImGui::PopItemWidth();
+                ShowTooltip("Denoised: how fast the NR follows the frame while the camera moves.\n"
+                            "Lower is steadier and slower to follow. 0.30 is the behaviour before 0.05.");
+
                 const char* backends[] = { "Auto", "D3D12", "Vulkan" };
                 const auto backendName = config->OpenNrRrBackend.value_or_default();
                 int backend = backendName == "d3d12" ? 1 : backendName == "vulkan" ? 2 : 0;

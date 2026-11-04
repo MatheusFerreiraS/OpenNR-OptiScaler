@@ -324,6 +324,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="upscalers\fsr31\FSRDFeature_Dx12.h" />
     <ClInclude Include="upscalers\opennr_rr\opennr_rr_api.h" />
     <ClInclude Include="upscalers\opennr_rr\OpenNrRrFeature_Dx12.h" />
+    <ClInclude Include="upscalers\opennr_rr\OpenNrRrOutputNr.h" />
     <ClInclude Include="upscalers\opennr_rr\OpenNrRrFeature_Vk.h" />
     <ClInclude Include="framegen\reprojection\Reprojection_Dx12.h" />
     <ClInclude Include="shaders\reproject\mouseInputs\RawInputHook.h" />
