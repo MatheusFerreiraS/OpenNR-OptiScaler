@@ -910,6 +910,7 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
 VALIDATE_HOOK(hkvkQueuePresentKHR, PFN_vkQueuePresentKHR)
 static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo)
 {
+    GateDiag::DoomKeepDlssRR();
     GateDiag::WatchCvars();
 
     auto fg = State::Instance().currentVkFG;

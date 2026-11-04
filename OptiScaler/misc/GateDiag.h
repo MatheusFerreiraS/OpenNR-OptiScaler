@@ -365,6 +365,116 @@ inline void DoomStreamlineAnyVendor()
     }
 }
 
+// The cvar's int value; false when its data can't be read
+inline bool ReadIdCvar(const IdCvar& cvar, int32_t& value)
+{
+    uint64_t data = 0;
+    return SafeRead(cvar.object, &data, 8) && data != 0 && SafeRead((const void*) (data + 8), &value, 4);
+}
+
+// What the engine's own setter leaves behind for a single-digit value: int, float, the value string when it's
+// a writable single digit, and the modified flag (0x80000 in the flags at +0x40)
+inline bool WriteIdCvarDigit(const IdCvar& cvar, int32_t value)
+{
+    uint64_t data = 0;
+    if (value < 0 || value > 9 || !SafeRead(cvar.object, &data, 8) || data == 0)
+        return false;
+
+    const float floatValue = (float) value;
+    if (!SafeWrite((void*) (data + 8), &value, 4) || !SafeWrite((void*) (data + 0xC), &floatValue, 4))
+        return false;
+
+    uint64_t valuePointer = 0;
+    char valueText[4] {};
+    if (SafeRead((const void*) data, &valuePointer, 8) && ReadString(valuePointer, valueText, sizeof(valueText)) &&
+        valueText[0] >= '0' && valueText[0] <= '9' && valueText[1] == 0 && IsWritable((const void*) valuePointer))
+    {
+        const char digit = (char) ('0' + value);
+        SafeWrite((void*) valuePointer, &digit, 1);
+    }
+
+    uint32_t flags = 0;
+    if (SafeRead((const void*) (data + 0x40), &flags, 4))
+    {
+        flags |= 0x80000;
+        SafeWrite((void*) (data + 0x40), &flags, 4);
+    }
+
+    return true;
+}
+
+// [Spoofing] DoomKeepDlssRR: the video menu has no DLSS entry on AMD, so keep r_antialiasing on DLSS (2) when the
+// game puts it on off/TAA, and with path tracing on keep its denoiser on DLSS-RR (2). FSR (3) and XeSS (4) picked
+// in the menu are left alone. Checked at every present, written only when the game changed the value.
+inline void DoomKeepDlssRR()
+{
+    auto* config = Config::Instance();
+    if (!config->DoomKeepDlssRR.value_or_default() ||
+        !ExeListed(config->StreamlineAnyVendorExes.value_or_default()))
+        return;
+
+    static std::mutex mutex;
+    static bool searched = false;
+    static bool usable = false;
+    static IdCvar antialiasing;
+    static IdCvar pathtracing;
+    static IdCvar denoiser;
+    static int overrides = 0;
+
+    std::scoped_lock lock(mutex);
+
+    if (!searched)
+    {
+        searched = true;
+        std::string why;
+        std::string missing;
+        const auto find = [&](const char* name, IdCvar& out)
+        {
+            auto found = FindIdCvar(name, why);
+            if (found.empty())
+                missing += std::format(" {} ({})", name, why);
+            else
+                out = found[0];
+        };
+
+        find("r_antialiasing", antialiasing);
+        find("r_pathtracingEnabled", pathtracing);
+        find("r_pathtracingDenoiserMode", denoiser);
+
+        usable = antialiasing.object != nullptr;
+        if (!missing.empty())
+            LOG_WARN("DoomKeepDlssRR: not found:{}{}", missing, usable ? "" : ", nothing changed");
+        else
+            LOG_INFO("DoomKeepDlssRR: r_antialiasing, r_pathtracingEnabled and r_pathtracingDenoiserMode found");
+    }
+
+    if (!usable)
+        return;
+
+    const auto log = [&](const char* name, int32_t from, int32_t to)
+    {
+        if (++overrides <= 50)
+            LOG_INFO("DoomKeepDlssRR: {} {} -> {}{}", name, from, to, overrides == 50 ? " (no more of these lines)" : "");
+    };
+
+    int32_t value = 0;
+    if (!ReadIdCvar(antialiasing, value))
+        return;
+
+    if ((value == 0 || value == 1) && WriteIdCvarDigit(antialiasing, 2))
+    {
+        log("r_antialiasing", value, 2);
+        value = 2;
+    }
+
+    int32_t pathtracingOn = 0;
+    int32_t denoiserMode = 0;
+    if (value == 2 && pathtracing.object != nullptr && denoiser.object != nullptr &&
+        ReadIdCvar(pathtracing, pathtracingOn) && pathtracingOn == 1 && ReadIdCvar(denoiser, denoiserMode) &&
+        denoiserMode != 2 && WriteIdCvarDigit(denoiser, 2))
+        log("r_pathtracingDenoiserMode", denoiserMode, 2);
+}
+
 // GateDiagnostics: logs when one of these id Tech cvars changes, checked at every present
 inline void WatchCvars()
 {

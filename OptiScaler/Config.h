@@ -1314,6 +1314,7 @@ class Config
     CustomOptional<bool> VulkanSpoofGameOnly { false };
     CustomOptional<bool> VulkanDriverIdOnly { false };
     CustomOptional<bool> DoomStreamlineAnyVendor { false };
+    CustomOptional<bool> DoomKeepDlssRR { false };
     CustomOptional<std::string> StreamlineAnyVendorExes { "DOOMTheDarkAges.exe" };
     CustomOptional<std::string, NoDefault> VulkanExtensionSpoofList; // e.g. VK_NVX_binary_import,VK_NVX_image_view_handle
     CustomOptional<bool> GateDiagnostics { false };
