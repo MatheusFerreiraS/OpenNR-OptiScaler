@@ -949,6 +949,7 @@ void RenderMenu(Config* config, float menuResScale)
                 HelpMarker("Natural and Cinematic: the network's answer is graded afterwards, as NVIDIA's DLL"
                            "\ndoes, so the two styles look apart. Off gives the picture they had before (little"
                            "\ndifference in some games). Standard is not graded. No rebuild.");
+                FoveationControls(config);
             }
             if (auto section = ScopedCollapsingHeader("Passes##mzsection", ImGuiTreeNodeFlags_DefaultOpen);
                 section.IsHeaderOpen())
@@ -1069,7 +1070,6 @@ void RenderMenu(Config* config, float menuResScale)
                 if (ImGui::SliderFloat("Stabilizer threshold", &stabilizerThreshold, 0.5f, 8.0f, "%.1f / 255"))
                     config->MochizukiStabilizerThreshold = stabilizerThreshold;
                 HelpMarker("Largest frame-to-frame change of the effect, in 1/255, that the stabilizer smooths.");
-                FoveationControls(config);
                 MochizukiRenoTree(config, "Guides", 10);
             }
             if (auto section = ScopedCollapsingHeader("Performance and advanced##mzsection"); section.IsHeaderOpen())
