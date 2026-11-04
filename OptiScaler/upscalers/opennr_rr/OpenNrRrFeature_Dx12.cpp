@@ -13,12 +13,14 @@
 #include <dlssnr/backend/Selector.h>
 #include <dlssnr/amd/AmdBridge.h>
 #include <dlssnr/amd/AmdPreSr.h>
+#include <dlssnr/amd/Foveation.h>
 #include <dlssnr/submission/SubmissionTls.h>
 
 #include <atomic>
 #include <cmath>
 #include <filesystem>
 #include <format>
+#include <memory>
 #include <mutex>
 
 namespace LmxxfCut = DlssNr::Backend::LmxxfCut;
@@ -95,6 +97,11 @@ struct DenoisedNr
 
     std::mutex mutex; // the armed job, between the render thread and the between slot
     DlssNr::Backend::LmxxfBackend* mz = nullptr; // never destroyed, as the bridge's backend
+    // [DlssNr] Foveation on the denoised image: the same warp as the bridge's, around mz
+    std::unique_ptr<AmdPreSr::Foveation::Passes> foveation;
+    AmdPreSr::Foveation::Grid foveationGrid;
+    float foveationJitterX = 0, foveationJitterY = 0;
+    bool foveationJitter = false, foveationFailed = false;
     bool broken = false;
     ID3D12Device* device = nullptr;
     ID3D12Fence* fence = nullptr;
@@ -1735,7 +1742,67 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
         }
     }
 
-    ID3D12Resource* result = d.mz->Record(slot.producer, f, AmdPreSr::Settings {});
+    const auto& fovCfg = *Config::Instance();
+    AmdPreSr::Foveation::Grid grid { f.width, f.height, f.width, f.height };
+    if (const int mode = std::clamp(fovCfg.NrFoveation.value_or_default(), 0, 4); mode > 0 && !d.foveationFailed)
+    {
+        auto fov = AmdPreSr::Foveation::Preset(mode);
+        if (mode >= 4)
+            fov = { fovCfg.NrFoveationCentreWidth.value_or_default(), fovCfg.NrFoveationCentreHeight.value_or_default(),
+                    fovCfg.NrFoveationFalloff.value_or_default(), fovCfg.NrFoveationEdge.value_or_default() };
+        grid = AmdPreSr::Foveation::MakeGrid(f.width, f.height, fov);
+    }
+    const bool foveated = grid.Active();
+    if (const auto key = foveated ? grid : AmdPreSr::Foveation::Grid {}; !(key == d.foveationGrid))
+    {
+        if (foveated)
+            LOG_INFO("OpenRR: foveated NR, the network at {}x{} for {}x{} ({:.0f}% of the pixels)", grid.workWidth,
+                     grid.workHeight, f.width, f.height, 100 * grid.Share());
+        else
+            LOG_INFO("OpenRR: foveated NR off at {}x{}", f.width, f.height);
+        d.foveationGrid = key;
+        d.foveationJitter = false;
+        d.mz->InvalidateHistory();
+    }
+    if (foveated && !d.foveation)
+        d.foveation = std::make_unique<AmdPreSr::Foveation::Passes>(d.device);
+
+    // The warp reads the denoised image and the game's vectors; mochizuki reads no depth before SR.
+    AmdPreSr::Frame in = f, source = f;
+    source.depth = nullptr;
+    if (foveated)
+    {
+        AmdPreSr::Foveation::Passes::Options o;
+        // The jitter step goes through the warp with the vectors, as on the bridge.
+        const bool fold = fovCfg.MochizukiJitterHistory.value_or_default() && f.motion;
+        if (fold)
+        {
+            if (d.foveationJitter && !f.reset)
+            {
+                o.jitterStepX = d.foveationJitterX - f.jitterX;
+                o.jitterStepY = d.foveationJitterY - f.jitterY;
+            }
+            d.foveationJitterX = f.jitterX;
+            d.foveationJitterY = f.jitterY;
+            d.foveationJitter = true;
+        }
+        try
+        {
+            in = d.foveation->Warp(slot.producer, source, grid, o);
+            if (fold)
+                in.jitterX = in.jitterY = 0;
+        }
+        catch (const std::exception& e)
+        {
+            d.foveationFailed = true;
+            in = f;
+            LOG_ERROR("OpenRR: foveated NR off for this session: {}", e.what());
+        }
+    }
+    else if (d.foveation)
+        d.foveation->Idle();
+
+    ID3D12Resource* result = d.mz->Record(slot.producer, in, AmdPreSr::Settings {});
     if (slot.timed)
         slot.producer->EndQuery(d.stamps, D3D12_QUERY_TYPE_TIMESTAMP, stamp + 2);
     slot.producer->Close();
@@ -1754,6 +1821,22 @@ uint32_t OpenNrRrFeatureDx12::RecordDenoisedNr(const NVSDK_NGX_Parameter& params
         slot.consumer->Close();
         d.SetStatus(d.mz->Status());
         return 0;
+    }
+
+    if (in.colour != f.colour)
+    {
+        try
+        {
+            result = d.foveation->Unwarp(slot.consumer, source, result);
+        }
+        catch (const std::exception& e)
+        {
+            d.foveationFailed = true;
+            slot.consumer->Close();
+            LOG_ERROR("OpenRR: foveated NR off for this session: {}", e.what());
+            d.SetStatus(std::string("foveated NR failed: ") + e.what());
+            return 0;
+        }
     }
 
     // mochizuki's output (the colour's format) back into the buffer, at offset 0 with the pitch the runtime expects
