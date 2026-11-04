@@ -188,7 +188,7 @@ static void NeuralPassLine(Config* config, const char* help)
     HelpMarker(help);
 }
 
-// Foveated NR ([DlssNr] Foveation), NR without upscaling only.
+// Foveated NR ([DlssNr] Foveation): before the upscaler (mochizuki) and NR without upscaling.
 static void FoveationControls(Config* config)
 {
     int mode = std::clamp(config->NrFoveation.value_or_default(), 0, 4);
@@ -198,6 +198,8 @@ static void FoveationControls(Config* config)
                "\nthe edges, and its change is put back on the full frame, so the game's own detail stays"
                "\neverywhere and only the effect gets softer at the sides. NR pixels at 16:9: about 80% light,"
                "\n70% medium, 45-50% strong. Each change rebuilds the network and restarts its history."
+               "\nBefore the upscaler it runs with mochizuki only (the render frame is warped, the upscaler"
+               "\nkeeps its jitter); off while person protection runs."
                "\nCustom takes FoveationCentreWidth/Height, FoveationFalloff and FoveationEdge from the INI.");
 }
 
@@ -1067,8 +1069,7 @@ void RenderMenu(Config* config, float menuResScale)
                 if (ImGui::SliderFloat("Stabilizer threshold", &stabilizerThreshold, 0.5f, 8.0f, "%.1f / 255"))
                     config->MochizukiStabilizerThreshold = stabilizerThreshold;
                 HelpMarker("Largest frame-to-frame change of the effect, in 1/255, that the stabilizer smooths.");
-                if (AmdPresentExperimental::IsTarget() && !State::Instance().currentFeature)
-                    FoveationControls(config);
+                FoveationControls(config);
                 MochizukiRenoTree(config, "Guides", 10);
             }
             if (auto section = ScopedCollapsingHeader("Performance and advanced##mzsection"); section.IsHeaderOpen())

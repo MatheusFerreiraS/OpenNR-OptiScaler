@@ -92,7 +92,8 @@ struct Grid
 };
 // One axis of `full` pixels: the working extent is the profile's mean density times full, on the multiple of
 // `align` (the network's padding step, so no padded pixel is paid for) either side of it whose solved edge density is
-// nearest the asked one; the margin must be even so the centre lands on whole texels. Identity when neither fits.
+// nearest the asked one (one less for an odd extent: the margin must be even so the centre lands on whole texels).
+// Identity when neither fits.
 inline Axis MakeAxis(UINT full, UINT& work, double centre, double falloffPx, double edge, UINT align)
 {
     Axis p;
@@ -109,8 +110,12 @@ inline Axis MakeAxis(UINT full, UINT& work, double centre, double falloffPx, dou
     double best = 2;
     for (UINT w : { low, low + align })
     {
+        // An odd extent (1707 render pixels at 2560 Quality) takes one pixel less: the margin stays even and the
+        // network pads to the same step.
+        if (w && ((full - w) & 1))
+            --w;
         const double e = SolveEdge(p.a, p.b, double(w) / full);
-        if (w == 0 || w >= full || ((full - w) & 1) || e < kMinEdge || e >= 1 || std::abs(e - edge) >= best)
+        if (w == 0 || w >= full || e < kMinEdge || e >= 1 || std::abs(e - edge) >= best)
             continue;
         best = std::abs(e - edge);
         work = w;
@@ -144,7 +149,7 @@ Texture2D<float4> warped:register(t3);Texture2D<float4> result:register(t4);
 RWTexture2D<float4> warpedOut:register(u0);RWTexture2D<float2> motionOut:register(u1);RWTexture2D<float> depthOut:register(u2);
 RWTexture2D<float4> output:register(u3);
 cbuffer Params:register(b0){uint2 full,work,guide;float2 motionExtent,motionScale;uint flags;float sigma;
- float4 ax,ay;}
+ float4 ax,ay;float2 jitterStep;}
 // One axis, p = (a, b, e, g): the density integral G over tau = |2n - 1|, its inverse (Newton in the fall-off only:
 // the ramp's slope is at least e), and the maps between full (n) and working (v) normalized positions.
 float G(float t,float4 p){if(t<=p.x)return t;float k=1-p.z,area=p.y*(1-.5*k);
@@ -171,14 +176,15 @@ float Snap(float x){float r=round(x);return abs(x-r)<2e-3?r:x;}
  warpedOut[id.xy]=sum/max(total,1e-6);}
 
 // Guides at the working texel's centre: depth nearest (a blend would invent a surface), motion carried through the
-// warp (previous = current + vector), in working pixels at scale 1.
+// warp (previous = current + vector + the jitter step, in full pixels), in working pixels at scale 1.
 [numthreads(8,8,1)]void WarpGuides(uint3 id:SV_DispatchThreadID){
  if(any(id.xy>=work))return;
  float2 v=(float2(id.xy)+.5)/work,n=Unwarp(v);
  uint2 t=min(uint2(saturate(n)*guide),guide-1);
  if(flags&1)depthOut[id.xy]=depth.Load(int3(t,0));
  float2 m=0;
- if(flags&2)m=(Warp(n+motion.Load(int3(t,0))*motionScale/motionExtent)-v)*work;
+ uint2 tm=min(uint2(saturate(n)*motionExtent),uint2(motionExtent)-1);
+ if(flags&2)m=(Warp(n+motion.Load(int3(tm,0))*motionScale/motionExtent+jitterStep/full)-v)*work;
  motionOut[id.xy]=m;}
 
 // Back on the full frame: the game's pixel plus the network's change around its working position, joint bilateral
@@ -218,8 +224,9 @@ class Passes
         UINT flags;
         float sigma;
         Axis x, y;
+        float jitterStep[2];
     } k {};
-    static_assert(sizeof(Constants) == 20 * 4);
+    static_assert(sizeof(Constants) == 22 * 4);
     static void Check(HRESULT hr)
     {
         if (FAILED(hr))
@@ -339,20 +346,30 @@ class Passes
 
   public:
     explicit Passes(ID3D12Device* d) : device(d) {}
+    // Before SR: the step from the last frame's jitter to this one's in full pixels, folded into the warped motion
+    // (the caller then hands the runtime no jitter), and the extent the warped textures are allocated at, so a smaller frame
+    // under dynamic resolution is a subrect of the same textures.
+    struct Options
+    {
+        float jitterStepX = 0, jitterStepY = 0;
+        UINT allocWidth = 0, allocHeight = 0;
+        float sigma = .08f;
+    };
     // Records the warp of f (colour, and depth and motion when it has them) onto grid's working extent and returns
     // the frame the runtime gets instead: our textures, guides at the colour's extent and scale 1. f's resources end
     // in the states they came in. The warped textures stay valid until the next Warp.
-    Frame Warp(ID3D12GraphicsCommandList* c, const Frame& f, const Grid& grid, float sigma = .08f)
+    Frame Warp(ID3D12GraphicsCommandList* c, const Frame& f, const Grid& grid, const Options& o = {})
     {
         if (!root)
             Build();
         for (auto& r : retired[set])
             r.Reset();
         const UINT w = grid.workWidth, h = grid.workHeight;
+        const UINT aw = (std::max)(w, o.allocWidth), ah = (std::max)(h, o.allocHeight);
         const DXGI_FORMAT colourFormat = ReadFormat(f.colour->GetDesc().Format);
-        Fit(warpedColour, 0, w, h, WarpFormat(colourFormat));
-        Fit(warpedMotion, 1, w, h, DXGI_FORMAT_R16G16_FLOAT);
-        Fit(warpedDepth, 2, w, h, DXGI_FORMAT_R32_FLOAT);
+        Fit(warpedColour, 0, aw, ah, WarpFormat(colourFormat));
+        Fit(warpedMotion, 1, aw, ah, DXGI_FORMAT_R16G16_FLOAT);
+        Fit(warpedDepth, 2, aw, ah, DXGI_FORMAT_R32_FLOAT);
         const DXGI_FORMAT depthFormat = f.depth ? DepthReadFormat(f.depth->GetDesc().Format) : DXGI_FORMAT_UNKNOWN;
         ID3D12Resource* depth = depthFormat != DXGI_FORMAT_UNKNOWN ? f.depth : nullptr;
         const UINT stride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -377,9 +394,10 @@ class Passes
               { float(f.motionWidth ? f.motionWidth : gw), float(f.motionHeight ? f.motionHeight : gh) },
               { f.motionScaleX, f.motionScaleY },
               (depth ? 1u : 0u) | (f.motion ? 2u : 0u),
-              sigma,
+              o.sigma,
               grid.x,
-              grid.y };
+              grid.y,
+              { o.jitterStepX, o.jitterStepY } };
         const auto read = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, write = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         Barrier(c, f.colour, f.colourState, read);
         Barrier(c, depth, f.depthState, read);
@@ -419,10 +437,13 @@ class Passes
     }
     // After the runtime's result (NON_PIXEL_SHADER_RESOURCE, the working extent at its top left) for the frame the
     // last Warp made, on the same descriptor set: f is that Warp's full frame, whose colour must still hold the same
-    // picture. Returns an FP16 texture of f's extent in NON_PIXEL_SHADER_RESOURCE.
-    ID3D12Resource* Unwarp(ID3D12GraphicsCommandList* c, const Frame& f, ID3D12Resource* result)
+    // picture. Returns an FP16 texture of f's extent (allocated at least at allocWidth x allocHeight, f's at the top
+    // left) in NON_PIXEL_SHADER_RESOURCE.
+    ID3D12Resource* Unwarp(ID3D12GraphicsCommandList* c, const Frame& f, ID3D12Resource* result, UINT allocWidth = 0,
+                           UINT allocHeight = 0)
     {
-        Fit(output, 3, f.width, f.height, DXGI_FORMAT_R16G16B16A16_FLOAT);
+        Fit(output, 3, (std::max)(f.width, allocWidth), (std::max)(f.height, allocHeight),
+            DXGI_FORMAT_R16G16B16A16_FLOAT);
         const UINT stride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
         const UINT used = (set + kSets - 1) % kSets;
         auto cpu = heap->GetCPUDescriptorHandleForHeapStart();

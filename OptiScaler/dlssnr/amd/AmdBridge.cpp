@@ -5,6 +5,7 @@
 #include "AmdPreSr.h"
 #include "StallWatch.h"
 #include "RenoComposition.h"
+#include "Foveation.h"
 #include "ResidualStabilizer.h"
 #include "DynamicScale.h"
 #include "PresentExperimental.h"
@@ -117,6 +118,14 @@ bool compositionFailed = false;
 std::unique_ptr<DlssNr::Person::Partition> person;
 uint64_t lastPersonSerial = 0;
 ULONGLONG lastPersonTick = 0;
+// Foveated NR before SR ([DlssNr] Foveation, Foveation.h), mochizuki: the runtime gets a warped copy of the render
+// frame and its change goes back on the render grid before the stabilizer and SR. The grid at the fixed extent (the
+// colour allocation under dynamic resolution) decides the textures, the log and the history; the jitter step is
+// folded into the warped vectors with MochizukiJitterHistory. Made with the backend, used under frameMutex.
+std::unique_ptr<AmdPreSr::Foveation::Passes> foveation;
+AmdPreSr::Foveation::Grid foveationGrid;
+float foveationJitterX = 0, foveationJitterY = 0;
+bool foveationJitter = false, foveationFailed = false;
 
 thread_local uint64_t submitOrdinal = 0; // Monotonic per-thread submission counter.
 
@@ -695,6 +704,7 @@ bool EnsureNgxHost(ID3D12Device* device, ID3D12CommandQueue* q, bool wanted)
         stabilizer = std::make_unique<AmdPreSr::ResidualStabilizer>(device);
         composition = std::make_unique<AmdPreSr::RenoComposition>(device);
         person = std::make_unique<DlssNr::Person::Partition>(device);
+        foveation = std::make_unique<AmdPreSr::Foveation::Passes>(device);
         backend.store(b);
         neuralTimer = std::make_unique<GpuTime_Dx12>(device);
     }
@@ -901,6 +911,7 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         stabilizer = std::make_unique<AmdPreSr::ResidualStabilizer>(device);
         composition = std::make_unique<AmdPreSr::RenoComposition>(device);
         person = std::make_unique<DlssNr::Person::Partition>(device);
+        foveation = std::make_unique<AmdPreSr::Foveation::Passes>(device);
         backend.store(b);
         neuralTimer = std::make_unique<GpuTime_Dx12>(device);
     }
@@ -1232,9 +1243,97 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     }
     const bool personReady = DlssNr::Person::Prepare(personWanted, Directory(), personModel, faceSize);
     s.firstPass = personWanted && personPasses > 1;
+    // Foveated NR: this frame's grid warps it, the fixed extent's sizes the textures and is the one logged; a new one
+    // restarts the history (a dynamic resolution step restarts it anyway).
+    AmdPreSr::Foveation::Grid grid { f.width, f.height, f.width, f.height }, fixedGrid = grid;
+    if (const int mode = std::clamp(cfg.NrFoveation.value_or_default(), 0, 4);
+        mode > 0 && !afterUpscale && !foveationFailed)
+    {
+        static const char* loggedOff = nullptr;
+        const char* off = !mochizuki      ? "runs on mochizuki only; this runtime gets the whole frame"
+                          : personWanted ? "is off while person protection runs"
+                                         : nullptr;
+        if (off && loggedOff != off)
+            LOG_INFO("AMD pre-SR: foveated NR {}", off);
+        loggedOff = off;
+        if (!off)
+        {
+            auto params = AmdPreSr::Foveation::Preset(mode);
+            if (mode >= 4)
+                params = { cfg.NrFoveationCentreWidth.value_or_default(), cfg.NrFoveationCentreHeight.value_or_default(),
+                           cfg.NrFoveationFalloff.value_or_default(), cfg.NrFoveationEdge.value_or_default() };
+            grid = AmdPreSr::Foveation::MakeGrid(f.width, f.height, params);
+            fixedGrid = AmdPreSr::Foveation::MakeGrid(gateWidth, gateHeight, params);
+        }
+    }
+    const bool foveated = grid.Active();
+    if (const auto key = foveated ? fixedGrid : AmdPreSr::Foveation::Grid {}; !(key == foveationGrid))
+    {
+        if (foveated)
+            LOG_INFO("AMD pre-SR: foveated NR, the network at {}x{} for {}x{} ({:.0f}% of the pixels; edge density "
+                     "{:.2f} x {:.2f})",
+                     fixedGrid.workWidth, fixedGrid.workHeight, gateWidth, gateHeight, 100 * fixedGrid.Share(),
+                     fixedGrid.x.e, fixedGrid.y.e);
+        else if (foveationGrid.Active())
+            LOG_INFO("AMD pre-SR: foveated NR off at {}x{}", f.width, f.height);
+        foveationGrid = key;
+        foveationJitter = false;
+        b->InvalidateHistory();
+        stabilizer->Invalidate();
+    }
     if (neuralTimer)
         neuralTimer->Start(cmd);
-    auto replacement = b->Record(cmd, f, s);
+    // The warp reads the game's colour and vectors; mochizuki reads no depth before SR.
+    AmdPreSr::Frame in = f, source = f;
+    source.depth = nullptr;
+    if (foveated)
+    {
+        AmdPreSr::Foveation::Passes::Options o;
+        o.allocWidth = fixedGrid.workWidth;
+        o.allocHeight = fixedGrid.workHeight;
+        // The jitter step goes through the warp with the vectors: in render pixels it is only right in the centre.
+        const bool fold = cfg.MochizukiJitterHistory.value_or_default() && f.motion;
+        if (fold)
+        {
+            if (foveationJitter && !f.reset)
+            {
+                o.jitterStepX = foveationJitterX - f.jitterX;
+                o.jitterStepY = foveationJitterY - f.jitterY;
+            }
+            foveationJitterX = f.jitterX;
+            foveationJitterY = f.jitterY;
+            foveationJitter = true;
+        }
+        try
+        {
+            in = foveation->Warp(cmd, source, grid, o);
+            if (fold)
+                in.jitterX = in.jitterY = 0;
+        }
+        catch (const std::exception& e)
+        {
+            foveationFailed = true;
+            in = f;
+            LOG_ERROR("AMD pre-SR: foveated NR off for this session: {}", e.what());
+        }
+    }
+    else
+        foveation->Idle();
+    auto replacement = b->Record(cmd, in, s);
+    if (replacement && in.colour != f.colour)
+    {
+        try
+        {
+            const auto allocation = f.colour->GetDesc();
+            replacement = foveation->Unwarp(cmd, source, replacement, UINT(allocation.Width), allocation.Height);
+        }
+        catch (const std::exception& e)
+        {
+            foveationFailed = true;
+            replacement = nullptr;
+            LOG_ERROR("AMD pre-SR: foveated NR off for this session: {}", e.what());
+        }
+    }
     if (replacement && personWanted && personReady)
     {
         ID3D12Resource* first = personPasses > 1 ? b->FirstPass() : replacement;

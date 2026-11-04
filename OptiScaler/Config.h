@@ -477,8 +477,8 @@ class Config
     // The host stabilizer after the runtime, as AmdStabilizerStrength and AmdStabilizerThreshold are for danielblnc.
     CustomOptional<float> MochizukiStabilizerStrength { 0.0f };
     CustomOptional<float> MochizukiStabilizerThreshold { 2.0f };
-    // Foveated NR (dlssnr/amd/Foveation.h), NR without upscaling only: the network on a smaller warped copy, full
-    // density in the centre. 0 off, 1 light, 2 medium, 3 strong, 4 the four values below (shares of the screen;
+    // Foveated NR (dlssnr/amd/Foveation.h), before SR (mochizuki) and NR without upscaling: the network on a smaller
+    // warped copy, full density in the centre. 0 off, 1 light, 2 medium, 3 strong, 4 the four values below (shares of the screen;
     // the fall-off is a share of its height, the edge a density 0.2-1).
     CustomOptional<int> NrFoveation { 0 };
     CustomOptional<float> NrFoveationCentreWidth { 0.5f };
