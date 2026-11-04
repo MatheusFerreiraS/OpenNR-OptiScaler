@@ -3538,10 +3538,8 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                 if (bool nrOn = config->OpenNrRrNrOnDenoised.value_or_default() == "display";
                     ImGui::Checkbox("NR on denoised image", &nrOn))
                     config->OpenNrRrNrOnDenoised = nrOn ? "display" : "off";
-                ShowTooltip("mochizuki NR (NrBackend=mochizuki and its settings) on the denoised render-size image.
-"
-                            "The NR goes onto the shown image from the first frame and is accumulated over frames as the
-"
+                ShowTooltip("mochizuki NR (NrBackend=mochizuki and its settings) on the denoised render-size image.\n"
+                            "The NR goes onto the shown image from the first frame and is accumulated over frames as the\n"
                             "image is; the RR keeps its own history.");
 
                 const char* backends[] = { "Auto", "D3D12", "Vulkan" };
@@ -3557,14 +3555,10 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                     MARK_ALL_BACKENDS_CHANGED();
                 }
                 ImGui::PopItemWidth();
-                ShowTooltip("D3D12: the network runs on the game's own device, recorded into its command list
-"
-                            "(no second device, no copies through shared memory, no queue crossings).
-"
-                            "Vulkan: the network runs on a Vulkan device of its own beside the game.
-"
-                            "Auto: D3D12 when the runtime's check on this GPU and driver passes, otherwise Vulkan.
-"
+                ShowTooltip("D3D12: the network runs on the game's own device, recorded into its command list\n"
+                            "(no second device, no copies through shared memory, no queue crossings).\n"
+                            "Vulkan: the network runs on a Vulkan device of its own beside the game.\n"
+                            "Auto: D3D12 when the runtime's check on this GPU and driver passes, otherwise Vulkan.\n"
                             "Changing it recreates OpenRR.");
             }
 
