@@ -13,12 +13,20 @@ namespace DlssNr::AmdBridge
 AmdPreSr::Settings SettingsFromConfig(const Config& cfg, float modelScale);
 bool HasFiles();
 // NeuralHub 0.8.0 serves DLSS Frame Generation: its host module sits in dlssnr_amd_host\ beside this DLL and an
-// nvngx_dlssg.dll beside the host or the game. Only files are checked, so it answers before the host loads (slInit,
-// the INI); a game that ships nvngx_dlssg.dll without the host is not taken for one. Never with the host kept on HIP.
+// nvngx_dlssg.dll beside the host or the game. Only files and the INI are checked, so it answers before the host loads
+// (slInit, the INI); a game that ships nvngx_dlssg.dll without the host is not taken for one. With danielblnc as the NR
+// runtime only FGOutput=dlssg (the installer's Streamline/DLSS-FG box) or HostComputeBackend=D3D12 asks for it: the
+// game's own nvngx_dlssg.dll would put the host on D3D12 and take the NR away. Never with the host kept on HIP, nor on
+// a GPU before RDNA3 (HostD3d12Supported).
 bool NeuralHubFgInstalled();
-// The same with OptiScaler's library folder and HostComputeBackend given: Config's own load asks this way, since
-// LibraryFolder() reads Config and would construct it again from inside its constructor.
-bool NeuralHubFgInstalled(const std::filesystem::path& library, const std::string& backend);
+// The same with OptiScaler's library folder, HostComputeBackend, FGOutput=dlssg and the NR runtime given, and no GPU
+// check: Config's own load asks this way, since LibraryFolder() reads Config and would construct it again from inside
+// its constructor.
+bool NeuralHubFgInstalled(const std::filesystem::path& library, const std::string& backend, bool dlssgOutput,
+                          bool danielNr);
+// The host's D3D12 compute runtime has code for gfx11 and gfx12 only: an RX 6000 (gfx10.3) gets 0x887a0005 from the
+// driver and the game dies. The GPU behind luid, or the primary one; true when its generation is unknown.
+bool HostD3d12Supported(const LUID* luid = nullptr);
 // The armed host found an nvngx_dlssg.dll, or NeuralHubFgInstalled(): DLSS-FG is offered on AMD.
 bool NeuralHubFgServed();
 // [DlssNr] HostComputeBackend=HIP: the 0.8.0 host stays on HIP for danielblnc's NR, and its DLSS-FG (D3D12 only) is off.

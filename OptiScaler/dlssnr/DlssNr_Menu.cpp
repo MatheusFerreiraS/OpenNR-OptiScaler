@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "amd/PresentExperimental.h"
 #include "amd/AmdBridge.h"
+#include "amd/AmdPreSr.h"
 #include "amd/VulkanSeam.h"
 #include "amd/AmdLayout.h"
 #include "backend/Selector.h"
@@ -1704,6 +1705,14 @@ void RenderMenu(Config* config, float menuResScale)
         if (!enabled)
         {
             ImGui::TextDisabled("Off. The model stays loaded, so turning this back on is immediate.");
+        }
+        else if (DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel &&
+                 AmdPreSr::NrRefusedOnHostD3d12())
+        {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
+                               "danielblnc's NR is off: its host runs on D3D12 for NeuralHub's DLSS-FG.");
+            ImGui::TextDisabled("For NR pick mochizuki or lmxxf, or set [DlssNr] HostComputeBackend=HIP (no DLSS-FG),"
+                                "\nthen restart the game.");
         }
         else if (!DlssNr::IsRunning() && !vulkan)
         {

@@ -19,6 +19,8 @@ bool ArmDlssNgx(HMODULE hostModule, const AmdLayout* layout, const char* tag,
                 const std::function<void(const std::string&)>& log);
 // True once ArmDlssNgx completed (publish verified, gates armed); false before or on failure.
 bool NeuralHubArmOk();
+// danielblnc's NR met the host on D3D12 (DLSS-FG armed) and was refused: Record never runs it there.
+bool NrRefusedOnHostD3d12();
 // 0.8.0 NGX D3D12 SR/RR submission hooks: isolate and notify SR/RR command lists even when NR
 // did not record on that list (or when NR is off / settling / skipped).
 int NgxPendingListIndex(UINT count, ID3D12CommandList* const* lists);

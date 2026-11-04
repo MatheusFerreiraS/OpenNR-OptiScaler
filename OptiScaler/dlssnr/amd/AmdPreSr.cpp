@@ -512,6 +512,12 @@ bool NeuralHubArmOk()
     return g_ngxArm.load(std::memory_order_acquire) == 1;
 }
 
+namespace
+{
+std::atomic<bool> g_nrRefusedOnD3d12 { false };
+}
+bool NrRefusedOnHostD3d12() { return g_nrRefusedOnD3d12.load(std::memory_order_relaxed); }
+
 bool ArmDlssNgx(HMODULE hostModule, const AmdLayout* L, const char* tag,
                 const std::function<void(const std::string&)>& log)
 {
@@ -613,7 +619,7 @@ bool ArmDlssNgx(HMODULE hostModule, const AmdLayout* L, const char* tag,
             State::Instance().NVNGX_DLSS_Path = dlss.wstring();
         if (std::filesystem::exists(dlssd, ec))
             State::Instance().NVNGX_DLSSD_Path = dlssd.wstring();
-        if (std::filesystem::exists(dlssg, ec) && !DlssNr::AmdBridge::HostKeptOnHip())
+        if (std::filesystem::exists(dlssg, ec) && DlssNr::AmdBridge::NeuralHubFgInstalled())
             State::Instance().NVNGX_DLSSG_Path = dlssg.wstring();
         if (State::Instance().NVNGX_DLSS_Path.has_value() || State::Instance().NVNGX_DLSSD_Path.has_value() ||
             State::Instance().NVNGX_DLSSG_Path.has_value())
@@ -1267,8 +1273,11 @@ struct Backend::Impl
         // "replaced by FSR provider"), so Passthrough stays the fallback.
         const bool armNgx = std::filesystem::exists(folder / L"nvngx_dlss.dll", ec);
         const bool hip = DlssNr::AmdBridge::HostKeptOnHip();
-        const bool armFg = !hip && (std::filesystem::exists(folder / L"nvngx_dlssg.dll", ec) ||
-                                    std::filesystem::exists(directory / L"nvngx_dlssg.dll", ec));
+        // With danielblnc's NR only FGOutput=dlssg (the installer's DLSS-FG box) or HostComputeBackend=D3D12 arms DLSS-FG:
+        // a game's own nvngx_dlssg.dll (Cyberpunk, The Witcher 3) put the host on D3D12 and left the NR off for good.
+        const LUID luid = device->GetAdapterLuid();
+        const bool d3d12Ok = DlssNr::AmdBridge::HostD3d12Supported(&luid);
+        const bool armFg = DlssNr::AmdBridge::NeuralHubFgInstalled() && d3d12Ok;
         std::ofstream ini(folder / L"neuralhub.ini", std::ios::binary | std::ios::trunc);
         ini << "; Written by OptiScaler on every load: the runtime is hosted";
         if (armNgx)
@@ -1285,18 +1294,26 @@ struct Backend::Impl
         if (armFg)
         {
             ini << "[FrameGeneration]\r\nProvider=DLSS-FG\r\n";
-            Log("AMD runtime: neuralhub.ini arms DLSS-FG provider (nvngx_dlssg.dll present)");
+            Log("AMD runtime: neuralhub.ini arms DLSS-FG provider");
         }
         else
         {
             ini << "[FrameGeneration]\r\nProvider=Off\r\n";
         }
-        // auto follows the FG: D3D12 for it, HIP for danielblnc's NR. HIP and D3D12 are taken as asked.
+        // auto follows the FG: D3D12 for it, HIP for danielblnc's NR. HIP and D3D12 are taken as asked, except D3D12 on
+        // a GPU before RDNA3, where the driver refuses the host's code object and removes the device.
         std::string hostBackend = Config::Instance()->HostComputeBackend.value_or_default();
         if (_stricmp(hostBackend.c_str(), "auto") == 0)
             hostBackend = armFg ? "D3D12" : "HIP";
         else if (hip)
             Log("AMD runtime: HostComputeBackend=HIP keeps danielblnc's NR running; NeuralHub's DLSS-FG stays off");
+        else if (!d3d12Ok && _stricmp(hostBackend.c_str(), "D3D12") == 0)
+        {
+            hostBackend = "HIP";
+            Log("AMD runtime: HostComputeBackend=D3D12 ignored: the host's D3D12 runtime needs an RX 7000 or newer "
+                "(gfx11/gfx12); HIP instead, NeuralHub's DLSS-FG off");
+            LOG_WARN("AMD neural: HostComputeBackend=D3D12 ignored on this GPU (needs gfx11/gfx12), the host runs on HIP");
+        }
         ini << "[Enhancement]\r\nProvider=Off\r\n[Compute]\r\nBackend="
             << hostBackend << "\r\n";
         if (armFg)
@@ -1665,6 +1682,8 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             p->status = refused;
             p->Log(refused);
         }
+        if (!g_nrRefusedOnD3d12.exchange(true, std::memory_order_relaxed))
+            LOG_WARN("{}", refused);
         return nullptr;
     }
     const auto listType = cmd->GetType();

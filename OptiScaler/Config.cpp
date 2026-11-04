@@ -1125,8 +1125,12 @@ bool Config::Reload(std::filesystem::path iniPath)
                 std::filesystem::path library(readWString("Libraries", "OptiDllPath").value_or(L"OptiScaler"));
                 if (library.is_relative())
                     library = Util::DllPath().parent_path() / library;
+                const auto nr = NrBackend.value_or_default();
+                const bool danielNr = nr.empty() || _stricmp(nr.c_str(), "auto") == 0 || _stricmp(nr.c_str(), "daniel") == 0;
                 const bool neuralHubFg =
-                    DlssNr::AmdBridge::NeuralHubFgInstalled(library, HostComputeBackend.value_or_default());
+                    DlssNr::AmdBridge::NeuralHubFgInstalled(library, HostComputeBackend.value_or_default(),
+                                                            FGOutput.value_for_config_ignore_default() == FGOutput::DLSSG,
+                                                            danielNr);
                 SpoofHAGS.set_volatile_value(FGInput.value_or_default() == FGInput::NvngxFG ||
                                              FGInput.value_or_default() == FGInput::DLSSG ||
                                              neuralHubFg);

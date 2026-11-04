@@ -486,9 +486,13 @@ std::filesystem::path LibraryFolder()
 }
 bool HostKeptOnHip(const std::string& backend) { return _stricmp(backend.c_str(), "HIP") == 0; }
 bool HostKeptOnHip() { return HostKeptOnHip(Config::Instance()->HostComputeBackend.value_or_default()); }
-bool NeuralHubFgInstalled(const std::filesystem::path& library, const std::string& backend)
+bool NeuralHubFgInstalled(const std::filesystem::path& library, const std::string& backend, bool dlssgOutput,
+                          bool danielNr)
 {
     if (HostKeptOnHip(backend))
+        return false;
+    // With danielblnc's NR the game's own nvngx_dlssg.dll does not count: the FG would take its NR away.
+    if (danielNr && !dlssgOutput && _stricmp(backend.c_str(), "D3D12") != 0)
         return false;
     std::error_code ec;
     const auto dir = Directory();
@@ -498,9 +502,24 @@ bool NeuralHubFgInstalled(const std::filesystem::path& library, const std::strin
             std::filesystem::exists(library / L"nvngx_dlssg.dll", ec) ||
             std::filesystem::exists(dir / L"nvngx_dlssg.dll", ec));
 }
+bool HostD3d12Supported(const LUID* luid)
+{
+    auto gen = IdentifyGpu::getPrimaryGpu().amdHwGeneration;
+    if (luid)
+        for (const auto& gpu : IdentifyGpu::getAllGpus())
+            if (IsEqualLUID(gpu.luid, *luid))
+                gen = gpu.amdHwGeneration;
+    return gen == device_info::HwGeneration::kUndefinedGeneration || gen >= device_info::HwGeneration::kGfx11;
+}
 bool NeuralHubFgInstalled()
 {
-    return NeuralHubFgInstalled(LibraryFolder(), Config::Instance()->HostComputeBackend.value_or_default());
+    // The INI's own FGOutput, read once: a volatile override or a menu change mid-game does not move the host.
+    static const bool dlssgOutput =
+        Config::Instance()->FGOutput.value_for_config_ignore_default() == FGOutput::DLSSG;
+    return NeuralHubFgInstalled(LibraryFolder(), Config::Instance()->HostComputeBackend.value_or_default(),
+                                dlssgOutput,
+                                DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel) &&
+           HostD3d12Supported();
 }
 bool NeuralHubFgServed()
 {
