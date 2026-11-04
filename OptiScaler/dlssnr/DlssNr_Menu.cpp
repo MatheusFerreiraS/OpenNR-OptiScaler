@@ -188,6 +188,19 @@ static void NeuralPassLine(Config* config, const char* help)
     HelpMarker(help);
 }
 
+// Foveated NR ([DlssNr] Foveation), NR without upscaling only.
+static void FoveationControls(Config* config)
+{
+    int mode = std::clamp(config->NrFoveation.value_or_default(), 0, 4);
+    if (ImGui::Combo("Foveated NR (experimental)", &mode, "Off\0Light\0Medium\0Strong\0Custom (INI)\0"))
+        config->NrFoveation = mode;
+    HelpMarker("The network runs on a smaller copy of the frame: full resolution in the centre, lower toward"
+               "\nthe edges, and its change is put back on the full frame, so the game's own detail stays"
+               "\neverywhere and only the effect gets softer at the sides. NR pixels at 16:9: about 80% light,"
+               "\n70% medium, 45-50% strong. Each change rebuilds the network and restarts its history."
+               "\nCustom takes FoveationCentreWidth/Height, FoveationFalloff and FoveationEdge from the INI.");
+}
+
 // RenoDX's composition (RenoComposition.h): shared by the three runtimes, drawn in each one's Effect section.
 // danielblnc's Effect strength is its intensity, so its page draws no second slider for it.
 static void RenoCompositionControls(Config* config, bool withIntensity = true)
@@ -1054,6 +1067,8 @@ void RenderMenu(Config* config, float menuResScale)
                 if (ImGui::SliderFloat("Stabilizer threshold", &stabilizerThreshold, 0.5f, 8.0f, "%.1f / 255"))
                     config->MochizukiStabilizerThreshold = stabilizerThreshold;
                 HelpMarker("Largest frame-to-frame change of the effect, in 1/255, that the stabilizer smooths.");
+                if (AmdPresentExperimental::IsTarget() && !State::Instance().currentFeature)
+                    FoveationControls(config);
                 MochizukiRenoTree(config, "Guides", 10);
             }
             if (auto section = ScopedCollapsingHeader("Performance and advanced##mzsection"); section.IsHeaderOpen())
@@ -1296,6 +1311,7 @@ void RenderMenu(Config* config, float menuResScale)
             // Commit once on release: every change rebuilds the model.
             if (ImGui::IsItemDeactivatedAfterEdit())
                 config->AmdNrScale = scale;
+            FoveationControls(config);
             NeuralPassLine(config, "GPU time the model takes on each frame, all passes together:"
                                    "\ncopying its inputs, waiting for its result and applying it."
                                    "\n\nThe fps is 1000 divided by that time: how many frames per second the"

@@ -4,6 +4,7 @@
 #include "../backend/Selector.h"
 #include <gpu_time/GpuTime_Dx12.h>
 #include "AmdPreSr.h"
+#include "Foveation.h"
 #include "ResidualStabilizer.h"
 #include "StallWatch.h"
 #include <Config.h>
@@ -118,6 +119,10 @@ struct Context
     ComPtr<ID3D12CommandAllocator> allocator2;
     ComPtr<ID3D12GraphicsCommandList> cmd2;
     std::unique_ptr<AmdPreSr::ResidualStabilizer> stabilizer;
+    // Foveated NR ([DlssNr] Foveation): the runtime gets a warped copy of the frame and its answer is put back on the
+    // full one. The grid is made every frame from the settings; a new one restarts the history.
+    std::unique_ptr<AmdPreSr::Foveation::Passes> foveation;
+    AmdPreSr::Foveation::Grid foveationGrid;
     // GPU time of the model on this queue, as the upscaler path measures it: the record and the composed result.
     std::unique_ptr<GpuTime_Dx12> neuralTimer;
     bool stableLast = false;
@@ -639,8 +644,21 @@ struct Context
         const bool flowValid = RecordFlow(realDepth != nullptr);
         const bool sceneCut = ReadSceneCut();
         QueueSceneCut();
-        // History that missed frames (scene cut, flow just valid, NR back on) starts over.
-        if ((backend || mochizuki) && (sceneCut || (flowValid && flowFrames == 7) || (neural && !lastNeural)))
+        const auto grid = FoveationGrid();
+        const bool gridChanged = !(grid == foveationGrid);
+        if (gridChanged)
+        {
+            if (grid.Active())
+                LOG_INFO("NR without upscaling: foveated NR, the network at {}x{} for {}x{} ({:.0f}% of the pixels; "
+                         "edge density {:.2f} x {:.2f})",
+                         grid.workWidth, grid.workHeight, width, height, 100 * grid.Share(), grid.x.e, grid.y.e);
+            else if (foveationGrid.Active() || Config::Instance()->NrFoveation.value_or_default() > 0)
+                LOG_INFO("NR without upscaling: foveated NR off at {}x{}", width, height);
+            foveationGrid = grid;
+        }
+        // History that missed frames (scene cut, flow just valid, NR back on, a new foveated grid) starts over.
+        if ((backend || mochizuki) &&
+            (sceneCut || (flowValid && flowFrames == 7) || (neural && !lastNeural) || gridChanged))
         {
             if (backend)
                 backend->InvalidateHistory();
@@ -673,9 +691,19 @@ struct Context
         // mochizuki: the inputs close this list, which becomes the producer, and everything after the network goes
         // into the other one, which becomes `cmd` (Compose and the stabilizer record into `cmd`).
         ComPtr<ID3D12GraphicsCommandList> producer;
+        const bool foveated = record && grid.Active();
+        AmdPreSr::Frame in = f;
+        if (foveated)
+        {
+            if (!foveation)
+                foveation = std::make_unique<AmdPreSr::Foveation::Passes>(device.Get());
+            in = foveation->Warp(cmd.Get(), f, grid);
+        }
+        else if (foveation)
+            foveation->Idle();
         if (record && mochizuki)
         {
-            result = mochizuki->Record(cmd.Get(), f, settings);
+            result = mochizuki->Record(cmd.Get(), in, settings);
             if (result)
             {
                 if (!cmd2)
@@ -696,8 +724,10 @@ struct Context
             }
         }
         else if (record)
-            result = backend->Record(cmd.Get(), f, settings);
+            result = backend->Record(cmd.Get(), in, settings);
         const bool modified = result && (mochizuki || backend->RecordedFrames() != before);
+        if (modified && foveated)
+            result = foveation->Unwarp(cmd.Get(), f, result);
         if (modified)
         {
             const auto now = GetTickCount64();
@@ -775,6 +805,19 @@ struct Context
         return modified && !stopped;
     }
     ComPtr<ID3D12DescriptorHeap> composeHeap;
+    // The foveated grid the settings ask for at this output, or none (FoveationGrid().Active() false).
+    AmdPreSr::Foveation::Grid FoveationGrid() const
+    {
+        const auto& cfg = *Config::Instance();
+        const int mode = cfg.NrFoveation.value_or_default();
+        if (mode <= 0)
+            return { width, height, width, height };
+        auto params = AmdPreSr::Foveation::Preset(mode);
+        if (mode >= 4)
+            params = { cfg.NrFoveationCentreWidth.value_or_default(), cfg.NrFoveationCentreHeight.value_or_default(),
+                       cfg.NrFoveationFalloff.value_or_default(), cfg.NrFoveationEdge.value_or_default() };
+        return AmdPreSr::Foveation::MakeGrid(width, height, params);
+    }
     void ComposeBgra(ID3D12Resource* back, D3D12_RESOURCE_STATES backState)
     {
         if (!graphicsPipeline)

@@ -618,6 +618,11 @@ bool Config::Reload(std::filesystem::path iniPath)
             MochizukiHistoryStrength.set_from_config(readFloat("DlssNr", "MochizukiHistoryStrength"));
             MochizukiStabilizerStrength.set_from_config(readFloat("DlssNr", "MochizukiStabilizerStrength"));
             MochizukiStabilizerThreshold.set_from_config(readFloat("DlssNr", "MochizukiStabilizerThreshold"));
+            NrFoveation.set_from_config(readInt("DlssNr", "Foveation"));
+            NrFoveationCentreWidth.set_from_config(readFloat("DlssNr", "FoveationCentreWidth"));
+            NrFoveationCentreHeight.set_from_config(readFloat("DlssNr", "FoveationCentreHeight"));
+            NrFoveationFalloff.set_from_config(readFloat("DlssNr", "FoveationFalloff"));
+            NrFoveationEdge.set_from_config(readFloat("DlssNr", "FoveationEdge"));
             MochizukiAco.set_from_config(readBool("DlssNr", "MochizukiAco"));
             MochizukiInt4.set_from_config(readBool("DlssNr", "MochizukiInt4"));
             MochizukiOriginalModel.set_from_config(readBool("DlssNr", "MochizukiOriginalModel"));
@@ -1910,6 +1915,14 @@ bool Config::SaveIni()
                      GetFloatValue(Instance()->MochizukiStabilizerStrength.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiStabilizerThreshold",
                      GetFloatValue(Instance()->MochizukiStabilizerThreshold.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "Foveation", GetIntValue(Instance()->NrFoveation.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "FoveationCentreWidth",
+                     GetFloatValue(Instance()->NrFoveationCentreWidth.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "FoveationCentreHeight",
+                     GetFloatValue(Instance()->NrFoveationCentreHeight.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "FoveationFalloff",
+                     GetFloatValue(Instance()->NrFoveationFalloff.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "FoveationEdge", GetFloatValue(Instance()->NrFoveationEdge.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiAco", GetBoolValue(Instance()->MochizukiAco.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiInt4", GetBoolValue(Instance()->MochizukiInt4.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiOriginalModel",

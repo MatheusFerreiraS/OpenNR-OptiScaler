@@ -477,6 +477,14 @@ class Config
     // The host stabilizer after the runtime, as AmdStabilizerStrength and AmdStabilizerThreshold are for danielblnc.
     CustomOptional<float> MochizukiStabilizerStrength { 0.0f };
     CustomOptional<float> MochizukiStabilizerThreshold { 2.0f };
+    // Foveated NR (dlssnr/amd/Foveation.h), NR without upscaling only: the network on a smaller warped copy, full
+    // density in the centre. 0 off, 1 light, 2 medium, 3 strong, 4 the four values below (shares of the screen;
+    // the fall-off is a share of its height, the edge a density 0.2-1).
+    CustomOptional<int> NrFoveation { 0 };
+    CustomOptional<float> NrFoveationCentreWidth { 0.5f };
+    CustomOptional<float> NrFoveationCentreHeight { 0.6f };
+    CustomOptional<float> NrFoveationFalloff { 0.12f };
+    CustomOptional<float> NrFoveationEdge { 0.5f };
     // The network as ACO's machine code (the Linux driver's compiler, made in advance) instead of AMD's Windows
     // compiler: about a fifth faster, the same picture. On by default; its author tested it on AMD Software 26.9.2
     // only. Takes effect when the game starts again; without the driver's pipeline binaries the driver compiles as
