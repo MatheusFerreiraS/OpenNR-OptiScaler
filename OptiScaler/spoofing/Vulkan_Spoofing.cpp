@@ -1393,6 +1393,11 @@ inline static VkResult hkvkEnumerateDeviceExtensionProperties(VkPhysicalDevice p
     LOG_FUNC();
 
     void* caller = _ReturnAddress();
+
+    // The engine enumerates device extensions right before it picks the vendor
+    if (GateDiag::FromGame(caller))
+        GateDiag::DoomStreamlineAnyVendor();
+
     const bool spoofExtensions =
         Config::Instance()->VulkanExtensionSpoofing.value_or_default() && !SkipVulkanSpoofing() &&
         (!Config::Instance()->VulkanSpoofGameOnly.value_or_default() || GateDiag::FromGame(caller));

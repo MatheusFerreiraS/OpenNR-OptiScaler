@@ -998,6 +998,8 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
     // renderAPI is optional so need to be careful, should only matter for Vulkan
     renderApi = localPref.renderAPI;
 
+    GateDiag::DoomStreamlineAnyVendor();
+
     if (GateDiag::On())
     {
         std::string features;
@@ -1201,6 +1203,8 @@ sl::Result StreamlineHooks::hkslIsFeatureSupported(sl::Feature feature, const sl
     if (OwnsDlssg() && (feature == sl::kFeatureDLSS_G || feature == sl::kFeatureDLSS_RR))
         return sl::Result::eOk;
 
+    GateDiag::DoomStreamlineAnyVendor();
+
     auto result = o_slIsFeatureSupported(feature, adapterInfo);
     LOG_INFO("slIsFeatureSupported: feature {} result: {} caller {}", (int) feature, (int) result, retAddr);
 
@@ -1258,6 +1262,8 @@ sl::Result StreamlineHooks::hkslGetFeatureRequirements(sl::Feature feature, sl::
 
     if (OwnsDlssg() && feature == sl::kFeatureDLSS_G)
         return sl::Result::eOk;
+
+    GateDiag::DoomStreamlineAnyVendor();
 
     auto result = o_slGetFeatureRequirements(feature, requirements);
     LOG_INFO("slGetFeatureRequirements: feature {} result: {} flags: {} driverReq: {}", (int) feature, (int) result,
@@ -3408,7 +3414,7 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
                 if (o_slEvaluateFeature != nullptr)
                     DetourAttach(&(PVOID&) o_slEvaluateFeature, hkslEvaluateFeature);
 
-                const bool gateHooks = GateDiag::On() ||
+                const bool gateHooks = GateDiag::On() || Config::Instance()->DoomStreamlineAnyVendor.value_or_default() ||
                                        Config::Instance()->StreamlineForceSupported.value_or_default() ||
                                        Config::Instance()->StreamlineTrimRequirements.value_or_default();
 

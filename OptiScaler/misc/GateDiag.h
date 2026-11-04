@@ -100,6 +100,43 @@ inline std::string DoomState()
                        streamline, vendor, restrictVendors, list(0x495EAB8), list(0x495EAA0));
 }
 
+inline bool SafeWrite(void* target, const void* source, size_t size)
+{
+    __try
+    {
+        memcpy(target, source, size);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+// [Spoofing] DoomStreamlineAnyVendor: r_streamlineRestrictVendors to 0 in the engine's memory before it picks the
+// vendor (exe+0xC0FCE0 reads only the int at +8 of the cvar data); the command line and config don't reach it in time
+inline void DoomStreamlineAnyVendor()
+{
+    if (!Config::Instance()->DoomStreamlineAnyVendor.value_or_default())
+        return;
+
+    auto exe = (uint8_t*) GetModuleHandleW(nullptr);
+
+    char name[28] {};
+    if (!SafeRead(exe + 0x3422DB0, name, 27) || strcmp(name, "r_streamlineRestrictVendors") != 0)
+        return;
+
+    uint64_t cvarData = 0;
+    int32_t value = 0;
+    if (!SafeRead(exe + 0x98A0EA0, &cvarData, 8) || cvarData == 0 ||
+        !SafeRead((const void*) (cvarData + 8), &value, 4) || value == 0)
+        return;
+
+    const int32_t zero = 0;
+    const bool written = SafeWrite((void*) (cvarData + 8), &zero, 4);
+    LOG_INFO("DoomStreamlineAnyVendor: r_streamlineRestrictVendors {} -> 0 {}", value, written ? "written" : "failed");
+}
+
 inline void LogDoomState(const char* where)
 {
     if (!On())

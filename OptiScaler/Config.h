@@ -1313,6 +1313,7 @@ class Config
     CustomOptional<int, NoDefault> VulkanVRAM; // disabled by default
     CustomOptional<bool> VulkanSpoofGameOnly { false };
     CustomOptional<bool> VulkanDriverIdOnly { false };
+    CustomOptional<bool> DoomStreamlineAnyVendor { false };
     CustomOptional<std::string, NoDefault> VulkanExtensionSpoofList; // e.g. VK_NVX_binary_import,VK_NVX_image_view_handle
     CustomOptional<bool> GateDiagnostics { false };
     CustomOptional<bool> StreamlineForceSupported { false };
