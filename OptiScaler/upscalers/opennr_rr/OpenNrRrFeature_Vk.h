@@ -23,7 +23,8 @@ class OpenNrRrFeatureVk : public IFeature_Vk
     OpenNrRrFeatureVk(unsigned int InHandleId, NVSDK_NGX_Parameter* InParameters);
     ~OpenNrRrFeatureVk();
 
-    feature_version Version() override { return { ONR_RR_ABI_VERSION_5, 0, 0 }; }
+    // OpenRR's release, as the overlay and the menu show it (not the runtime's ABI)
+    feature_version Version() override { return { 0, 1, 0 }; }
     Upscaler GetUpscalerType() const override { return Upscaler::OpenNrRr; }
     bool IsWithDx12() final { return false; }
 
