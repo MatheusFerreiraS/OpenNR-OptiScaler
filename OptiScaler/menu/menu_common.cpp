@@ -937,10 +937,12 @@ void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, co
     {
         // Check if GPU is capable of a given backend; the AmdPreSr NeuralHub host makes DLSS-SR/DLSS-RR a live
         // provider on an AMD GPU once armed. On Vulkan and D3D11 it is armed when a DLSS feature is made, so an
-        // installed host is enough, and it serves D3D12 only: DLSS is offered there as DLSS w/Dx12 alone.
+        // installed host is enough, and it serves D3D12 only: DLSS is offered there as DLSS w/Dx12 alone. On D3D12 a host
+        // left out beside another NR runtime is loaded when DLSS is picked.
         const bool bridgedHost = api == API::Vulkan || api == API::DX11;
         if ((opt == Upscaler::DLSS || opt == Upscaler::DLSS_on12) && !primaryGpu.dlssCapable &&
-            !(bridgedHost ? DlssNr::AmdBridge::NgxHostInstalled() : State::Instance().NeuralHubArmOk))
+            !(bridgedHost ? DlssNr::AmdBridge::NgxHostInstalled()
+                          : State::Instance().NeuralHubArmOk || DlssNr::AmdBridge::NgxHostDeferred()))
             continue;
         if (opt == Upscaler::DLSS && bridgedHost && !primaryGpu.dlssCapable)
             continue;

@@ -3,6 +3,7 @@
 
 #include "Util.h"
 #include "Config.h"
+#include "dlssnr/amd/AmdBridge.h"
 
 #include "NVNGX_Parameter.h"
 
@@ -146,6 +147,11 @@ bool FeatureProvider_Dx12::ChangeFeature(Upscaler upscaler, ID3D12Device* device
 
     if (!state.changeBackend[handleId])
         return false;
+
+    // danielblnc 0.8.0's host left out beside another NR runtime: DLSS picked in the menu loads it now.
+    if ((state.newBackend == Upscaler::DLSS || state.newBackend == Upscaler::DLSSD) &&
+        DlssNr::AmdBridge::NgxHostDeferred())
+        DlssNr::AmdBridge::EnsureNgxHost(device, nullptr, true);
 
     const bool dlssOnNonCapable = !IdentifyGpu::getPrimaryGpu().dlssCapable && !state.NeuralHubArmOk
                                   && (state.newBackend == Upscaler::DLSS || state.newBackend == Upscaler::DLSSD);

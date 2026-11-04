@@ -36,7 +36,11 @@ bool HostKeptOnHip();
 std::filesystem::path LibraryFolder();
 // Install submission expansion before the first wrapped list is exposed. No runtime/HIP initialization.
 bool EnsureSubmissionHook(ID3D12CommandQueue*);
-bool EnsureNgxHost(ID3D12Device*, ID3D12CommandQueue* = nullptr);
+// wanted: a DLSS feature is being made through the host. With another NR runtime chosen the host loads only then, or
+// when the INI asks for DLSS (Dx12Upscaler) or NeuralHub's DLSS-FG; otherwise it stays out (~850 MB of VRAM).
+bool EnsureNgxHost(ID3D12Device*, ID3D12CommandQueue* = nullptr, bool wanted = false);
+// The host was left out for that reason: DLSS is still offered on D3D12, and picking it loads the host.
+bool NgxHostDeferred();
 // NeuralHub 0.8.0 is installed beside this DLL on an AMD GPU (or already armed): its host can serve DLSS-SR/DLSS-RR.
 bool NgxHostInstalled();
 // For a Vulkan or D3D11 game, whose NGX calls never reach EnsureNgxHost: arms the host on OptiScaler's D3D12 device

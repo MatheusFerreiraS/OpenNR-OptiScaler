@@ -42,6 +42,7 @@ std::atomic<DlssNr::Backend::Host*> backend { nullptr };
 // danielblnc 0.8.0's host loaded only as the NGX DLSS-SR/DLSS-RR provider, when NrBackend is another runtime (lmxxf,
 // mochizuki) or off. It never records NR; the bridge only forwards the host's NGX lists to it. Process lifetime.
 std::atomic<AmdPreSr::Backend*> ngxHostOnly { nullptr };
+std::atomic<bool> ngxHostDeferred { false };
 // COM identity and adapter of the device the backend was built on (guarded by initMutex). The backend lives for
 // the process, so this reference is never released either.
 IUnknown* backendDevice = nullptr;
@@ -581,7 +582,8 @@ const char* RuntimeName()
     }
     return cachedName;
 }
-bool EnsureNgxHost(ID3D12Device* device, ID3D12CommandQueue* q)
+bool NgxHostDeferred() { return ngxHostDeferred.load(std::memory_order_relaxed) && !State::Instance().NeuralHubArmOk; }
+bool EnsureNgxHost(ID3D12Device* device, ID3D12CommandQueue* q, bool wanted)
 {
     if (State::Instance().NeuralHubArmOk)
         return true;
@@ -604,6 +606,18 @@ bool EnsureNgxHost(ID3D12Device* device, ID3D12CommandQueue* q)
         return false;
     if (!IsAmd(device))
         return false;
+    if (hostOnly && !wanted)
+    {
+        const auto upscaler = Config::Instance()->Dx12Upscaler.value_for_config();
+        if (!(upscaler == Upscaler::DLSS || upscaler == Upscaler::DLSSD) && !NeuralHubFgInstalled())
+        {
+            if (!ngxHostDeferred.exchange(true, std::memory_order_relaxed))
+                LOG_INFO("AMD neural: NrBackend={}; danielblnc {} host not loaded, neither its DLSS nor its DLSS-FG was "
+                         "asked for (picking DLSS in the menu loads it)",
+                         Config::Instance()->NrBackend.value_or_default(), build);
+            return false;
+        }
+    }
 
     ID3D12CommandQueue* confirmedQ = nullptr;
     if (!q)
@@ -713,7 +727,7 @@ bool EnsureNgxHostForInterop()
         ScopedSkipVulkanHooks skipVulkanHooks {};
         device = WithDx12::RequestD3D12Device(D3D_FEATURE_LEVEL_12_0, nullptr);
     }
-    const bool armed = device && EnsureNgxHost(device);
+    const bool armed = device && EnsureNgxHost(device, nullptr, true);
     LOG_INFO("AMD neural: NeuralHub host for a w/Dx12 DLSS feature: {}", armed ? "armed" : "not armed");
     return armed;
 }
