@@ -190,7 +190,8 @@ class MenuCommon
 
     static Upscaler GetBackendCode(const API api);
     static void GetCurrentBackendInfo(const API api, Upscaler& upscaler, std::string* name);
-    static void RenderUpscalerCombo(const API api, Upscaler currentUpscaler, const std::vector<Upscaler>& options);
+    static void RenderUpscalerCombo(const API api, Upscaler currentUpscaler, const std::vector<Upscaler>& options,
+                                    bool rrFeature = false);
     static void AddDx11Backends(Upscaler upscaler);
     static void AddDx12Backends(Upscaler upscaler);
     static void AddVulkanBackends(Upscaler upscaler);

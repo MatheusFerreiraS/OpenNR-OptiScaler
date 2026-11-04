@@ -878,6 +878,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_CreateFeature1(VkDevice InDevice
         LOG_INFO("Creating new {} upscaler", UpscalerDisplayName(upscalerChoice));
 
         VkContexts[handleId] = {};
+        VkContexts[handleId].featureID = InFeatureID;
 
         if (!FeatureProvider_Vk::GetFeature(upscalerChoice, handleId, InParameters, &VkContexts[handleId].feature))
         {
@@ -902,6 +903,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_CreateFeature1(VkDevice InDevice
         DLSSDFeature::SyncCreateParams(InParameters);
 
         VkContexts[handleId] = {};
+        VkContexts[handleId].featureID = InFeatureID;
 
         if (!FeatureProvider_Vk::GetFeature(rr, handleId, InParameters, &VkContexts[handleId].feature))
         {
@@ -941,6 +943,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_CreateFeature1(VkDevice InDevice
         if (inited)
         {
             State::Instance().currentFeature = deviceContext;
+            State::Instance().vkFeatureIsRr = InFeatureID == NVSDK_NGX_Feature_RayReconstruction;
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
             evalCounter = 0;
 
@@ -1140,6 +1143,7 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_VULKAN_EvaluateFeature(VkCommandBuffer 
 
     deviceContext = VkContexts[handleId].feature.get();
     state.currentFeature = deviceContext;
+    state.vkFeatureIsRr = contextData->featureID == NVSDK_NGX_Feature_RayReconstruction;
 
     // A backend ending in _on12 does its work on a D3D12 device and IFeature_VkwDx12 runs the model there, on the
     // D3D12 command list, over the D3D12 copies of these surfaces (the D3D12 seam, AMD runtimes included). Running it

@@ -25,6 +25,7 @@
 #include <proxies/FfxApi_Proxy.h>
 #include <upscalers/ffx/FFXFeature.h>
 #include <upscalers/opennr_rr/OpenNrRrFeature_Dx12.h>
+#include <upscalers/opennr_rr/OpenNrRrFeature_Vk.h>
 #include <fsr4/FSR4Models.h>
 #include <fsr4/FSR4Presets.h>
 #include <fsr4/FSR4DriverProviderVk.h>
@@ -895,7 +896,8 @@ static std::vector<int> FfxVersionsNewestFirst(const State::FfxVersionList& vers
     return order;
 }
 
-void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, const std::vector<Upscaler>& options)
+void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, const std::vector<Upscaler>& options,
+                                     bool rrFeature)
 {
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
     auto config = Config::Instance();
@@ -916,10 +918,15 @@ void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, co
         return ShortUpscalerName(upscaler, api, index);
     };
 
+    // On a Ray Reconstruction feature only OpenRR denoises, the others run Super Resolution alone
+    auto noDenoiser = [rrFeature](Upscaler upscaler) { return rrFeature && upscaler != Upscaler::OpenNrRr; };
+
     // Interop is only shown here, the list uses a tag for it
     auto selectedName = upscalerName(targetBackend, ffxIndex);
     if (IsOn12(targetBackend))
         selectedName += " (Dx12)";
+    if (noDenoiser(targetBackend))
+        selectedName += " (no denoiser)";
 
     if (!ImGui::BeginCombo("##UpscalerCombo", selectedName.c_str(), ImGuiComboFlags_HeightLargest))
         return;
@@ -1009,10 +1016,16 @@ void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, co
                 config->FfxUpscalerIndex = entry.ffxIndex;
         }
 
+        if (noDenoiser(entry.upscaler) && ImGui::IsItemHovered())
+            ImGui::SetTooltip("No denoiser (Ray Reconstruction off): the game's path-traced image is only upscaled "
+                              "and stays noisy. Pick OpenRR to denoise it again.");
+
         // Dimmed tags aligned to the right
         const char* tag = nullptr;
 
-        if (entry.ffxIndex >= 0 && IsOn12(entry.upscaler))
+        if (noDenoiser(entry.upscaler))
+            tag = "no denoiser";
+        else if (entry.ffxIndex >= 0 && IsOn12(entry.upscaler))
             tag = "FFX Dx12";
         else if (entry.ffxIndex >= 0)
             tag = "FFX";
@@ -1056,6 +1069,9 @@ static bool OpenNrRrOffered(std::string* reason)
     return reason->empty();
 }
 
+// Vulkan: whether OpenRR runs on the game's device (made for it at vkCreateDevice); reason says why not
+static bool OpenNrRrOfferedVk(std::string* reason) { return OpenNrRr::VkUsable(VK_NULL_HANDLE, VK_NULL_HANDLE, reason); }
+
 void MenuCommon::AddDx12Backends(Upscaler upscaler)
 {
     std::vector<Upscaler> options { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::DLSS };
@@ -1076,11 +1092,13 @@ void MenuCommon::AddVulkanBackends(Upscaler upscaler)
     std::vector<Upscaler> options { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22,
                                     Upscaler::FFX,  Upscaler::DLSS,  Upscaler::DLSS_on12 };
 
-    // Ray Reconstruction on OpenRR (the game's Vulkan device): kept in the list while it runs
-    if (upscaler == Upscaler::OpenNrRr)
+    // The game runs Ray Reconstruction: OpenRR is its denoiser, the others only upscale
+    const bool rr = State::Instance().vkFeatureIsRr;
+    std::string reason;
+    if (upscaler == Upscaler::OpenNrRr || (rr && OpenNrRrOfferedVk(&reason)))
         options.push_back(Upscaler::OpenNrRr);
 
-    RenderUpscalerCombo(API::Vulkan, upscaler, options);
+    RenderUpscalerCombo(API::Vulkan, upscaler, options, rr);
 }
 
 template <HasDefaultValue B> void MenuCommon::AddResourceBarrier(std::string name, CustomOptional<int32_t, B>* value)
@@ -3312,9 +3330,13 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
     const bool usesDlssd = currentFeature->GetUpscalerType() == Upscaler::DLSSD;
     const bool usesRr = usesDlssd || currentFeature->GetUpscalerType() == Upscaler::FSR_RR ||
                         currentFeature->GetUpscalerType() == Upscaler::OpenNrRr;
+    // Vulkan keeps the game's Ray Reconstruction request in vkFeatureIsRr, also while FSR or XeSS runs it
+    const bool vkRr = state.api == Vulkan && state.vkFeatureIsRr;
+    const bool rrOnAmd =
+        primaryGpu.vendorId != VendorId::Nvidia && ((state.api == DX12 && usesRr) || vkRr);
     std::string openNrRrReason;
     const bool openNrRrOffered =
-        state.api == DX12 && usesRr && primaryGpu.vendorId != VendorId::Nvidia && OpenNrRrOffered(&openNrRrReason);
+        rrOnAmd && (state.api == DX12 ? OpenNrRrOffered(&openNrRrReason) : OpenNrRrOfferedVk(&openNrRrReason));
     // FSR-RR or OpenRR on DX12 can take over from DLSSD on a non-Nvidia GPU
     const bool canSwitchRrOnDx12 = state.api == DX12 && primaryGpu.vendorId != VendorId::Nvidia &&
                                    (FfxApiProxy::IsDenoiserApiImplementedDx12() || openNrRrOffered);
@@ -3357,6 +3379,8 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
 
     if (!usesDlssd || canSwitchRrOnDx12)
     {
+        static bool noDenoiserToasted = false;
+
         if (state.newBackend != Upscaler::Reset && state.newBackend != currentBackend)
         {
             if (state.newBackend == Upscaler::XeSS)
@@ -3367,15 +3391,27 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             }
 
             // The Ray Reconstruction provider picked here is the one the next launch starts with
-            if (usesRr && state.api == DX12 &&
+            if (((usesRr && state.api == DX12) || vkRr) &&
                 (state.newBackend == Upscaler::OpenNrRr || currentBackend == Upscaler::OpenNrRr))
                 config->OpenNrRrEnabled = state.newBackend == Upscaler::OpenNrRr;
 
+            if (vkRr && state.newBackend != Upscaler::OpenNrRr && !noDenoiserToasted)
+            {
+                noDenoiserToasted = true;
+                ImGui::InsertNotification({ ImGuiToastType::Warning, 8000,
+                                            "%s has no denoiser: Ray Reconstruction is off",
+                                            UpscalerDisplayName(state.newBackend, state.api).c_str() });
+            }
+
             MARK_ALL_BACKENDS_CHANGED();
+        }
+        else
+        {
+            noDenoiserToasted = false;
         }
     }
 
-    if (state.api == DX12 && usesRr && primaryGpu.vendorId != VendorId::Nvidia && !openNrRrOffered)
+    if (rrOnAmd && !openNrRrOffered)
     {
         ImGui::Spacing();
         ImGui::TextDisabled("OpenRR: %s", openNrRrReason.c_str());

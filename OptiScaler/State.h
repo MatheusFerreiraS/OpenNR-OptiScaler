@@ -460,6 +460,8 @@ class State
     bool fsrHooks = false;
 
     IFeature* currentFeature = nullptr;
+    // Vulkan: the game created currentFeature as Ray Reconstruction, whatever upscaler runs it now
+    bool vkFeatureIsRr = false;
     IFGFeature_Dx12* currentFG = nullptr;
     IFGFeature_Vk* currentVkFG = nullptr;
     IDXGISwapChain* currentSwapchain = nullptr;
