@@ -7,6 +7,9 @@
 //   E2E_DUMP        how many of the last frames to write (<prefix>_fN.bin, RGBA16F rows at the full size), default 1
 //   E2E_NOGUIDES    no depth
 //   E2E_FORMAT      rgba8: sRGB UNORM colour instead of RGBA16F
+//   E2E_JITTER      1: a Halton sub-pixel jitter in the colour each frame (a render frame before SR)
+//   E2E_CREATE_FLAGS  2: ACO's network
+//   E2E_FEED        the RenoDX stage's HDR divisor feed (MochizukiRenoFeedMode)
 // Prints the grid, the runtime's status (network median), and the GPU time of the warp and unwarp passes.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -21,6 +24,7 @@
 #include <string>
 #include <vector>
 #include "LmxxfNrApi.h"
+#include "MochizukiNrControls.h"
 #include "../../OptiScaler/dlssnr/amd/Foveation.h"
 
 static void Require(bool ok, const char* what)
@@ -192,22 +196,52 @@ int main(int argc, char** argv)
             bytes[i] = uint8_t(v * 255 + .5f);
         }
     }
-    auto fill = [&](int shift) {
+    // E2E_JITTER: the colour sampled bilinearly at a Halton (2, 3) sub-pixel offset each frame, as a jittered render
+    // frame; the motion vectors stay jitter-free (the game's usual case).
+    const bool jitter = envI("E2E_JITTER", 0) != 0;
+    std::vector<float> linear;
+    if (jitter)
+    {
+        auto h2f = [](uint16_t x) { uint32_t e = (x >> 10) & 31, mm = x & 1023; float v = e ? std::ldexp(float(mm | 1024), int(e) - 25) : std::ldexp(float(mm), -24); return (x & 0x8000) ? -v : v; };
+        linear.resize(pixels.size());
+        for (size_t i = 0; i < pixels.size(); ++i)
+            linear[i] = unorm ? bytes[i] / 255.f : h2f(pixels[i]);
+    }
+    auto halton = [](int i, int b) { float f = 1, r = 0; for (; i > 0; i /= b) { f /= b; r += f * (i % b); } return r; };
+    auto fill = [&](int shift, int frame) {
         uint8_t* m = nullptr;
         Check(colour.buf->Map(0, nullptr, reinterpret_cast<void**>(&m)), "map");
+        const float jx = jitter ? halton(frame % 8 + 1, 2) - .5f : 0, jy = jitter ? halton(frame % 8 + 1, 3) - .5f : 0;
         for (UINT y = 0; y < h; ++y)
             for (UINT x = 0; x < w; ++x)
             {
                 const size_t src = size_t(y) * w + (x + w - UINT(shift) % w) % w;
                 uint8_t* dst = m + colour.fp.Offset + size_t(y) * colour.fp.Footprint.RowPitch;
-                if (unorm)
+                if (jitter)
+                {
+                    const float fx = float(x) + jx + 2 * w - float(shift % int(w)), fy = std::clamp(float(y) + jy, 0.f, float(h - 1));
+                    const int x0 = int(fx), y0 = int(fy);
+                    const float ax = fx - x0, ay = fy - y0;
+                    const size_t r0 = size_t(y0) * w, r1 = size_t(std::min<int>(y0 + 1, int(h) - 1)) * w;
+                    const size_t c0 = size_t(x0 % w), c1 = size_t((x0 + 1) % w);
+                    for (int c = 0; c < 4; ++c)
+                    {
+                        const float v = (1 - ay) * ((1 - ax) * linear[(r0 + c0) * 4 + c] + ax * linear[(r0 + c1) * 4 + c]) +
+                                        ay * ((1 - ax) * linear[(r1 + c0) * 4 + c] + ax * linear[(r1 + c1) * 4 + c]);
+                        if (unorm)
+                            dst[size_t(x) * 4 + c] = uint8_t(std::clamp(v, 0.f, 1.f) * 255 + .5f);
+                        else
+                            reinterpret_cast<uint16_t*>(dst)[size_t(x) * 4 + c] = F2H(v);
+                    }
+                }
+                else if (unorm)
                     memcpy(dst + size_t(x) * 4, bytes.data() + src * 4, 4);
                 else
                     memcpy(dst + size_t(x) * 8, pixels.data() + src * 4, 8);
             }
         colour.buf->Unmap(0, nullptr);
     };
-    fill(0);
+    fill(0, 0);
     {
         uint8_t* m = nullptr;
         Check(motion.buf->Map(0, nullptr, reinterpret_cast<void**>(&m)), "map mv");
@@ -256,6 +290,7 @@ int main(int argc, char** argv)
     ci.device = device;
     ci.queue = queue;
     ci.assets_directory = modules.c_str();
+    ci.flags = uint32_t(envI("E2E_CREATE_FLAGS", 0)); // 2: ACO
     void* ctx = nullptr;
     char err[1024] {};
     if (api.Create(&ci, &ctx) != LMXXF_NR_OK || api.PrepareSession(ctx) != LMXXF_NR_OK)
@@ -264,6 +299,19 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "FAIL: create/prepare: %s\n", err);
         return 1;
     }
+    // E2E_FEED=n: the RenoDX stage's HDR divisor feed (0 auto, 1 the content meter, 2 the game's exposure: fixed 1
+    // without a texture).
+    if (env("E2E_FEED"))
+    {
+        auto defs = reinterpret_cast<PFN_MochizukiNrGetControlDefaults>(GetProcAddress(dll, "MochizukiNrGetControlDefaults"));
+        auto set = reinterpret_cast<PFN_MochizukiNrSetControls>(GetProcAddress(dll, "MochizukiNrSetControls"));
+        MochizukiNrControls c {};
+        c.struct_size = sizeof(c);
+        Require(defs && set && defs(&c) == LMXXF_NR_OK, "control defaults");
+        c.reno_feed_mode = uint32_t(envI("E2E_FEED", 0));
+        Require(set(ctx, &c) == LMXXF_NR_OK, "SetControls");
+        std::printf("controls: feed %u\n", c.reno_feed_mode);
+    }
     AmdPreSr::Foveation::Passes passes(device);
     std::vector<double> times, warpMs, unwarpMs;
     for (int f = 0; f < frames; ++f)
@@ -271,9 +319,9 @@ int main(int argc, char** argv)
         const auto t0 = std::chrono::steady_clock::now();
         Check(alloc->Reset(), "alloc reset");
         Check(list->Reset(alloc, nullptr), "list reset");
-        if (pan)
+        if (pan || jitter)
         {
-            fill(f * pan);
+            fill(f * pan, f);
             copyUp(colour, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
         AmdPreSr::Frame full {};

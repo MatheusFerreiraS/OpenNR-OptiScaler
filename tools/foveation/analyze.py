@@ -87,6 +87,11 @@ def main():
                 f'ramp {psnr(img, ref_img, r):.2f}, edge {psnr(img, ref_img, e):.2f} dB')
         if inp is not None:
             line += f'; edge input vs full NR {psnr(inp, ref_img, e):.2f}'
+        # The centre's global shift: mean luminance of the foveated answer over the full one there, and the centre's
+        # PSNR once that gain is taken out.
+        lum = lambda x: x @ np.array([.2126, .7152, .0722], np.float32)
+        gain = lum(img)[c].mean() / max(lum(ref_img)[c].mean(), 1e-6)
+        line += f'; centre gain {100 * (gain - 1):+.1f}%, without it {psnr(np.clip(img / gain, 0, 1), ref_img, c):.2f} dB'
         print(line)
         if pan:
             tr, tf = temporal(dirn, ref, w, h, pan, (c, r, e)), temporal(dirn, tag, w, h, pan, (c, r, e))
