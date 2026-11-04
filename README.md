@@ -9,6 +9,8 @@ This README covers what the fork adds. For OptiScaler itself, see the
 
 Discord: <https://discord.gg/wYhvS3JSHM>
 
+Ko-fi: <https://ko-fi.com/T6T213OVFE>
+
 ## Supported GPUs
 
 | Feature | Radeon cards |
@@ -16,7 +18,7 @@ Discord: <https://discord.gg/wYhvS3JSHM>
 | NR, danielblnc 0.6.0 (HIP) | RX 6000, RX 7000, RX 9000 with HIP 7 (RX 6000 needs AMD's HIP SDK 7.2) |
 | NR, danielblnc 0.8.0 (NeuralHub host) | RX 7000, RX 9000 |
 | NR, lmxxf 0.45 | RX 9070 and RX 9060 series |
-| NR, mochizuki 0.0.8.2 (Vulkan) | RX 9000; RX 7000 and RDNA3 APUs on an experimental network |
+| NR, mochizuki 0.0.8.2 (Vulkan) | RX 9000; RX 7000, RDNA3 APUs and RX 6000 on experimental networks |
 | Ray Reconstruction, OpenRR 0.1.0 | RX 9000, D3D12 and Vulkan games |
 | Ray Reconstruction, FSR-RR (AMD Ray Regeneration) | RX 9000 |
 
@@ -47,7 +49,11 @@ or downloaded by the installer.
   and [mochizuki0323's Vulkan port](https://gitlab.com/mochizuki0323/DLSSNR-AMD).
 - **NR before upscaling, or on the final image** in games without an upscaler (D3D9, D3D11, D3D12, Vulkan, OpenGL).
 - **OpenRR**: our own DLSS Ray Reconstruction runtime (MIT), built from the game's `nvngx_dlssd.dll` 310.9.1. When it
-  can't run, Ray Reconstruction falls back to FSR-RR. Settings in `[OpenNR-RR]`.
+  can't run, Ray Reconstruction falls back to FSR-RR. In D3D12 games mochizuki can run on its denoised image. Settings
+  in `[OpenNR-RR]`.
+- **Foveated NR** (experimental, off by default, `Foveation`): the network runs at full density in the centre and lower
+  toward the edges, about 15 to 35% less neural pass time. mochizuki before the upscaler, also with OpenRR in D3D12
+  games; mochizuki and danielblnc on the final image in D3D11 and D3D12.
 - **FSR SDK 2.4**: FSR 4.1.2 upscaling, frame generation 4.0.2 and Ray Regeneration 1.2.1 as FSR-RR
   (`Dx12Upscaler=fsr-rr`).
 - **XeSS multi frame generation** up to 8X on AMD cards (`FGOutput=xefg`).
@@ -93,6 +99,7 @@ OpenRR is built from its own repository. CI checks formatting with clang-format 
 - [Coldwood1026/OptiScalerDp4aUnlock](https://github.com/Coldwood1026/OptiScalerDp4aUnlock): the XeFG multi frame
   generation unlock and pacing. YiBoF added its Intel Arc support.
 - [RenoDX](https://github.com/clshortfuse/renodx) by clshortfuse: the colour composition in `dlssnr.hlsl`.
+- [FoveatedDLSS5](https://github.com/maximedgoulet/FoveatedDLSS5) by maximedgoulet (MIT): the warp behind foveated NR.
 - Person protection models: PP-HumanSeg (Apache-2.0) and YuNet (MIT) from the OpenCV Zoo, Ultralytics YOLO11n-seg
   (AGPL-3.0), run by ONNX Runtime (MIT). See `third_party/onnxruntime/README.md`.
 
