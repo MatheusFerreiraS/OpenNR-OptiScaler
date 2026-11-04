@@ -236,7 +236,7 @@ struct IdCvar
 };
 
 // Cvar objects named name: a pointer to the name's string in a writable section 0x30 into the object, whose
-// data names it as well and holds "0" or "1"
+// data names it as well and holds a number as its value string
 inline std::vector<IdCvar> FindIdCvar(const char* name, std::string& why)
 {
     std::vector<IdCvar> cvars;
@@ -272,7 +272,7 @@ inline std::vector<IdCvar> FindIdCvar(const char* name, std::string& why)
             int32_t value = -1;
             float floatValue = -1.0f;
             char dataName[64] {};
-            char valueText[4] {};
+            char valueText[16] {};
             if (!SafeRead((const void*) (data + 0x28), &namePointer, 8) ||
                 !ReadString(namePointer, dataName, sizeof(dataName)) || strcmp(dataName, name) != 0)
                 continue;
@@ -280,9 +280,11 @@ inline std::vector<IdCvar> FindIdCvar(const char* name, std::string& why)
                 !ReadString(valuePointer, valueText, sizeof(valueText)) ||
                 !SafeRead((const void*) (data + 8), &value, 4) || !SafeRead((const void*) (data + 0xC), &floatValue, 4))
                 continue;
-            // Before the cvar system parses it the int and float are still 0 next to the "1"
-            if ((value != 0 && value != 1) || (floatValue != 0.0f && floatValue != 1.0f) ||
-                (valueText[0] != '0' && valueText[0] != '1') || valueText[1] != 0)
+            // Before the cvar system parses it the int and float are still 0 next to the default string
+            char* parsedEnd = nullptr;
+            const long parsed = strtol(valueText, &parsedEnd, 10);
+            if (valueText[0] == 0 || (*parsedEnd != 0 && *parsedEnd != '.') || (value != 0 && value != parsed) ||
+                (floatValue != 0.0f && (int32_t) floatValue != value))
                 continue;
 
             cvars.push_back({ object });
@@ -360,6 +362,61 @@ inline void DoomStreamlineAnyVendor()
         }
 
         LOG_INFO("DoomStreamlineAnyVendor: r_streamlineRestrictVendors 1 -> 0 {}", written ? "written" : "failed");
+    }
+}
+
+// GateDiagnostics: logs when one of these id Tech cvars changes, checked at every present
+inline void WatchCvars()
+{
+    if (!On() || !ExeListed(Config::Instance()->StreamlineAnyVendorExes.value_or_default()))
+        return;
+
+    struct Watched
+    {
+        const char* name;
+        std::vector<IdCvar> cvars;
+        int32_t last = INT32_MIN;
+    };
+
+    static std::mutex mutex;
+    static bool searched = false;
+    static Watched watched[] = { { "r_antialiasing" },
+                                 { "r_dlssQuality" },
+                                 { "r_pathtracingEnabled" },
+                                 { "r_pathtracingDenoiserMode" },
+                                 { "r_streamlineDLSS" },
+                                 { "r_streamlineRestrictVendors" } };
+
+    std::scoped_lock lock(mutex);
+
+    if (!searched)
+    {
+        searched = true;
+        for (auto& entry : watched)
+        {
+            std::string why;
+            entry.cvars = FindIdCvar(entry.name, why);
+            if (entry.cvars.empty())
+                LOG_INFO("GateDiag cvar {} not found ({})", entry.name, why);
+        }
+    }
+
+    for (auto& entry : watched)
+    {
+        if (entry.cvars.empty())
+            continue;
+
+        uint64_t data = 0;
+        int32_t value = 0;
+        if (!SafeRead(entry.cvars[0].object, &data, 8) || data == 0 || !SafeRead((const void*) (data + 8), &value, 4))
+            continue;
+
+        if (value != entry.last)
+        {
+            LOG_INFO("GateDiag cvar {}: {} -> {}", entry.name, entry.last == INT32_MIN ? std::string("?") :
+                     std::to_string(entry.last), value);
+            entry.last = value;
+        }
     }
 }
 

@@ -4,6 +4,7 @@
 
 #include <Util.h>
 #include <Config.h>
+#include <misc/GateDiag.h>
 #include <SysUtils.h>
 
 #include <menu/menu_overlay_vk.h>
@@ -909,6 +910,8 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
 VALIDATE_HOOK(hkvkQueuePresentKHR, PFN_vkQueuePresentKHR)
 static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo)
 {
+    GateDiag::WatchCvars();
+
     auto fg = State::Instance().currentVkFG;
 
     // FFX presents the real swapchain from its own queue
