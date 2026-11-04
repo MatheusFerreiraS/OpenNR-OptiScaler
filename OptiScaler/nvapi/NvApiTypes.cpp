@@ -8,7 +8,6 @@ NvApiTypes::NvApiTypes()
     for (const auto& entry : nvapi_interface_table)
     {
         lookupTable[entry.func] = entry.id;
-        nameTable[entry.id] = entry.func;
     }
 }
 NvApiTypes& NvApiTypes::Instance()
@@ -26,10 +25,4 @@ unsigned int NvApiTypes::getId(const std::string& name) const
     }
     LOG_TRACE("Not a known nvapi interface");
     return 0;
-}
-
-std::string NvApiTypes::getName(unsigned int id) const
-{
-    auto it = nameTable.find(id);
-    return it != nameTable.end() ? it->second : "unknown";
 }

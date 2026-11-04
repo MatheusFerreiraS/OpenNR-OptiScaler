@@ -1106,15 +1106,6 @@ bool Config::Reload(std::filesystem::path iniPath)
             VulkanSpoofing.set_from_config(readBool("Spoofing", "Vulkan"));
             VulkanExtensionSpoofing.set_from_config(readBool("Spoofing", "VulkanExtensionSpoofing"));
             VulkanVRAM.set_from_config(readInt("Spoofing", "VulkanVRAM"));
-            VulkanSpoofGameOnly.set_from_config(readBool("Spoofing", "VulkanGameOnly"));
-            VulkanDriverIdOnly.set_from_config(readBool("Spoofing", "VulkanDriverIdOnly"));
-            DoomStreamlineAnyVendor.set_from_config(readBool("Spoofing", "DoomStreamlineAnyVendor"));
-            DoomKeepDlssRR.set_from_config(readBool("Spoofing", "DoomKeepDlssRR"));
-            StreamlineAnyVendorExes.set_from_config(readString("Spoofing", "StreamlineAnyVendorExes"));
-            VulkanExtensionSpoofList.set_from_config(readString("Spoofing", "VulkanExtensionList"));
-            GateDiagnostics.set_from_config(readBool("Spoofing", "GateDiagnostics"));
-            StreamlineForceSupported.set_from_config(readBool("Spoofing", "StreamlineForceSupported"));
-            StreamlineTrimRequirements.set_from_config(readBool("Spoofing", "StreamlineTrimRequirements"));
             SpoofedGPUName.set_from_config(readWString("Spoofing", "SpoofedGPUName"));
             StreamlineSpoofing.set_from_config(readBool("Spoofing", "StreamlineSpoofing"));
             SpoofHAGS.set_from_config(readBool("Spoofing", "SpoofHAGS"));
@@ -2406,24 +2397,6 @@ bool Config::SaveIni()
         ini.SetValue("Spoofing", "VulkanExtensionSpoofing",
                      GetBoolValue(Instance()->VulkanExtensionSpoofing.value_for_config()).c_str());
         ini.SetValue("Spoofing", "VulkanVRAM", GetIntValue(Instance()->VulkanVRAM.value_for_config()).c_str());
-        ini.SetValue("Spoofing", "VulkanGameOnly",
-                     GetBoolValue(Instance()->VulkanSpoofGameOnly.value_for_config()).c_str());
-        ini.SetValue("Spoofing", "DoomStreamlineAnyVendor",
-                     GetBoolValue(Instance()->DoomStreamlineAnyVendor.value_for_config()).c_str());
-        ini.SetValue("Spoofing", "DoomKeepDlssRR",
-                     GetBoolValue(Instance()->DoomKeepDlssRR.value_for_config()).c_str());
-        ini.SetValue("Spoofing", "StreamlineAnyVendorExes",
-                     Instance()->StreamlineAnyVendorExes.value_for_config_or("auto").c_str());
-        ini.SetValue("Spoofing", "VulkanDriverIdOnly",
-                     GetBoolValue(Instance()->VulkanDriverIdOnly.value_for_config()).c_str());
-        ini.SetValue("Spoofing", "VulkanExtensionList",
-                     Instance()->VulkanExtensionSpoofList.value_for_config_or("auto").c_str());
-        ini.SetValue("Spoofing", "GateDiagnostics",
-                     GetBoolValue(Instance()->GateDiagnostics.value_for_config()).c_str());
-        ini.SetValue("Spoofing", "StreamlineForceSupported",
-                     GetBoolValue(Instance()->StreamlineForceSupported.value_for_config()).c_str());
-        ini.SetValue("Spoofing", "StreamlineTrimRequirements",
-                     GetBoolValue(Instance()->StreamlineTrimRequirements.value_for_config()).c_str());
         ini.SetValue("Spoofing", "DxgiVRAM", GetIntValue(Instance()->DxgiVRAM.value_for_config()).c_str());
         ini.SetValue("Spoofing", "SpoofedGPUName",
                      wstring_to_string(Instance()->SpoofedGPUName.value_for_config_or(L"auto")).c_str());

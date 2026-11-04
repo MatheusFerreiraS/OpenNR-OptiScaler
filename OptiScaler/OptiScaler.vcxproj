@@ -382,7 +382,6 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="shaders\reproject\precompile\reproject_stats_Shader_Vk.h" />
     <ClInclude Include="shaders\reproject\Reproject_Dx12.h" />
     <ClInclude Include="shaders\Shader_Common.h" />
-    <ClInclude Include="misc\GateDiag.h" />
     <ClInclude Include="misc\SkipSpoof.h" />
     <ClInclude Include="misc\FirstLightPTUnlock.h" />
     <ClInclude Include="misc\GameConfigs.h" />

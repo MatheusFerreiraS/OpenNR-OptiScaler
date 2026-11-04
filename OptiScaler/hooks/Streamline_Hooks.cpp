@@ -7,7 +7,6 @@
 
 #include <nvapi/fakenvapi.h>
 #include <misc/IdentifyGpu.h>
-#include <misc/GateDiag.h>
 #include <framegen/nvngx/Nvngx_FG.h>
 #include <dlssnr/amd/AmdBridge.h>
 #include <framegen/dlssg/MfgUnlock.h>
@@ -998,19 +997,6 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
     // renderAPI is optional so need to be careful, should only matter for Vulkan
     renderApi = localPref.renderAPI;
 
-    GateDiag::DoomStreamlineAnyVendor();
-
-    if (GateDiag::On())
-    {
-        std::string features;
-        for (uint32_t i = 0; i < localPref.numFeaturesToLoad && localPref.featuresToLoad != nullptr; i++)
-            features += std::format(" {}", (uint32_t) localPref.featuresToLoad[i]);
-
-        LOG_INFO("GateDiag slInit from {}: features to load [{}], flags {:X}, appId {}, engine {}, renderAPI {}",
-                 GateDiag::Caller(_ReturnAddress()), features, (uint64_t) localPref.flags, localPref.applicationId,
-                 (int) localPref.engine, (int) localPref.renderAPI);
-    }
-
     State::Instance().slFGInputs.reportEngineType(localPref.engine);
 
     // Treat engine type set in Streamline as ground truth
@@ -1184,140 +1170,40 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
     return o_slInit(localPref, sdkVersion);
 }
 
-// These hooks short-circuit DLSS-G only when OptiScaler's DLSSG input owns it
-static bool OwnsDlssg() { return State::Instance().activeFgInput == FGInput::DLSSG; }
-
-static std::string JoinNames(const char** names, uint32_t count)
-{
-    std::string out;
-    for (uint32_t i = 0; i < count && names != nullptr; i++)
-        out += std::format(" {}", names[i] != nullptr ? names[i] : "(null)");
-    return out;
-}
-
 sl::Result StreamlineHooks::hkslIsFeatureSupported(sl::Feature feature, const sl::AdapterInfo& adapterInfo)
 {
     void* retAddr = _ReturnAddress();
     LOG_INFO("slIsFeatureSupported: feature {} caller {}", (int) feature, retAddr);
 
-    if (OwnsDlssg() && (feature == sl::kFeatureDLSS_G || feature == sl::kFeatureDLSS_RR))
+    if (feature == sl::kFeatureDLSS_G || feature == sl::kFeatureDLSS_RR)
         return sl::Result::eOk;
-
-    GateDiag::DoomStreamlineAnyVendor();
 
     auto result = o_slIsFeatureSupported(feature, adapterInfo);
     LOG_INFO("slIsFeatureSupported: feature {} result: {} caller {}", (int) feature, (int) result, retAddr);
-
-    auto answer = result;
-    if (Config::Instance()->StreamlineForceSupported.value_or_default() &&
-        (feature == sl::kFeatureDLSS || feature == sl::kFeatureDLSS_RR))
-        answer = sl::Result::eOk;
-
-    if (GateDiag::On())
-    {
-        std::string luid = "none";
-        if (adapterInfo.deviceLUID != nullptr)
-        {
-            luid.clear();
-            for (uint32_t i = 0; i < adapterInfo.deviceLUIDSizeInBytes; i++)
-                luid += std::format("{:02X}", adapterInfo.deviceLUID[i]);
-        }
-
-        auto from = GateDiag::Caller(retAddr);
-        if (GateDiag::First(std::format("slsup|{}|{}|{}|{}", from, (uint32_t) feature, (int) result, luid)))
-            LOG_INFO("GateDiag slIsFeatureSupported from {}: feature {} LUID {} vkPhysicalDevice {} -> {} ({}), "
-                     "answered {}",
-                     from, (uint32_t) feature, luid, adapterInfo.vkPhysicalDevice, (int) result,
-                     magic_enum::enum_name(result), (int) answer);
-        GateDiag::LogDoomState("slIsFeatureSupported");
-    }
-
-    return answer;
+    return result;
 }
 
 sl::Result StreamlineHooks::hkslIsFeatureLoaded(sl::Feature feature, bool& loaded)
 {
-    if (OwnsDlssg() && (feature == sl::kFeatureDLSS_G || feature == sl::kFeatureDLSS_RR))
+    if (feature == sl::kFeatureDLSS_G || feature == sl::kFeatureDLSS_RR)
     {
         loaded = true;
         return sl::Result::eOk;
     }
 
-    auto result = o_slIsFeatureLoaded(feature, loaded);
-
-    if (GateDiag::On())
-    {
-        auto from = GateDiag::Caller(_ReturnAddress());
-        if (GateDiag::First(std::format("slloaded|{}|{}|{}|{}", from, (uint32_t) feature, (int) result, loaded)))
-            LOG_INFO("GateDiag slIsFeatureLoaded from {}: feature {} -> {}, loaded {}", from, (uint32_t) feature,
-                     (int) result, loaded);
-    }
-
-    return result;
+    return o_slIsFeatureLoaded(feature, loaded);
 }
 
 sl::Result StreamlineHooks::hkslGetFeatureRequirements(sl::Feature feature, sl::FeatureRequirements& requirements)
 {
     LOG_INFO("slGetFeatureRequirements: feature {}", (int) feature);
 
-    if (OwnsDlssg() && feature == sl::kFeatureDLSS_G)
+    if (feature == sl::kFeatureDLSS_G)
         return sl::Result::eOk;
-
-    GateDiag::DoomStreamlineAnyVendor();
 
     auto result = o_slGetFeatureRequirements(feature, requirements);
     LOG_INFO("slGetFeatureRequirements: feature {} result: {} flags: {} driverReq: {}", (int) feature, (int) result,
              (int) requirements.flags, requirements.driverVersionRequired.toStr());
-
-    if (GateDiag::On())
-    {
-        LOG_INFO("GateDiag slGetFeatureRequirements from {}: feature {} -> {}, flags {:X}, OS {} (needs {}), driver {} "
-                 "(needs {}), queues compute {} graphics {} opticalFlow {}, device ext [{}], instance ext [{}], "
-                 "features12 [{}], features13 [{}]",
-                 GateDiag::Caller(_ReturnAddress()), (uint32_t) feature, (int) result, (uint32_t) requirements.flags,
-                 requirements.osVersionDetected.toStr(), requirements.osVersionRequired.toStr(),
-                 requirements.driverVersionDetected.toStr(), requirements.driverVersionRequired.toStr(),
-                 requirements.vkNumComputeQueuesRequired, requirements.vkNumGraphicsQueuesRequired,
-                 requirements.vkNumOpticalFlowQueuesRequired,
-                 JoinNames(requirements.vkDeviceExtensions, requirements.vkNumDeviceExtensions),
-                 JoinNames(requirements.vkInstanceExtensions, requirements.vkNumInstanceExtensions),
-                 JoinNames(requirements.vkFeatures12, requirements.vkNumFeatures12),
-                 JoinNames(requirements.vkFeatures13, requirements.vkNumFeatures13));
-        GateDiag::LogDoomState("slGetFeatureRequirements");
-    }
-
-    // Device extensions the AMD driver lacks (NV ones, and EXT_buffer_device_address which it only has as KHR/core).
-    // id Tech 8 keeps Streamline on only if the device has every one of them.
-    if (Config::Instance()->StreamlineTrimRequirements.value_or_default() && result == sl::Result::eOk &&
-        requirements.vkDeviceExtensions != nullptr)
-    {
-        static std::mutex trimMutex;
-        static std::map<uint32_t, std::vector<const char*>> kept;
-
-        std::scoped_lock lock(trimMutex);
-        auto& names = kept[(uint32_t) feature];
-        names.clear();
-
-        for (uint32_t i = 0; i < requirements.vkNumDeviceExtensions; i++)
-        {
-            auto name = requirements.vkDeviceExtensions[i];
-            if (name != nullptr && (strncmp(name, "VK_NVX_", 7) == 0 || strncmp(name, "VK_NV_", 6) == 0 ||
-                                    strcmp(name, "VK_EXT_buffer_device_address") == 0))
-            {
-                LOG_INFO("slGetFeatureRequirements: feature {} drops {}", (uint32_t) feature, name);
-                continue;
-            }
-
-            names.push_back(name);
-        }
-
-        requirements.vkNumDeviceExtensions = static_cast<uint32_t>(names.size());
-        requirements.vkDeviceExtensions = names.empty() ? nullptr : names.data();
-
-        LOG_INFO("slGetFeatureRequirements: feature {} device ext after trim [{}]", (uint32_t) feature,
-                 JoinNames(requirements.vkDeviceExtensions, requirements.vkNumDeviceExtensions));
-    }
-
     return result;
 }
 
@@ -1434,15 +1320,7 @@ sl::Result StreamlineHooks::dummy_slDLSSGSetOptions(const sl::ViewportHandle& vi
 
 sl::Result StreamlineHooks::hkslGetFeatureFunction(sl::Feature feature, const char* functionName, void*& function)
 {
-    if (GateDiag::On())
-    {
-        auto from = GateDiag::Caller(_ReturnAddress());
-        if (GateDiag::First(std::format("slfunc|{}|{}|{}", from, (uint32_t) feature, functionName)))
-            LOG_INFO("GateDiag slGetFeatureFunction from {}: feature {} {}", from, (uint32_t) feature, functionName);
-        GateDiag::LogDoomState("slGetFeatureFunction");
-    }
-
-    if (OwnsDlssg() && feature == sl::kFeatureDLSS_G)
+    if (feature == sl::kFeatureDLSS_G)
     {
         if (strcmp(functionName, "slDLSSGSetOptions") == 0)
         {
@@ -2150,12 +2028,11 @@ sl::Result StreamlineHooks::hkslDLSSGetOptimalSettings(const sl::DLSSOptions& op
     static bool modesBroken = false;
 
     auto localOptions = options;
-    const bool fixModes = (bool) (State::Instance().gameQuirks & GameQuirk::PregmataFixDLSSModes);
 
-    if (fixModes && localOptions.mode == sl::DLSSMode::eOff)
+    if (localOptions.mode == sl::DLSSMode::eOff)
         modesBroken = true;
 
-    if (fixModes && modesBroken)
+    if (modesBroken)
     {
         if (localOptions.mode == sl::DLSSMode::eMaxPerformance)
             localOptions.mode = sl::DLSSMode::eUltraPerformance;
@@ -2169,19 +2046,7 @@ sl::Result StreamlineHooks::hkslDLSSGetOptimalSettings(const sl::DLSSOptions& op
             localOptions.mode = sl::DLSSMode::eDLAA;
     }
 
-    auto result = o_slDLSSGetOptimalSettings(localOptions, settings);
-
-    if (GateDiag::On() &&
-        GateDiag::First(std::format("slopt|{}|{}x{}|{}", (int) localOptions.mode, localOptions.outputWidth,
-                                    localOptions.outputHeight, (int) result)))
-    {
-        LOG_INFO("GateDiag slDLSSGetOptimalSettings: mode {} output {}x{} -> {}, render {}x{} (min {}x{}, max {}x{})",
-                 (int) localOptions.mode, localOptions.outputWidth, localOptions.outputHeight, (int) result,
-                 settings.optimalRenderWidth, settings.optimalRenderHeight, settings.renderWidthMin,
-                 settings.renderHeightMin, settings.renderWidthMax, settings.renderHeightMax);
-    }
-
-    return result;
+    return o_slDLSSGetOptimalSettings(localOptions, settings);
 }
 
 bool StreamlineHooks::hkdlssg_slOnPluginLoad(sl::param::IParameters* params, const char* loaderJSON,
@@ -2820,7 +2685,7 @@ void* StreamlineHooks::hkdlss_slGetPluginFunction(PFN_slGetPluginFunction origin
     }
 
     if (strcmp(functionName, "slDLSSGetOptimalSettings") == 0 &&
-        (State::Instance().gameQuirks & GameQuirk::PregmataFixDLSSModes || GateDiag::On()))
+        State::Instance().gameQuirks & GameQuirk::PregmataFixDLSSModes)
     {
         o_slDLSSGetOptimalSettings = (decltype(&slDLSSGetOptimalSettings)) original(functionName);
         return &hkslDLSSGetOptimalSettings;
@@ -3413,25 +3278,6 @@ void StreamlineHooks::hookInterposer(HMODULE slInterposer)
 
                 if (o_slEvaluateFeature != nullptr)
                     DetourAttach(&(PVOID&) o_slEvaluateFeature, hkslEvaluateFeature);
-
-                const bool gateHooks = GateDiag::On() || Config::Instance()->DoomStreamlineAnyVendor.value_or_default() ||
-                                       Config::Instance()->StreamlineForceSupported.value_or_default() ||
-                                       Config::Instance()->StreamlineTrimRequirements.value_or_default();
-
-                if (State::Instance().activeFgInput != FGInput::DLSSG && gateHooks)
-                {
-                    if (o_slIsFeatureSupported != nullptr)
-                        DetourAttach(&(PVOID&) o_slIsFeatureSupported, hkslIsFeatureSupported);
-
-                    if (o_slIsFeatureLoaded != nullptr)
-                        DetourAttach(&(PVOID&) o_slIsFeatureLoaded, hkslIsFeatureLoaded);
-
-                    if (o_slGetFeatureRequirements != nullptr)
-                        DetourAttach(&(PVOID&) o_slGetFeatureRequirements, hkslGetFeatureRequirements);
-
-                    if (o_slGetFeatureFunction != nullptr)
-                        DetourAttach(&(PVOID&) o_slGetFeatureFunction, hkslGetFeatureFunction);
-                }
 
                 if (State::Instance().activeFgInput == FGInput::DLSSG)
                 {

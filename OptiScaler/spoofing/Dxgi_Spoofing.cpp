@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <cctype>
 #include <misc/IdentifyGpu.h>
-#include <misc/GateDiag.h>
 
 typedef HRESULT (*PFN_GetDesc)(IDXGIAdapter* This, DXGI_ADAPTER_DESC* pDesc);
 typedef HRESULT (*PFN_GetDesc1)(IDXGIAdapter1* This, DXGI_ADAPTER_DESC1* pDesc);
@@ -265,9 +264,7 @@ HRESULT DxgiSpoofing::hkGetDesc(IDXGIAdapter* This, DXGI_ADAPTER_DESC* pDesc)
 void DxgiSpoofing::AttachToAdapter(IUnknown* unkAdapter)
 {
     static bool logAdded = false;
-    // GateDiagnostics hooks the descs for their log lines only
-    if (!Config::Instance()->DxgiSpoofing.value_or_default() && !Config::Instance()->DxgiVRAM.has_value() &&
-        !GateDiag::On())
+    if (!Config::Instance()->DxgiSpoofing.value_or_default() && !Config::Instance()->DxgiVRAM.has_value())
     {
         if (!logAdded)
         {

@@ -9,7 +9,6 @@
 
 #include <detours/detours.h>
 #include <misc/IdentifyGpu.h>
-#include <misc/GateDiag.h>
 #include <low_latency/input/input_reflex.h>
 
 // #define LOG_ALL_DRS_GET_CALLS
@@ -201,14 +200,6 @@ NvAPI_Status __stdcall NvApiHooks::hkNvAPI_DRS_GetSetting(NvDRSSessionHandle hSe
 
 void* __stdcall NvApiHooks::hkNvAPI_QueryInterface(unsigned int InterfaceId)
 {
-    if (GateDiag::On())
-    {
-        auto from = GateDiag::Caller(_ReturnAddress());
-        if (GateDiag::First(std::format("nvapi|{}|{}", from, InterfaceId)))
-            LOG_INFO("GateDiag NvAPI_QueryInterface from {}: {} ({:X})", from, NvApiTypes::Instance().getName(InterfaceId),
-                     InterfaceId);
-    }
-
     // Native Reflex, flip metering, architecture/capability queries and driver
     // presets belong to the external FG owner in this mode. Returning null for
     // a Reflex query would disable it, so forward to the real function table.
