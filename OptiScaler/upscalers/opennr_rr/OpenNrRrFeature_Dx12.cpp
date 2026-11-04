@@ -36,6 +36,8 @@ decltype(OnrRrApi3::GetHopTiming) s_getHopTiming = nullptr;
 decltype(OnrRrApi4::GetBackend) s_getBackend = nullptr;
 decltype(OnrRrApi4::Record) s_record = nullptr;
 decltype(OnrRrApi4::RecordPost) s_recordPost = nullptr;
+// ABI 5: the Vulkan host backend (PrepareVkDevice / FinishVkDevice / RecordVk); null with an older runtime
+OnrRrApi5 s_api5 {};
 bool s_loadTried = false;
 bool s_checked = false;
 bool s_usable = false;
@@ -211,31 +213,39 @@ bool Load()
     }
 
     auto getApi = reinterpret_cast<PFN_OnrRrGetApi>(GetProcAddress(module, "OnrRrGetApi"));
-    OnrRrApi4 api4 {};
+    OnrRrApi5 api5 {};
+    OnrRrApi4& api4 = api5.v4;
     OnrRrApi3& api3 = api4.v3;
     OnrRrApi2& api2 = api3.v2;
     OnrRrApi& api = api2.v1;
-    // ABI 4, 3 or 2 when the runtime has it, otherwise 1 (no NrOnDenoised)
-    int32_t rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION_4, &api) : ONR_RR_FAILED;
-    if (rc != ONR_RR_OK || api.abi_version != ONR_RR_ABI_VERSION_4 || !api4.GetBackend || !api4.Record || !api4.RecordPost)
+    // ABI 5, 4, 3 or 2 when the runtime has it, otherwise 1 (no NrOnDenoised)
+    int32_t rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION_5, &api) : ONR_RR_FAILED;
+    const bool has5 = rc == ONR_RR_OK && api.abi_version == ONR_RR_ABI_VERSION_5 && api5.PrepareVkDevice && api5.FinishVkDevice &&
+                      api5.RecordVk && api4.GetBackend && api4.Record && api4.RecordPost;
+    if (!has5)
     {
-        api4 = {};
+        api5 = {};
+        rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION_4, &api) : ONR_RR_FAILED;
+    }
+    if (!has5 && (rc != ONR_RR_OK || api.abi_version != ONR_RR_ABI_VERSION_4 || !api4.GetBackend || !api4.Record || !api4.RecordPost))
+    {
+        api5 = {};
         rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION_3, &api) : ONR_RR_FAILED;
     }
     if (rc != ONR_RR_OK || api.abi_version < ONR_RR_ABI_VERSION_3 || !api3.GetHopTiming)
     {
-        api4 = {};
+        api5 = {};
         rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION_2, &api) : ONR_RR_FAILED;
     }
     if (rc != ONR_RR_OK || api.abi_version < ONR_RR_ABI_VERSION_2 || !api2.PrepareDenoised || !api2.EnqueueNetwork ||
         !api2.EnqueuePost)
     {
-        api4 = {};
+        api5 = {};
         rc = getApi != nullptr ? getApi(ONR_RR_ABI_VERSION, &api) : ONR_RR_FAILED;
     }
 
     if (rc != ONR_RR_OK ||
-        api.abi_version < ONR_RR_ABI_VERSION || api.abi_version > ONR_RR_ABI_VERSION_4 ||
+        api.abi_version < ONR_RR_ABI_VERSION || api.abi_version > ONR_RR_ABI_VERSION_5 ||
         !api.Check || !api.Create || !api.Destroy ||
         !api.SetMode || !api.RecordInputs || !api.Enqueue || !api.RecordOutput || !api.Cancel || !api.GetInfo ||
         !api.GetLastError)
@@ -254,6 +264,8 @@ bool Load()
     s_getBackend = api4.GetBackend;
     s_record = api4.Record;
     s_recordPost = api4.RecordPost;
+    if (has5)
+        s_api5 = api5;
     LOG_INFO("OpenRR: runtime loaded from {} (ABI {})", wstring_to_string(path.wstring()), api.abi_version);
     return true;
 }
@@ -262,6 +274,14 @@ bool Load()
 // one beside the game's exe.
 std::wstring FindDlssd(const char** source)
 {
+    // a copy kept for the weights alone (the 310.9.1 the runtime reads), so the game's own stays where it is
+    std::error_code ec;
+    if (const auto own = Util::DllPath().parent_path() / L"opennr-rr" / L"nvngx_dlssd.dll"; std::filesystem::exists(own, ec))
+    {
+        *source = "opennr-rr folder";
+        return own.wstring();
+    }
+
     if (const auto& known = State::Instance().NVNGX_DLSSD_Path; known.has_value())
     {
         *source = "OptiScaler's nvngx_dlssd.dll path";
@@ -523,6 +543,42 @@ bool SplitReady()
 {
     return DlssNr::Backend::SubmissionHooksWanted() && DlssNr::Submission::Hooks::IsArmed() &&
            DlssNr::Submission::Hooks::ProxyWrapEnabled();
+}
+
+std::vector<const char*> NgxTextureKeys() { return { std::begin(kNgxTextures), std::end(kNgxTextures) }; }
+std::vector<const char*> NgxScalarKeys() { return { std::begin(kNgxScalars), std::end(kNgxScalars) }; }
+
+const OnrRrApi5* Api5()
+{
+    std::lock_guard lock(s_mutex);
+    return Load() && s_api5.RecordVk != nullptr ? &s_api5 : nullptr;
+}
+
+std::wstring DlssdPath()
+{
+    std::lock_guard lock(s_mutex);
+    return s_dlssdPath;
+}
+
+std::string LastError() { return RuntimeError(); }
+
+bool DlssdFound()
+{
+    const char* source = nullptr;
+    return !FindDlssd(&source).empty();
+}
+
+void SetInfoContext(void* context)
+{
+    std::lock_guard lock(s_mutex);
+    s_infoContext = context;
+}
+
+void ClearInfoContext(void* context)
+{
+    std::lock_guard lock(s_mutex);
+    if (s_infoContext == context)
+        s_infoContext = nullptr;
 }
 
 std::string DenoisedNrStatus()

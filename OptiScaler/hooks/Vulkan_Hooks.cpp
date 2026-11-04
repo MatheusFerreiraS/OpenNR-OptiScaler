@@ -4,6 +4,7 @@
 
 #include <Util.h>
 #include <Config.h>
+#include <misc/GateDiag.h>
 #include <SysUtils.h>
 
 #include <menu/menu_overlay_vk.h>
@@ -29,6 +30,7 @@
 #include <dlssnr/DlssNr_VkExtensions.h>
 #include <dlssnr/amd/VulkanPresentExperimental.h>
 #include <dlssnr/amd/AmdBridge.h>
+#include <upscalers/opennr_rr/OpenNrRrFeature_Vk.h>
 
 #include <detours/detours.h>
 #include <misc/IdentifyGpu.h>
@@ -762,7 +764,31 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
 
         timelineSemaphoresEnabled = TimelineSemaphoresEnabled(&localCreateInfo);
 
-        result = o_vkCreateDevice(physicalDevice, &localCreateInfo, pAllocator, pDevice);
+        // OpenRR in a Vulkan game: the runtime's kernels run on this device, so what they need goes in now (the
+        // runtime names it: extensions, features, one queue of its own). A device that refuses it is made again
+        // without, and Ray Reconstruction then stays with the other providers.
+        VkDeviceCreateInfo openRrInfo {};
+        void* openRrSetup = nullptr;
+        if (Config::Instance()->OpenNrRrEnabled.value_or_default() && !State::Instance().vulkanSkipHooks &&
+            !State::Instance().creatingD3DDevice && !IsDxgiBackedCaller(_ReturnAddress()) &&
+            IdentifyGpu::getPrimaryGpu().vendorId == VendorId::AMD &&
+            OpenNrRr::PrepareVkDevice(physicalDevice, &localCreateInfo, &openRrInfo, &openRrSetup))
+        {
+            result = o_vkCreateDevice(physicalDevice, &openRrInfo, pAllocator, pDevice);
+            OpenNrRr::FinishVkDevice(openRrSetup, physicalDevice, result == VK_SUCCESS ? *pDevice : VK_NULL_HANDLE,
+                                     requestedApiVersion);
+
+            if (result != VK_SUCCESS)
+            {
+                LOG_WARN("OpenRR Vulkan: vkCreateDevice with the runtime's additions returned {}, again without them",
+                         (int) result);
+                result = o_vkCreateDevice(physicalDevice, &localCreateInfo, pAllocator, pDevice);
+            }
+        }
+        else
+        {
+            result = o_vkCreateDevice(physicalDevice, &localCreateInfo, pAllocator, pDevice);
+        }
     }
 
     if (result == VK_SUCCESS)
@@ -884,6 +910,9 @@ static VkResult hkvkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevice
 VALIDATE_HOOK(hkvkQueuePresentKHR, PFN_vkQueuePresentKHR)
 static VkResult hkvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo)
 {
+    GateDiag::DoomKeepDlssRR();
+    GateDiag::WatchCvars();
+
     auto fg = State::Instance().currentVkFG;
 
     // FFX presents the real swapchain from its own queue

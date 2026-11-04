@@ -3,6 +3,7 @@
 #include "opennr_rr_api.h"
 
 #include <string>
+#include <vector>
 
 // OpenNrRrRuntime.dll, loaded once from OptiScaler's folder.
 namespace OpenNrRr
@@ -21,6 +22,19 @@ bool Info(OnrRrInfo& info);
 bool SplitReady();
 // NrOnDenoised: what mochizuki on the denoised image is doing, or why it is not running. Empty while it is off.
 std::string DenoisedNrStatus();
+// The runtime's ABI 5 (the Vulkan host backend), loading the runtime; null when it does not offer it.
+const OnrRrApi5* Api5();
+// The nvngx_dlssd.dll Usable settled on, and the runtime's last error on this thread.
+std::wstring DlssdPath();
+std::string LastError();
+// Whether an nvngx_dlssd.dll to build the weights from is there (the opennr-rr folder, OptiScaler's lookup, the game's).
+bool DlssdFound();
+// The context the menu's Info reads.
+void SetInfoContext(void* context);
+void ClearInfoContext(void* context);
+// The DLSS-D texture and scalar keys the inputs inventory in the log reads.
+std::vector<const char*> NgxTextureKeys();
+std::vector<const char*> NgxScalarKeys();
 } // namespace OpenNrRr
 
 class OpenNrRrFeatureDx12 : public IFeature_Dx12

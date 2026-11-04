@@ -1102,6 +1102,9 @@ class Config
     // what runs the network: auto (D3D12 in the game's own command list when the runtime's check passes, otherwise
     // Vulkan), d3d12 or vulkan; read when the runtime is created
     CustomOptional<std::string> OpenNrRrBackend { "auto" };
+    // Vulkan games: the layout the game keeps the guides in at the evaluate (read = SHADER_READ_ONLY_OPTIMAL, as NGX
+    // takes them; general = GENERAL)
+    CustomOptional<std::string> OpenNrRrVkInputLayout { "read" };
     // diagnostics (RE Requiem's rain): feed DLSS.DisocclusionMask and the SSS guide (or ColorBeforeFog) to the
     // network, and read the mask as 1 - mask; applied on the next frame. The scale multiplies the mask and the clamp
     // keeps it in 0..1 afterwards (RE Requiem writes values up to 3000; DLSS-RR takes them as they are)
@@ -1308,6 +1311,15 @@ class Config
     CustomOptional<bool, SoftDefault> VulkanSpoofing { false };
     CustomOptional<bool, SoftDefault> VulkanExtensionSpoofing { false };
     CustomOptional<int, NoDefault> VulkanVRAM; // disabled by default
+    CustomOptional<bool> VulkanSpoofGameOnly { false };
+    CustomOptional<bool> VulkanDriverIdOnly { false };
+    CustomOptional<bool> DoomStreamlineAnyVendor { false };
+    CustomOptional<bool> DoomKeepDlssRR { false };
+    CustomOptional<std::string> StreamlineAnyVendorExes { "DOOMTheDarkAges.exe" };
+    CustomOptional<std::string, NoDefault> VulkanExtensionSpoofList; // e.g. VK_NVX_binary_import,VK_NVX_image_view_handle
+    CustomOptional<bool> GateDiagnostics { false };
+    CustomOptional<bool> StreamlineForceSupported { false };
+    CustomOptional<bool> StreamlineTrimRequirements { false };
     CustomOptional<bool> SpoofHAGS { false };
     CustomOptional<bool> SpoofFeatureLevel { false };
     CustomOptional<uint32_t> SpoofedVendorId { VendorId::Nvidia };

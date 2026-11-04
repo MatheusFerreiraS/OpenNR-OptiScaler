@@ -6,6 +6,7 @@
 
 #include <proxies/KernelBase_Proxy.h>
 #include <hooks/VulkanwDx12_Hooks.h>
+#include <misc/GateDiag.h>
 
 #include <magic_enum.hpp>
 
@@ -34,6 +35,8 @@ static uint32_t vkEnumerateInstanceExtensionPropertiesCount = 0;
 static uint32_t vkEnumerateDeviceExtensionPropertiesCount = 0;
 static bool vkEnumerateDeviceExtensionPropertiesListed = false;
 static bool vkEnumerateInstanceExtensionPropertiesListed = false;
+
+static bool InExtensionSpoofList(const char* extension);
 
 static bool HasExtension(size_t extensionCount, const char* const* extensions, const char* extension)
 {
@@ -233,81 +236,140 @@ inline static void hkvkGetPhysicalDeviceMemoryProperties2KHR(VkPhysicalDevice ph
     }
 }
 
+// NVIDIA packs the driver version as 10.8.8.6 bits
+static uint32_t SpoofedDriverVersion()
+{
+    if (Config::Instance()->SpoofedVendorId.value_or_default() == VendorId::Nvidia)
+        return (999u << 22) | (99u << 14);
+
+    return VK_MAKE_API_VERSION(999, 99, 0, 0);
+}
+
+static std::string Hex(const uint8_t* bytes, size_t size)
+{
+    std::string out;
+    for (size_t i = 0; i < size; i++)
+        out += std::format("{:02X}", bytes[i]);
+    return out;
+}
+
+static void SpoofProperties(const char* function, void* caller, VkPhysicalDeviceProperties* properties, void* pNext)
+{
+    if (properties == nullptr)
+        return;
+
+    auto* config = Config::Instance();
+    const auto realVendor = properties->vendorID;
+    const auto realDevice = properties->deviceID;
+
+    auto targetVendorIdMatches = !config->TargetVendorId.has_value() || config->TargetVendorId.value() == realVendor;
+    auto targetDeviceIdMatches = !config->TargetDeviceId.has_value() || config->TargetDeviceId.value() == realDevice;
+
+    const bool spoof = config->VulkanSpoofing.value_or_default() && !SkipVulkanSpoofing() && targetVendorIdMatches &&
+                       targetDeviceIdMatches &&
+                       (!config->VulkanSpoofGameOnly.value_or_default() || GateDiag::FromGame(caller));
+
+    // id Tech 8 picks its vendor from driverID alone; VulkanDriverIdOnly leaves the rest real
+    const bool driverIdOnly = config->VulkanDriverIdOnly.value_or_default();
+
+    if (spoof)
+    {
+        if (!driverIdOnly)
+        {
+            auto deviceName = wstring_to_string(config->SpoofedGPUName.value_or_default());
+            strncpy_s(properties->deviceName, deviceName.c_str(), _TRUNCATE);
+            properties->vendorID = config->SpoofedVendorId.value_or_default();
+            properties->deviceID = config->SpoofedDeviceId.value_or_default();
+            properties->driverVersion = SpoofedDriverVersion();
+        }
+
+        // driverID also comes back through the Vulkan 1.2 properties
+        if (config->SpoofedVendorId.value_or_default() == VendorId::Nvidia)
+        {
+            for (auto next = (VkDummyProps*) pNext; next != nullptr; next = (VkDummyProps*) next->pNext)
+            {
+                if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES)
+                {
+                    auto ddp = (VkPhysicalDeviceDriverProperties*) (void*) next;
+                    ddp->driverID = VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+                    strcpy_s(ddp->driverName, "NVIDIA");
+                    strcpy_s(ddp->driverInfo, "999.99");
+                }
+                else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES)
+                {
+                    auto v12 = (VkPhysicalDeviceVulkan12Properties*) (void*) next;
+                    v12->driverID = VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+                    strcpy_s(v12->driverName, "NVIDIA");
+                    strcpy_s(v12->driverInfo, "999.99");
+                }
+            }
+        }
+
+        LOG_DEBUG("Spoofed");
+    }
+
+    if (!GateDiag::On())
+        return;
+
+    std::string chain;
+    std::string extra;
+    for (auto next = (VkDummyProps*) pNext; next != nullptr; next = (VkDummyProps*) next->pNext)
+    {
+        chain += std::format(" {}", (int) next->sType);
+
+        if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES)
+        {
+            auto ddp = (VkPhysicalDeviceDriverProperties*) (void*) next;
+            extra += std::format(" | DriverProperties driverID {} name '{}' info '{}'", (int) ddp->driverID,
+                                 ddp->driverName, ddp->driverInfo);
+        }
+        else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES)
+        {
+            auto v12 = (VkPhysicalDeviceVulkan12Properties*) (void*) next;
+            extra += std::format(" | Vulkan12Properties driverID {} name '{}' info '{}'", (int) v12->driverID,
+                                 v12->driverName, v12->driverInfo);
+        }
+        else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES)
+        {
+            auto id = (VkPhysicalDeviceIDProperties*) (void*) next;
+            extra += std::format(" | IDProperties LUID {} valid {}", Hex(id->deviceLUID, VK_LUID_SIZE),
+                                 id->deviceLUIDValid == VK_TRUE);
+        }
+        else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES)
+        {
+            auto v11 = (VkPhysicalDeviceVulkan11Properties*) (void*) next;
+            extra += std::format(" | Vulkan11Properties LUID {} valid {}", Hex(v11->deviceLUID, VK_LUID_SIZE),
+                                 v11->deviceLUIDValid == VK_TRUE);
+        }
+    }
+
+    auto from = GateDiag::Caller(caller);
+    if (GateDiag::First(std::format("{}|{}|{}|{}", function, from, chain, spoof)))
+    {
+        LOG_INFO("GateDiag {} from {}: vendor {:04X} -> {:04X}, device {:04X} -> {:04X}, driverVersion {:08X}, name "
+                 "'{}', spoofed {}, pNext [{}]{}",
+                 function, from, realVendor, properties->vendorID, realDevice, properties->deviceID,
+                 properties->driverVersion, properties->deviceName, spoof, chain, extra);
+    }
+
+    if (GateDiag::FromGame(caller))
+        GateDiag::LogDoomState(function);
+}
+
 inline static void hkvkGetPhysicalDeviceProperties(VkPhysicalDevice physical_device,
                                                    VkPhysicalDeviceProperties* properties)
 {
     o_vkGetPhysicalDeviceProperties(physical_device, properties);
-
-    auto targetVendorIdMatches = !Config::Instance()->TargetVendorId.has_value() ||
-                                 Config::Instance()->TargetVendorId.value() == properties->vendorID;
-
-    auto targetDeviceIdMatches = !Config::Instance()->TargetDeviceId.has_value() ||
-                                 Config::Instance()->TargetDeviceId.value() == properties->deviceID;
-
-    // Spoof
-    if (Config::Instance()->VulkanSpoofing.value_or_default() && !SkipVulkanSpoofing() && targetVendorIdMatches &&
-        targetDeviceIdMatches)
-    {
-        auto deviceName = wstring_to_string(Config::Instance()->SpoofedGPUName.value_or_default());
-        std::strcpy(properties->deviceName, deviceName.c_str());
-
-        properties->vendorID = Config::Instance()->SpoofedVendorId.value_or_default();
-        properties->deviceID = Config::Instance()->SpoofedDeviceId.value_or_default();
-        properties->driverVersion = VK_MAKE_API_VERSION(999, 99, 0, 0);
-
-        LOG_DEBUG("Spoofed");
-    }
-    else
-    {
-        LOG_DEBUG("Skipping spoofing");
-    }
+    SpoofProperties("vkGetPhysicalDeviceProperties", _ReturnAddress(), properties, nullptr);
 }
 
 inline static void hkvkGetPhysicalDeviceProperties2(VkPhysicalDevice phys_dev, VkPhysicalDeviceProperties2* properties2)
 {
     o_vkGetPhysicalDeviceProperties2(phys_dev, properties2);
 
-    auto targetVendorIdMatches = !Config::Instance()->TargetVendorId.has_value() ||
-                                 Config::Instance()->TargetVendorId.value() == properties2->properties.vendorID;
-
-    auto targetDeviceIdMatches = !Config::Instance()->TargetDeviceId.has_value() ||
-                                 Config::Instance()->TargetDeviceId.value() == properties2->properties.deviceID;
-
-    // Spoof
-    if (Config::Instance()->VulkanSpoofing.value_or_default() && !SkipVulkanSpoofing() && targetVendorIdMatches &&
-        targetDeviceIdMatches)
-    {
-        auto deviceName = wstring_to_string(Config::Instance()->SpoofedGPUName.value_or_default());
-        std::strcpy(properties2->properties.deviceName, deviceName.c_str());
-        properties2->properties.vendorID = Config::Instance()->SpoofedVendorId.value_or_default();
-        properties2->properties.deviceID = Config::Instance()->SpoofedDeviceId.value_or_default();
-        properties2->properties.driverVersion = VK_MAKE_API_VERSION(999, 99, 0, 0);
-
-        // If spoofing Nvidia
-        if (Config::Instance()->SpoofedVendorId.value_or_default() == VendorId::Nvidia)
-        {
-            auto next = (VkDummyProps*) properties2->pNext;
-
-            while (next != nullptr)
-            {
-                if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES)
-                {
-                    auto ddp = (VkPhysicalDeviceDriverProperties*) (void*) next;
-                    ddp->driverID = VK_DRIVER_ID_NVIDIA_PROPRIETARY;
-                    std::strcpy(ddp->driverName, "NVIDIA");
-                    std::strcpy(ddp->driverInfo, "999.99");
-                }
-
-                next = (VkDummyProps*) next->pNext;
-            }
-        }
-
-        LOG_DEBUG("Spoofed");
-    }
-    else
-    {
-        LOG_DEBUG("Skipping spoofing");
-    }
+    if (properties2 != nullptr)
+        SpoofProperties("vkGetPhysicalDeviceProperties2", _ReturnAddress(), &properties2->properties,
+                        properties2->pNext);
 }
 
 inline static void hkvkGetPhysicalDeviceProperties2KHR(VkPhysicalDevice phys_dev,
@@ -315,47 +377,9 @@ inline static void hkvkGetPhysicalDeviceProperties2KHR(VkPhysicalDevice phys_dev
 {
     o_vkGetPhysicalDeviceProperties2KHR(phys_dev, properties2);
 
-    auto targetVendorIdMatches = !Config::Instance()->TargetVendorId.has_value() ||
-                                 Config::Instance()->TargetVendorId.value() == properties2->properties.vendorID;
-
-    auto targetDeviceIdMatches = !Config::Instance()->TargetDeviceId.has_value() ||
-                                 Config::Instance()->TargetDeviceId.value() == properties2->properties.deviceID;
-
-    // Spoof
-    if (Config::Instance()->VulkanSpoofing.value_or_default() && !SkipVulkanSpoofing() && targetVendorIdMatches &&
-        targetDeviceIdMatches)
-    {
-        auto deviceName = wstring_to_string(Config::Instance()->SpoofedGPUName.value_or_default());
-        std::strcpy(properties2->properties.deviceName, deviceName.c_str());
-        properties2->properties.vendorID = Config::Instance()->SpoofedVendorId.value_or_default();
-        properties2->properties.deviceID = Config::Instance()->SpoofedDeviceId.value_or_default();
-        properties2->properties.driverVersion = VK_MAKE_API_VERSION(999, 99, 0, 0);
-
-        // If spoofing Nvidia
-        if (Config::Instance()->SpoofedVendorId.value_or_default() == VendorId::Nvidia)
-        {
-            auto next = (VkDummyProps*) properties2->pNext;
-
-            while (next != nullptr)
-            {
-                if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES)
-                {
-                    auto ddp = (VkPhysicalDeviceDriverProperties*) (void*) next;
-                    ddp->driverID = VK_DRIVER_ID_NVIDIA_PROPRIETARY;
-                    std::strcpy(ddp->driverName, "NVIDIA");
-                    std::strcpy(ddp->driverInfo, "999.99");
-                }
-
-                next = (VkDummyProps*) next->pNext;
-            }
-        }
-
-        LOG_DEBUG("Spoofed");
-    }
-    else
-    {
-        LOG_DEBUG("Skipping spoofing");
-    }
+    if (properties2 != nullptr)
+        SpoofProperties("vkGetPhysicalDeviceProperties2KHR", _ReturnAddress(), &properties2->properties,
+                        properties2->pNext);
 }
 
 inline static VKAPI_ATTR VkBool32 VKAPI_CALL VulkanDebugCallback(
@@ -931,6 +955,16 @@ VkResult VulkanSpoofing::hkvkCreateDevice(VkPhysicalDevice physicalDevice, VkDev
 
     LOG_FUNC();
 
+    if (GateDiag::On())
+    {
+        std::string asked;
+        for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++)
+            asked += std::format(" {}", pCreateInfo->ppEnabledExtensionNames[i]);
+
+        LOG_INFO("GateDiag vkCreateDevice from the app: {} extensions:{}", pCreateInfo->enabledExtensionCount, asked);
+        GateDiag::LogDoomState("vkCreateDevice");
+    }
+
     std::vector<VkExtensionProperties> supportedDeviceExtensions;
     auto enumerateDeviceExtensions = o_vkEnumerateDeviceExtensionProperties;
     if (enumerateDeviceExtensions == nullptr)
@@ -1018,7 +1052,8 @@ VkResult VulkanSpoofing::hkvkCreateDevice(VkPhysicalDevice physicalDevice, VkDev
             auto nvOpticalFlow = std::strcmp(extName, VK_NV_OPTICAL_FLOW_EXTENSION_NAME) == 0;
             auto nvPresentMeter = std::strcmp(extName, VK_NV_PRESENT_METERING_EXTENSION_NAME) == 0;
             const bool spoofedExtension = binaryImport || imgViewHandle || bufferDeviceAddr || mvPerViewAttr ||
-                                          nvLowLatency || nvOpticalFlow || nvPresentMeter;
+                                          nvLowLatency || nvOpticalFlow || nvPresentMeter ||
+                                          InExtensionSpoofList(extName);
 
             if (spoofedExtension && supportedDeviceExtensionsValid &&
                 !SupportsExtension(supportedDeviceExtensions, extName))
@@ -1234,11 +1269,150 @@ VkResult VulkanSpoofing::hkvkCreateDevice(VkPhysicalDevice physicalDevice, VkDev
     return VK_SUCCESS;
 }
 
+static std::vector<std::string> ExtensionSpoofList()
+{
+    std::vector<std::string> list;
+    if (!Config::Instance()->VulkanExtensionSpoofList.has_value())
+        return list;
+
+    std::string name;
+    for (char ch : Config::Instance()->VulkanExtensionSpoofList.value() + ",")
+    {
+        if (ch == ',' || ch == ';' || ch == '|' || ch == ' ')
+        {
+            if (!name.empty())
+                list.push_back(name);
+            name.clear();
+        }
+        else
+        {
+            name += ch;
+        }
+    }
+
+    return list;
+}
+
+static bool InExtensionSpoofList(const char* extension)
+{
+    for (const auto& name : ExtensionSpoofList())
+    {
+        if (name == extension)
+            return true;
+    }
+
+    return false;
+}
+
+static uint32_t SpecVersionOf(const std::string& name)
+{
+    if (name == VK_NVX_BINARY_IMPORT_EXTENSION_NAME)
+        return VK_NVX_BINARY_IMPORT_SPEC_VERSION;
+    if (name == VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME)
+        return VK_NVX_IMAGE_VIEW_HANDLE_SPEC_VERSION;
+    if (name == VK_NVX_MULTIVIEW_PER_VIEW_ATTRIBUTES_EXTENSION_NAME)
+        return VK_NVX_MULTIVIEW_PER_VIEW_ATTRIBUTES_SPEC_VERSION;
+    if (name == VK_NV_LOW_LATENCY_EXTENSION_NAME)
+        return VK_NV_LOW_LATENCY_SPEC_VERSION;
+    if (name == VK_NV_LOW_LATENCY_2_EXTENSION_NAME)
+        return VK_NV_LOW_LATENCY_2_SPEC_VERSION;
+    if (name == VK_NV_OPTICAL_FLOW_EXTENSION_NAME)
+        return VK_NV_OPTICAL_FLOW_SPEC_VERSION;
+    if (name == VK_NV_PRESENT_METERING_EXTENSION_NAME)
+        return VK_NV_PRESENT_METERING_SPEC_VERSION;
+
+    return 1;
+}
+
+// The real list plus the configured names, answering count queries and short buffers as the spec says
+static VkResult EnumerateWithSpoofList(VkPhysicalDevice physicalDevice, uint32_t* pPropertyCount,
+                                       VkExtensionProperties* pProperties, const std::vector<std::string>& spoofList)
+{
+    uint32_t realCount = 0;
+    auto result = o_vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &realCount, nullptr);
+    if (result != VK_SUCCESS)
+        return result;
+
+    std::vector<VkExtensionProperties> all(realCount);
+    result = o_vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &realCount, all.data());
+    if (result != VK_SUCCESS && result != VK_INCOMPLETE)
+        return result;
+
+    all.resize(realCount);
+
+    for (const auto& name : spoofList)
+    {
+        if (SupportsExtension(all, name.c_str()))
+            continue;
+
+        VkExtensionProperties extension {};
+        strncpy_s(extension.extensionName, name.c_str(), _TRUNCATE);
+        extension.specVersion = SpecVersionOf(name);
+        all.push_back(extension);
+    }
+
+    if (pProperties == nullptr)
+    {
+        *pPropertyCount = static_cast<uint32_t>(all.size());
+        return VK_SUCCESS;
+    }
+
+    const auto copied = (std::min)(*pPropertyCount, static_cast<uint32_t>(all.size()));
+    memcpy(pProperties, all.data(), copied * sizeof(VkExtensionProperties));
+    *pPropertyCount = copied;
+    return copied < all.size() ? VK_INCOMPLETE : VK_SUCCESS;
+}
+
+static void LogExtensionAnswer(void* caller, uint32_t count, const VkExtensionProperties* properties)
+{
+    if (!GateDiag::On() || properties == nullptr)
+        return;
+
+    std::string nv;
+    for (uint32_t i = 0; i < count; i++)
+    {
+        if (strncmp(properties[i].extensionName, "VK_NV", 5) == 0 ||
+            strcmp(properties[i].extensionName, VK_EXT_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME) == 0 ||
+            strcmp(properties[i].extensionName, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME) == 0)
+            nv += std::format(" {}", properties[i].extensionName);
+    }
+
+    auto from = GateDiag::Caller(caller);
+    if (GateDiag::First(std::format("ext|{}|{}|{}", from, count, nv)))
+        LOG_INFO("GateDiag vkEnumerateDeviceExtensionProperties from {}: {} extensions, NV/BDA/push ones:{}", from,
+                 count, nv.empty() ? " none" : nv);
+
+    if (GateDiag::FromGame(caller))
+        GateDiag::LogDoomState("vkEnumerateDeviceExtensionProperties");
+}
+
 inline static VkResult hkvkEnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice, const char* pLayerName,
                                                               uint32_t* pPropertyCount,
                                                               VkExtensionProperties* pProperties)
 {
     LOG_FUNC();
+
+    void* caller = _ReturnAddress();
+
+    // The engine enumerates device extensions right before it picks the vendor
+    if (GateDiag::FromGame(caller))
+        GateDiag::DoomStreamlineAnyVendor();
+
+    const bool spoofExtensions =
+        Config::Instance()->VulkanExtensionSpoofing.value_or_default() && !SkipVulkanSpoofing() &&
+        (!Config::Instance()->VulkanSpoofGameOnly.value_or_default() || GateDiag::FromGame(caller));
+
+    if (spoofExtensions && pLayerName == nullptr && pPropertyCount != nullptr)
+    {
+        auto spoofList = ExtensionSpoofList();
+        if (!spoofList.empty())
+        {
+            auto spoofResult = EnumerateWithSpoofList(physicalDevice, pPropertyCount, pProperties, spoofList);
+            if (spoofResult == VK_SUCCESS || spoofResult == VK_INCOMPLETE)
+                LogExtensionAnswer(caller, *pPropertyCount, pProperties);
+            return spoofResult;
+        }
+    }
 
     uint32_t count = 0;
 
@@ -1256,7 +1430,7 @@ inline static VkResult hkvkEnumerateDeviceExtensionProperties(VkPhysicalDevice p
         return result;
     }
 
-    if (Config::Instance()->VulkanExtensionSpoofing.value_or_default() && !SkipVulkanSpoofing())
+    if (spoofExtensions)
     {
         // Count query, modify and add 5 to final count
         if (pProperties == nullptr && pPropertyCount != nullptr && count == 0)
@@ -1323,6 +1497,9 @@ inline static VkResult hkvkEnumerateDeviceExtensionProperties(VkPhysicalDevice p
             LOG_DEBUG("  {}", pProperties[i].extensionName);
     }
 
+    if (pPropertyCount != nullptr)
+        LogExtensionAnswer(caller, *pPropertyCount, pProperties);
+
     LOG_FUNC_RESULT(result);
 
     return result;
@@ -1383,7 +1560,7 @@ PFN_vkVoidFunction VulkanSpoofing::hkvkGetInstanceProcAddr(const PFN_vkVoidFunct
     if (result != VK_NULL_HANDLE)
         return result;
 
-    if (Config::Instance()->VulkanSpoofing.value_or_default())
+    if (Config::Instance()->VulkanSpoofing.value_or_default() || GateDiag::On())
     {
         if (procName == std::string("vkGetPhysicalDeviceProperties"))
         {
@@ -1411,7 +1588,8 @@ PFN_vkVoidFunction VulkanSpoofing::hkvkGetInstanceProcAddr(const PFN_vkVoidFunct
         }
     }
 
-    if (Config::Instance()->VulkanExtensionSpoofing.value_or_default())
+    if (Config::Instance()->VulkanExtensionSpoofing.value_or_default() || GateDiag::On() ||
+        Config::Instance()->DoomStreamlineAnyVendor.value_or_default())
     {
         if (procName == std::string("vkEnumerateInstanceExtensionProperties"))
         {
@@ -1470,7 +1648,7 @@ PFN_vkVoidFunction VulkanSpoofing::hkvkGetDeviceProcAddr(const PFN_vkVoidFunctio
     if (result != VK_NULL_HANDLE)
         return result;
 
-    if (Config::Instance()->VulkanSpoofing.value_or_default())
+    if (Config::Instance()->VulkanSpoofing.value_or_default() || GateDiag::On())
     {
         if (procName == std::string("vkGetPhysicalDeviceProperties"))
         {
@@ -1498,7 +1676,8 @@ PFN_vkVoidFunction VulkanSpoofing::hkvkGetDeviceProcAddr(const PFN_vkVoidFunctio
         }
     }
 
-    if (Config::Instance()->VulkanExtensionSpoofing.value_or_default())
+    if (Config::Instance()->VulkanExtensionSpoofing.value_or_default() || GateDiag::On() ||
+        Config::Instance()->DoomStreamlineAnyVendor.value_or_default())
     {
         if (procName == std::string("vkEnumerateInstanceExtensionProperties"))
         {
@@ -1553,7 +1732,7 @@ void VulkanSpoofing::HookForVulkanSpoofing(HMODULE vulkanModule)
 {
     Vulkan_wDx12::Hook(vulkanModule);
 
-    if (Config::Instance()->VulkanSpoofing.value_or_default() && o_vkGetPhysicalDeviceProperties == nullptr)
+    if ((Config::Instance()->VulkanSpoofing.value_or_default() || GateDiag::On()) && o_vkGetPhysicalDeviceProperties == nullptr)
     {
         FARPROC address = nullptr;
 
@@ -1600,7 +1779,8 @@ void VulkanSpoofing::HookForVulkanExtensionSpoofing(HMODULE vulkanModule)
     {
         FARPROC address = nullptr;
 
-        if (Config::Instance()->VulkanExtensionSpoofing.value_or_default())
+        if (Config::Instance()->VulkanExtensionSpoofing.value_or_default() || GateDiag::On() ||
+            Config::Instance()->DoomStreamlineAnyVendor.value_or_default())
         {
             address = KernelBaseProxy::GetProcAddress_()(vulkanModule, "vkEnumerateInstanceExtensionProperties");
             o_vkEnumerateInstanceExtensionProperties = (PFN_vkEnumerateInstanceExtensionProperties) address;

@@ -25,6 +25,7 @@
 #include <proxies/FfxApi_Proxy.h>
 #include <upscalers/ffx/FFXFeature.h>
 #include <upscalers/opennr_rr/OpenNrRrFeature_Dx12.h>
+#include <upscalers/opennr_rr/OpenNrRrFeature_Vk.h>
 #include <fsr4/FSR4Models.h>
 #include <fsr4/FSR4Presets.h>
 #include <fsr4/FSR4DriverProviderVk.h>
@@ -895,7 +896,8 @@ static std::vector<int> FfxVersionsNewestFirst(const State::FfxVersionList& vers
     return order;
 }
 
-void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, const std::vector<Upscaler>& options)
+void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, const std::vector<Upscaler>& options,
+                                     bool rrFeature)
 {
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
     auto config = Config::Instance();
@@ -916,10 +918,15 @@ void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, co
         return ShortUpscalerName(upscaler, api, index);
     };
 
+    // On a Ray Reconstruction feature only OpenRR denoises, the others run Super Resolution alone
+    auto noDenoiser = [rrFeature](Upscaler upscaler) { return rrFeature && upscaler != Upscaler::OpenNrRr; };
+
     // Interop is only shown here, the list uses a tag for it
     auto selectedName = upscalerName(targetBackend, ffxIndex);
     if (IsOn12(targetBackend))
         selectedName += " (Dx12)";
+    if (noDenoiser(targetBackend))
+        selectedName += " (no denoiser)";
 
     if (!ImGui::BeginCombo("##UpscalerCombo", selectedName.c_str(), ImGuiComboFlags_HeightLargest))
         return;
@@ -1011,10 +1018,16 @@ void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, co
                 config->FfxUpscalerIndex = entry.ffxIndex;
         }
 
+        if (noDenoiser(entry.upscaler) && ImGui::IsItemHovered())
+            ImGui::SetTooltip("No denoiser (Ray Reconstruction off): the game's path-traced image is only upscaled "
+                              "and stays noisy. Pick OpenRR to denoise it again.");
+
         // Dimmed tags aligned to the right
         const char* tag = nullptr;
 
-        if (entry.ffxIndex >= 0 && IsOn12(entry.upscaler))
+        if (noDenoiser(entry.upscaler))
+            tag = "no denoiser";
+        else if (entry.ffxIndex >= 0 && IsOn12(entry.upscaler))
             tag = "FFX Dx12";
         else if (entry.ffxIndex >= 0)
             tag = "FFX";
@@ -1058,6 +1071,9 @@ static bool OpenNrRrOffered(std::string* reason)
     return reason->empty();
 }
 
+// Vulkan: whether OpenRR runs on the game's device (made for it at vkCreateDevice); reason says why not
+static bool OpenNrRrOfferedVk(std::string* reason) { return OpenNrRr::VkUsable(VK_NULL_HANDLE, VK_NULL_HANDLE, reason); }
+
 void MenuCommon::AddDx12Backends(Upscaler upscaler)
 {
     std::vector<Upscaler> options { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::DLSS };
@@ -1075,9 +1091,16 @@ void MenuCommon::AddVulkanBackends(Upscaler upscaler)
 {
     // No FSR w/Dx12 on Vulkan: FFX runs FSR 4 natively there now, and the w/Dx12 copies crashed RDR2. DLSS w/Dx12 stays,
     // it is how NeuralHub's DLSS reaches a Vulkan game.
-    RenderUpscalerCombo(API::Vulkan, upscaler,
-                        { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22, Upscaler::FFX, Upscaler::DLSS,
-                          Upscaler::DLSS_on12 });
+    std::vector<Upscaler> options { Upscaler::XeSS, Upscaler::FSR21, Upscaler::FSR22,
+                                    Upscaler::FFX,  Upscaler::DLSS,  Upscaler::DLSS_on12 };
+
+    // The game runs Ray Reconstruction: OpenRR is its denoiser, the others only upscale
+    const bool rr = State::Instance().vkFeatureIsRr;
+    std::string reason;
+    if (upscaler == Upscaler::OpenNrRr || (rr && OpenNrRrOfferedVk(&reason)))
+        options.push_back(Upscaler::OpenNrRr);
+
+    RenderUpscalerCombo(API::Vulkan, upscaler, options, rr);
 }
 
 template <HasDefaultValue B> void MenuCommon::AddResourceBarrier(std::string name, CustomOptional<int32_t, B>* value)
@@ -3309,9 +3332,13 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
     const bool usesDlssd = currentFeature->GetUpscalerType() == Upscaler::DLSSD;
     const bool usesRr = usesDlssd || currentFeature->GetUpscalerType() == Upscaler::FSR_RR ||
                         currentFeature->GetUpscalerType() == Upscaler::OpenNrRr;
+    // Vulkan keeps the game's Ray Reconstruction request in vkFeatureIsRr, also while FSR or XeSS runs it
+    const bool vkRr = state.api == Vulkan && state.vkFeatureIsRr;
+    const bool rrOnAmd =
+        primaryGpu.vendorId != VendorId::Nvidia && ((state.api == DX12 && usesRr) || vkRr);
     std::string openNrRrReason;
     const bool openNrRrOffered =
-        state.api == DX12 && usesRr && primaryGpu.vendorId != VendorId::Nvidia && OpenNrRrOffered(&openNrRrReason);
+        rrOnAmd && (state.api == DX12 ? OpenNrRrOffered(&openNrRrReason) : OpenNrRrOfferedVk(&openNrRrReason));
     // FSR-RR or OpenRR on DX12 can take over from DLSSD on a non-Nvidia GPU
     const bool canSwitchRrOnDx12 = state.api == DX12 && primaryGpu.vendorId != VendorId::Nvidia &&
                                    (FfxApiProxy::IsDenoiserApiImplementedDx12() || openNrRrOffered);
@@ -3354,6 +3381,8 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
 
     if (!usesDlssd || canSwitchRrOnDx12)
     {
+        static bool noDenoiserToasted = false;
+
         if (state.newBackend != Upscaler::Reset && state.newBackend != currentBackend)
         {
             if (state.newBackend == Upscaler::XeSS)
@@ -3364,15 +3393,27 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             }
 
             // The Ray Reconstruction provider picked here is the one the next launch starts with
-            if (usesRr && state.api == DX12 &&
+            if (((usesRr && state.api == DX12) || vkRr) &&
                 (state.newBackend == Upscaler::OpenNrRr || currentBackend == Upscaler::OpenNrRr))
                 config->OpenNrRrEnabled = state.newBackend == Upscaler::OpenNrRr;
 
+            if (vkRr && state.newBackend != Upscaler::OpenNrRr && !noDenoiserToasted)
+            {
+                noDenoiserToasted = true;
+                ImGui::InsertNotification({ ImGuiToastType::Warning, 8000,
+                                            "%s has no denoiser: Ray Reconstruction is off",
+                                            UpscalerDisplayName(state.newBackend, state.api).c_str() });
+            }
+
             MARK_ALL_BACKENDS_CHANGED();
+        }
+        else
+        {
+            noDenoiserToasted = false;
         }
     }
 
-    if (state.api == DX12 && usesRr && primaryGpu.vendorId != VendorId::Nvidia && !openNrRrOffered)
+    if (rrOnAmd && !openNrRrOffered)
     {
         ImGui::Spacing();
         ImGui::TextDisabled("OpenRR: %s", openNrRrReason.c_str());
@@ -3491,31 +3532,41 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             ScopedIndent indent {};
             ImGui::Spacing();
 
-            if (bool nrOn = config->OpenNrRrNrOnDenoised.value_or_default() == "display";
-                ImGui::Checkbox("NR on denoised image", &nrOn))
-                config->OpenNrRrNrOnDenoised = nrOn ? "display" : "off";
-            ShowTooltip("mochizuki NR (NrBackend=mochizuki and its settings) on the denoised render-size image.\n"
-                        "The NR goes onto the shown image from the first frame and is accumulated over frames as the\n"
-                        "image is; the RR keeps its own history.");
-
-            const char* backends[] = { "Auto", "D3D12", "Vulkan" };
-            const auto backendName = config->OpenNrRrBackend.value_or_default();
-            int backend = backendName == "d3d12" ? 1 : backendName == "vulkan" ? 2 : 0;
-
-            ImGui::PushItemWidth(150.0f * menuResScale);
-            if (ImGui::Combo("Backend", &backend, backends, 3))
+            // the NR hop and the backend choice are D3D12's; a Vulkan game runs on its own device
+            if (currentFeature->Api() != API::Vulkan)
             {
-                config->OpenNrRrBackend = backend == 1 ? "d3d12" : backend == 2 ? "vulkan" : "auto";
-                // the runtime picks its backend at creation
-                state.newBackend = currentBackend;
-                MARK_ALL_BACKENDS_CHANGED();
+                if (bool nrOn = config->OpenNrRrNrOnDenoised.value_or_default() == "display";
+                    ImGui::Checkbox("NR on denoised image", &nrOn))
+                    config->OpenNrRrNrOnDenoised = nrOn ? "display" : "off";
+                ShowTooltip("mochizuki NR (NrBackend=mochizuki and its settings) on the denoised render-size image.
+"
+                            "The NR goes onto the shown image from the first frame and is accumulated over frames as the
+"
+                            "image is; the RR keeps its own history.");
+
+                const char* backends[] = { "Auto", "D3D12", "Vulkan" };
+                const auto backendName = config->OpenNrRrBackend.value_or_default();
+                int backend = backendName == "d3d12" ? 1 : backendName == "vulkan" ? 2 : 0;
+
+                ImGui::PushItemWidth(150.0f * menuResScale);
+                if (ImGui::Combo("Backend", &backend, backends, 3))
+                {
+                    config->OpenNrRrBackend = backend == 1 ? "d3d12" : backend == 2 ? "vulkan" : "auto";
+                    // the runtime picks its backend at creation
+                    state.newBackend = currentBackend;
+                    MARK_ALL_BACKENDS_CHANGED();
+                }
+                ImGui::PopItemWidth();
+                ShowTooltip("D3D12: the network runs on the game's own device, recorded into its command list
+"
+                            "(no second device, no copies through shared memory, no queue crossings).
+"
+                            "Vulkan: the network runs on a Vulkan device of its own beside the game.
+"
+                            "Auto: D3D12 when the runtime's check on this GPU and driver passes, otherwise Vulkan.
+"
+                            "Changing it recreates OpenRR.");
             }
-            ImGui::PopItemWidth();
-            ShowTooltip("D3D12: the network runs on the game's own device, recorded into its command list\n"
-                        "(no second device, no copies through shared memory, no queue crossings).\n"
-                        "Vulkan: the network runs on a Vulkan device of its own beside the game.\n"
-                        "Auto: D3D12 when the runtime's check on this GPU and driver passes, otherwise Vulkan.\n"
-                        "Changing it recreates OpenRR.");
 
             if (ImGui::TreeNode("Guides"))
             {
@@ -3599,8 +3650,10 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                                         : info.state == ONR_RR_STATE_BUILDING ? "building"
                                                                               : "failed";
                 ImGui::Text("State: %s, GPU %.2f ms (average)", stateName, info.gpu_ms_average);
-                ImGui::Text("Running on: %s", info.backend == ONR_RR_BACKEND_D3D12 ? "D3D12 (the game's command list)" : "Vulkan");
-                if (info.backend != ONR_RR_BACKEND_D3D12 && info.backend_message[0] != 0)
+                ImGui::Text("Running on: %s", info.backend == ONR_RR_BACKEND_D3D12         ? "D3D12 (the game's command list)"
+                                              : info.backend == ONR_RR_BACKEND_VULKAN_HOST ? "Vulkan (the game's command buffer)"
+                                                                                           : "Vulkan");
+                if (info.backend == ONR_RR_BACKEND_VULKAN && info.backend_message[0] != 0)
                     ImGui::TextWrapped("D3D12 not used: %s", info.backend_message);
 
                 if (info.message[0] != 0)

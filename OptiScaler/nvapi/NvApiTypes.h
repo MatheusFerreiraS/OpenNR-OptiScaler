@@ -14,10 +14,12 @@ typedef void*(__stdcall* PFN_NvApi_QueryInterface)(unsigned int InterfaceId);
 class NvApiTypes
 {
     std::unordered_map<std::string, unsigned int> lookupTable;
+    std::unordered_map<unsigned int, std::string> nameTable;
 
     NvApiTypes();
 
   public:
     static NvApiTypes& Instance();
     unsigned int getId(const std::string& name) const;
+    std::string getName(unsigned int id) const;
 };
