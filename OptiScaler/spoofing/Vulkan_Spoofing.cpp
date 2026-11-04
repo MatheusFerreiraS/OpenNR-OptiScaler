@@ -1588,7 +1588,8 @@ PFN_vkVoidFunction VulkanSpoofing::hkvkGetInstanceProcAddr(const PFN_vkVoidFunct
         }
     }
 
-    if (Config::Instance()->VulkanExtensionSpoofing.value_or_default() || GateDiag::On())
+    if (Config::Instance()->VulkanExtensionSpoofing.value_or_default() || GateDiag::On() ||
+        Config::Instance()->DoomStreamlineAnyVendor.value_or_default())
     {
         if (procName == std::string("vkEnumerateInstanceExtensionProperties"))
         {
@@ -1675,7 +1676,8 @@ PFN_vkVoidFunction VulkanSpoofing::hkvkGetDeviceProcAddr(const PFN_vkVoidFunctio
         }
     }
 
-    if (Config::Instance()->VulkanExtensionSpoofing.value_or_default() || GateDiag::On())
+    if (Config::Instance()->VulkanExtensionSpoofing.value_or_default() || GateDiag::On() ||
+        Config::Instance()->DoomStreamlineAnyVendor.value_or_default())
     {
         if (procName == std::string("vkEnumerateInstanceExtensionProperties"))
         {
@@ -1777,7 +1779,8 @@ void VulkanSpoofing::HookForVulkanExtensionSpoofing(HMODULE vulkanModule)
     {
         FARPROC address = nullptr;
 
-        if (Config::Instance()->VulkanExtensionSpoofing.value_or_default() || GateDiag::On())
+        if (Config::Instance()->VulkanExtensionSpoofing.value_or_default() || GateDiag::On() ||
+            Config::Instance()->DoomStreamlineAnyVendor.value_or_default())
         {
             address = KernelBaseProxy::GetProcAddress_()(vulkanModule, "vkEnumerateInstanceExtensionProperties");
             o_vkEnumerateInstanceExtensionProperties = (PFN_vkEnumerateInstanceExtensionProperties) address;
