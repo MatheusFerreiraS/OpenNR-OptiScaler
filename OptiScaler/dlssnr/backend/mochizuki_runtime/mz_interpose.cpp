@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include "nr_log.hpp"
+#include "nr_pipeline_binary.hpp" // load_cached, save_cached (nothing here that calls the renamed entry points)
 
 #include <algorithm>
 #include <atomic>
@@ -14,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iterator>
 #include <map>
 #include <mutex>
@@ -573,8 +575,109 @@ uint64_t CpuTime(HANDLE thread)
            (uint64_t(user.dwHighDateTime) << 32 | user.dwLowDateTime);
 }
 
+// The pipeline binary entry points, when the device has VK_KHR_pipeline_binary.
+struct BinaryApi
+{
+    PFN_vkCreatePipelineBinariesKHR create {};
+    PFN_vkDestroyPipelineBinaryKHR destroy {};
+    PFN_vkGetPipelineBinaryDataKHR data {};
+    PFN_vkReleaseCapturedPipelineDataKHR release {};
+    explicit BinaryApi(VkDevice d)
+    {
+        create = reinterpret_cast<PFN_vkCreatePipelineBinariesKHR>(vkGetDeviceProcAddr(d, "vkCreatePipelineBinariesKHR"));
+        destroy = reinterpret_cast<PFN_vkDestroyPipelineBinaryKHR>(vkGetDeviceProcAddr(d, "vkDestroyPipelineBinaryKHR"));
+        data = reinterpret_cast<PFN_vkGetPipelineBinaryDataKHR>(vkGetDeviceProcAddr(d, "vkGetPipelineBinaryDataKHR"));
+        release = reinterpret_cast<PFN_vkReleaseCapturedPipelineDataKHR>(
+            vkGetDeviceProcAddr(d, "vkReleaseCapturedPipelineDataKHR"));
+    }
+    explicit operator bool() const { return create && destroy && data && release; }
+};
+
+// A pipeline's binary file in a binaries folder: the hash of its manifest line.
+std::wstring BinaryFile(const std::wstring& dir, const Pipeline& p)
+{
+    const std::string d = Describe(p);
+    wchar_t name[32];
+    swprintf_s(name, L"\\%016llx.nrb", static_cast<unsigned long long>(Hash(d.data(), d.size())));
+    return dir + name;
+}
+
+// `pipeline`'s machine code (made with VK_PIPELINE_CREATE_2_CAPTURE_DATA_BIT_KHR) into `file`.
+bool KeepBinary(VkDevice device, const BinaryApi& api, VkPipeline pipeline, const std::wstring& file)
+{
+    VkPipelineBinaryCreateInfoKHR bi { VK_STRUCTURE_TYPE_PIPELINE_BINARY_CREATE_INFO_KHR };
+    bi.pipeline = pipeline;
+    VkPipelineBinaryHandlesInfoKHR hi { VK_STRUCTURE_TYPE_PIPELINE_BINARY_HANDLES_INFO_KHR };
+    bool kept = false;
+    VkPipelineBinaryKHR binary {};
+    if (api.create(device, &bi, nullptr, &hi) == VK_SUCCESS && hi.pipelineBinaryCount == 1)
+    {
+        hi.pPipelineBinaries = &binary;
+        if (api.create(device, &bi, nullptr, &hi) == VK_SUCCESS && binary)
+        {
+            VkPipelineBinaryDataInfoKHR di { VK_STRUCTURE_TYPE_PIPELINE_BINARY_DATA_INFO_KHR };
+            di.pipelineBinary = binary;
+            VkPipelineBinaryKeyKHR key { VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR };
+            size_t bytes = 0;
+            if (api.data(device, &di, &key, &bytes, nullptr) == VK_SUCCESS && bytes && bytes <= 64 * 1024 * 1024)
+            {
+                nr::pal::Bytes blob(bytes);
+                if (api.data(device, &di, &key, &bytes, blob.data()) == VK_SUCCESS && bytes <= blob.size())
+                {
+                    blob.resize(bytes);
+                    nr::binary::save_cached(Utf8(file), key, blob);
+                    kept = GetFileAttributesW(file.c_str()) != INVALID_FILE_ATTRIBUTES;
+                }
+            }
+            api.destroy(device, binary, nullptr);
+        }
+    }
+    VkReleaseCapturedPipelineDataInfoKHR ri { VK_STRUCTURE_TYPE_RELEASE_CAPTURED_PIPELINE_DATA_INFO_KHR };
+    ri.pipeline = pipeline;
+    api.release(device, &ri, nullptr);
+    return kept;
+}
+
+// The pipeline of `ci` made from the machine code in `file` (KeepBinary's), or VK_NULL_HANDLE.
+VkPipeline ImportBinary(VkDevice device, const BinaryApi& api, const VkComputePipelineCreateInfo& ci,
+                        const std::wstring& file)
+{
+    VkPipelineBinaryKeyKHR key { VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR };
+    nr::pal::Bytes blob;
+    if (GetFileAttributesW(file.c_str()) == INVALID_FILE_ATTRIBUTES || !nr::binary::load_cached(Utf8(file), key, blob))
+        return VK_NULL_HANDLE;
+    VkPipelineBinaryDataKHR bd { blob.size(), blob.data() };
+    VkPipelineBinaryKeysAndDataKHR kd { 1, &key, &bd };
+    VkPipelineBinaryCreateInfoKHR bi { VK_STRUCTURE_TYPE_PIPELINE_BINARY_CREATE_INFO_KHR };
+    bi.pKeysAndDataInfo = &kd;
+    VkPipelineBinaryKHR binary {};
+    VkPipelineBinaryHandlesInfoKHR hi { VK_STRUCTURE_TYPE_PIPELINE_BINARY_HANDLES_INFO_KHR };
+    hi.pipelineBinaryCount = 1;
+    hi.pPipelineBinaries = &binary;
+    if (api.create(device, &bi, nullptr, &hi) != VK_SUCCESS || !binary)
+        return VK_NULL_HANDLE;
+    VkPipelineBinaryInfoKHR input { VK_STRUCTURE_TYPE_PIPELINE_BINARY_INFO_KHR };
+    input.binaryCount = 1;
+    input.pPipelineBinaries = &binary;
+    input.pNext = ci.pNext;
+    VkComputePipelineCreateInfo imported = ci;
+    imported.pNext = &input;
+    imported.stage.module = VK_NULL_HANDLE;
+    VkPipeline pipeline {};
+    if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &imported, nullptr, &pipeline) != VK_SUCCESS)
+    {
+        if (pipeline)
+            vkDestroyPipeline(device, pipeline, nullptr);
+        pipeline = VK_NULL_HANDLE;
+    }
+    api.destroy(device, binary, nullptr);
+    return pipeline;
+}
+
 // One manifest pipeline, made into `cache` and destroyed again: what the core will make, down to the create info.
-VkResult Compile(VkDevice device, VkPipelineCache cache, const Pipeline& p, const std::vector<uint32_t>& code)
+// With `keep` (and `api`), made with its machine code captured and kept there instead (no cache).
+VkResult Compile(VkDevice device, VkPipelineCache cache, const Pipeline& p, const std::vector<uint32_t>& code,
+                 const BinaryApi* api = nullptr, const std::wstring& keep = {})
 {
     std::vector<VkDescriptorSetLayout> sets(p.layout.sets.size(), VK_NULL_HANDLE);
     VkPipelineLayout layout = VK_NULL_HANDLE;
@@ -629,7 +732,17 @@ VkResult Compile(VkDevice device, VkPipelineCache cache, const Pipeline& p, cons
         cpi.stage.module = module;
         cpi.stage.pName = p.entry.c_str();
         cpi.layout = layout;
-        r = vkCreateComputePipelines(device, cache, 1, &cpi, nullptr, &pipeline);
+        VkPipelineCreateFlags2CreateInfoKHR flags2 { VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR };
+        const bool capture = api && *api && !keep.empty();
+        if (capture)
+        {
+            flags2.flags = VkPipelineCreateFlags2KHR(p.flags) | VK_PIPELINE_CREATE_2_CAPTURE_DATA_BIT_KHR;
+            flags2.pNext = cpi.pNext;
+            cpi.pNext = &flags2;
+        }
+        r = vkCreateComputePipelines(device, capture ? VK_NULL_HANDLE : cache, 1, &cpi, nullptr, &pipeline);
+        if (r == VK_SUCCESS && capture)
+            KeepBinary(device, *api, pipeline, keep);
     }
     vkDestroyPipeline(device, pipeline, nullptr);
     vkDestroyShaderModule(device, module, nullptr);
@@ -658,6 +771,11 @@ struct mzi::Capture::State
     std::unordered_set<std::string> described; // Describe of each in pipelines
     std::string refused;                       // the first create info the manifest cannot describe
     VkPipelineCache cache {};                  // the core's, until it destroys it
+    // data\binaries<variant>: the pipeline check's machine code for this device and driver (ManifestPipelines),
+    // imported instead of compiled; empty when there is none.
+    std::wstring binaryDir;
+    std::unique_ptr<BinaryApi> api;
+    uint32_t imported = 0;
     uint32_t created = 0;                      // the core's vkCreateComputePipelines calls' pipelines...
     double createSeconds = 0;                  // ... and the time in them: a miss in the cache is a compile
 
@@ -792,6 +910,75 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL mzi_vkCreatePipelineLayout(VkDevice de
     return r;
 }
 
+namespace
+{
+// The manifest's description of `ci` from the modules and layouts this build made, or why it has none.
+const char* PipelineOf(const mzi::Capture::State& s, const VkComputePipelineCreateInfo& ci, Pipeline& p, bool* binary)
+{
+    p.flags = ci.flags;
+    p.stage = ci.stage.stage;
+    p.stageFlags = ci.stage.flags;
+    for (auto* next = static_cast<const VkBaseInStructure*>(ci.stage.pNext); next; next = next->pNext)
+    {
+        if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO && !p.subgroup)
+            p.subgroup =
+                reinterpret_cast<const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo*>(next)->requiredSubgroupSize;
+        else
+            return "a shader stage with another pNext than its required subgroup size";
+    }
+    const auto module = s.modules.find(Key(ci.stage.module));
+    const auto layout = s.layouts.find(Key(ci.layout));
+    for (auto* next = static_cast<const VkBaseInStructure*>(ci.pNext); next; next = next->pNext)
+    {
+        const auto* r = reinterpret_cast<const VkPipelineRobustnessCreateInfoEXT*>(next);
+        if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_BINARY_INFO_KHR && binary)
+            *binary = true;
+        if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO_EXT && !p.unrobust &&
+            r->storageBuffers == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT &&
+            r->uniformBuffers == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT &&
+            r->vertexInputs == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT &&
+            r->images == VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DISABLED_EXT)
+            p.unrobust = true;
+        else
+            return "a compute pipeline with another pNext than robustness turned off";
+    }
+    if (ci.stage.pSpecializationInfo)
+        return "specialization constants";
+    if (ci.flags & VK_PIPELINE_CREATE_DERIVATIVE_BIT)
+        return "a derivative pipeline";
+    if (!Identifier(ci.stage.pName))
+        return "an entry point name the manifest cannot carry";
+    if (module == s.modules.end() || layout == s.layouts.end())
+        return "a pipeline whose module or layout was made before the capture";
+    p.module = module->second;
+    p.entry = ci.stage.pName;
+    p.layout = layout->second;
+    return nullptr;
+}
+
+// The pipeline from the check's machine code, when the build has binaries and one for this create info.
+VkPipeline Imported(VkDevice device, const VkComputePipelineCreateInfo& ci) noexcept
+{
+    try
+    {
+        mzi::Capture::State* s = t_capture;
+        if (!s || s->binaryDir.empty() || !s->api || device != s->device)
+            return VK_NULL_HANDLE;
+        Pipeline p;
+        if (PipelineOf(*s, ci, p, nullptr))
+            return VK_NULL_HANDLE;
+        const VkPipeline pipeline = ImportBinary(device, *s->api, ci, BinaryFile(s->binaryDir, p));
+        if (pipeline)
+            ++s->imported;
+        return pipeline;
+    }
+    catch (...)
+    {
+        return VK_NULL_HANDLE;
+    }
+}
+} // namespace
+
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL mzi_vkCreateComputePipelines(VkDevice device, VkPipelineCache pipelineCache,
                                                                        uint32_t createInfoCount,
                                                                        const VkComputePipelineCreateInfo* pCreateInfos,
@@ -814,11 +1001,16 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL mzi_vkCreateComputePipelines(VkDevice 
         }
         nr::logf("[mochizuki] core pipeline %u: compiling %s", t_capture->created + 1, what.c_str());
     }
-    const VkResult r =
-        vkCreateComputePipelines(device, pipelineCache, createInfoCount, pCreateInfos, pAllocator, pPipelines);
+    const VkPipeline imported = createInfoCount == 1 && !pAllocator ? Imported(device, pCreateInfos[0]) : VK_NULL_HANDLE;
+    if (imported)
+        pPipelines[0] = imported;
+    const VkResult r = imported ? VK_SUCCESS
+                                : vkCreateComputePipelines(device, pipelineCache, createInfoCount, pCreateInfos,
+                                                           pAllocator, pPipelines);
     if (verbose)
-        nr::logf("[mochizuki] core pipeline %u: %.0f ms (VkResult %d)", t_capture->created + 1,
-                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), int(r));
+        nr::logf("[mochizuki] core pipeline %u: %.0f ms (VkResult %d)%s", t_capture->created + 1,
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), int(r),
+                 imported ? ", from the check's binary" : "");
     if (t_capture)
     {
         t_capture->createSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -830,59 +1022,18 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL mzi_vkCreateComputePipelines(VkDevice 
             {
                 for (uint32_t i = 0; i < createInfoCount; ++i)
                 {
-                    const VkComputePipelineCreateInfo& ci = pCreateInfos[i];
                     Pipeline p;
-                    p.flags = ci.flags;
-                    p.stage = ci.stage.stage;
-                    p.stageFlags = ci.stage.flags;
-                    for (auto* next = static_cast<const VkBaseInStructure*>(ci.stage.pNext); next; next = next->pNext)
+                    if (const char* why = PipelineOf(s, pCreateInfos[i], p, &s.binaries))
                     {
-                        if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO &&
-                            !p.subgroup)
-                            p.subgroup =
-                                reinterpret_cast<const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo*>(next)
-                                    ->requiredSubgroupSize;
-                        else
-                            s.Refuse("a shader stage with another pNext than its required subgroup size");
-                    }
-                    const auto module = s.modules.find(Key(ci.stage.module));
-                    const auto layout = s.layouts.find(Key(ci.layout));
-                    for (auto* next = static_cast<const VkBaseInStructure*>(ci.pNext); next; next = next->pNext)
-                    {
-                        const auto* r = reinterpret_cast<const VkPipelineRobustnessCreateInfoEXT*>(next);
-                        if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_BINARY_INFO_KHR)
-                            s.binaries = true;
-                        if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO_EXT && !p.unrobust &&
-                            r->storageBuffers == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT &&
-                            r->uniformBuffers == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT &&
-                            r->vertexInputs == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT &&
-                            r->images == VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DISABLED_EXT)
-                            p.unrobust = true;
-                        else
-                            s.Refuse("a compute pipeline with another pNext than robustness turned off");
-                    }
-                    if (!s.refused.empty())
+                        s.Refuse(why);
                         return;
-                    if (ci.stage.pSpecializationInfo)
-                        s.Refuse("specialization constants");
-                    else if (ci.flags & VK_PIPELINE_CREATE_DERIVATIVE_BIT)
-                        s.Refuse("a derivative pipeline");
-                    else if (!Identifier(ci.stage.pName))
-                        s.Refuse("an entry point name the manifest cannot carry");
-                    else if (module == s.modules.end() || layout == s.layouts.end())
-                        s.Refuse("a pipeline whose module or layout was made before the capture");
-                    if (!s.refused.empty())
-                        return;
-                    p.module = module->second;
-                    p.entry = ci.stage.pName;
-                    p.layout = layout->second;
+                    }
                     if (s.described.insert(Describe(p)).second)
                         s.pipelines.push_back(std::move(p));
                 }
             });
     return r;
 }
-
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL mzi_vkCreatePipelineCache(VkDevice device,
                                                                     const VkPipelineCacheCreateInfo* pCreateInfo,
                                                                     const VkAllocationCallbacks* pAllocator,
@@ -917,6 +1068,21 @@ Capture::Capture(VkDevice device, VkPhysicalDevice physical, const std::wstring&
         state->physical = physical;
         state->data = data;
         state->variant = variant;
+        // The pipeline check's machine code for this device and driver (AdoptBinaries), on a device that can import it.
+        if (!variant.empty())
+        {
+            const std::wstring dir = data + L"\\binaries" + variant;
+            std::vector<char> id;
+            if (ReadAll(dir + L"\\identity.txt", id) && std::string(id.begin(), id.end()) == BinaryIdentity(physical) + "\n")
+            {
+                auto api = std::make_unique<BinaryApi>(device);
+                if (*api)
+                {
+                    state->binaryDir = dir;
+                    state->api = std::move(api);
+                }
+            }
+        }
         state->outer = t_capture;
         t_capture = state.get();
     }
@@ -961,8 +1127,9 @@ void Capture::Finish() noexcept
     if (!state)
         return;
     if (state->created)
-        nr::logf("[mochizuki] the core made %u pipelines (%zu distinct) in %.2f s", state->created,
-                 state->pipelines.size(), state->createSeconds);
+        nr::logf("[mochizuki] the core made %u pipelines (%zu distinct) in %.2f s%s", state->created,
+                 state->pipelines.size(), state->createSeconds,
+                 state->imported ? (", " + std::to_string(state->imported) + " of them from the pipeline check's machine code").c_str() : "");
     try
     {
         state->SaveCache();
@@ -1013,9 +1180,15 @@ void Capture::State::Prewarm(const std::atomic<bool>* stop)
         const std::string* path;
     };
     std::vector<Job> jobs;
+    uint32_t taken = 0; // in the pipeline check's binaries: the build imports them
     for (const auto& [path, p] : manifest.entries)
         if (path != "-")
-            jobs.push_back({ &p, &code.at(path), &path });
+        {
+            if (!binaryDir.empty() && GetFileAttributesW(BinaryFile(binaryDir, p).c_str()) != INVALID_FILE_ATTRIBUTES)
+                ++taken;
+            else
+                jobs.push_back({ &p, &code.at(path), &path });
+        }
     std::stable_sort(jobs.begin(), jobs.end(),
                      [](const Job& a, const Job& b) { return a.pipeline->module.bytes > b.pipeline->module.bytes; });
     // Allocated before the cache is made, so that nothing between its creation and its destruction throws.
@@ -1207,10 +1380,13 @@ void Capture::State::Prewarm(const std::atomic<bool>* stop)
     if (failed)
         std::snprintf(failures, sizeof failures, "; %u failed (first VkResult %d)", failed.load(),
                       int(firstError.load()));
+    char fromCheck[96] = {};
+    if (taken)
+        std::snprintf(fromCheck, sizeof fromCheck, "; %u more in the pipeline check's machine code", taken);
     nr::logf("[mochizuki] prewarm %u pipelines on %zu threads in %.2f s%s (pipeline.cache %s, %.1f MB; %.1f s of "
-             "processor time)%s%s",
+             "processor time)%s%s%s",
              made.load(), std::max<size_t>(pool.size(), 1), seconds, otherDriver, written ? "written" : "unchanged",
-             double(written ? bytes : initial.size()) / 1e6, double(cpu) / 1e7, starved, failures);
+             double(written ? bytes : initial.size()) / 1e6, double(cpu) / 1e7, starved, failures, fromCheck);
 }
 
 void Capture::State::SaveCache()
@@ -1311,6 +1487,134 @@ void Capture::State::WriteManifest()
     nr::logf("[mochizuki] prewarm manifest written: %zu pipelines, %u of them new%s", m.entries.size(), added, note);
 }
 
+struct ManifestPipelines::State
+{
+    std::wstring shaders;
+    Manifest manifest;
+    std::map<std::string, std::vector<uint32_t>> code;
+    std::map<std::string, std::vector<const Pipeline*>> byFile;
+
+    // The manifest's name of a file under `shaders`, or empty.
+    std::string Rel(const std::wstring& file) const
+    {
+        if (file.size() <= shaders.size() + 1 || _wcsnicmp(file.c_str(), shaders.c_str(), shaders.size()) ||
+            file[shaders.size()] != L'\\')
+            return {};
+        std::string rel = Utf8(file.substr(shaders.size() + 1));
+        std::replace(rel.begin(), rel.end(), '\\', '/');
+        return rel;
+    }
+    const std::vector<const Pipeline*>* Of(const std::string& rel) const
+    {
+        const auto at = byFile.find(rel);
+        return at == byFile.end() ? nullptr : &at->second;
+    }
+};
+
+ManifestPipelines::ManifestPipelines(const std::wstring& data, const std::wstring& variant) noexcept
+{
+    try
+    {
+        auto s = std::make_unique<State>();
+        s->shaders = data + L"\\shaders" + variant;
+        std::string why;
+        bool missing = false;
+        if (!Read(data + L"\\prewarm\\manifest" + variant + L".txt", s->manifest, why, missing) ||
+            !Check(s->manifest, Scan(s->shaders), why, &s->code))
+            return;
+        for (const auto& [path, p] : s->manifest.entries)
+            if (path != "-")
+                s->byFile[path].push_back(&p);
+        state = std::move(s);
+    }
+    catch (...)
+    {
+        state.reset();
+    }
+}
+
+ManifestPipelines::~ManifestPipelines() = default;
+
+size_t ManifestPipelines::Count(const std::wstring& file) const noexcept
+{
+    try
+    {
+        const auto* list = state ? state->Of(state->Rel(file)) : nullptr;
+        return list ? list->size() : 0;
+    }
+    catch (...)
+    {
+        return 0;
+    }
+}
+
+size_t ManifestPipelines::Total() const noexcept
+{
+    size_t n = 0;
+    if (state)
+        for (const auto& [path, list] : state->byFile)
+            n += list.size();
+    return n;
+}
+
+VkResult ManifestPipelines::Compile(VkDevice device, const std::wstring& file, const std::wstring& binaries) const noexcept
+{
+    try
+    {
+        if (!state)
+            return VK_ERROR_INITIALIZATION_FAILED;
+        const std::string rel = state->Rel(file);
+        const auto* list = state->Of(rel);
+        const auto code = state->code.find(rel);
+        if (!list || code == state->code.end())
+            return VK_ERROR_INITIALIZATION_FAILED;
+        const BinaryApi api(device);
+        VkResult first = VK_SUCCESS;
+        for (const Pipeline* p : *list)
+            if (const VkResult r = ::Compile(device, VK_NULL_HANDLE, *p, code->second, &api,
+                                             binaries.empty() ? std::wstring() : BinaryFile(binaries, *p));
+                r != VK_SUCCESS && first == VK_SUCCESS)
+                first = r;
+        return first;
+    }
+    catch (...)
+    {
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+}
+
+std::string BinaryIdentity(VkPhysicalDevice physical)
+{
+    VkPhysicalDeviceProperties props {};
+    vkGetPhysicalDeviceProperties(physical, &props);
+    char text[32];
+    std::snprintf(text, sizeof text, "%04x-%08x-", props.deviceID, props.driverVersion);
+    return text + Hex(props.pipelineCacheUUID, VK_UUID_SIZE);
+}
+
+bool AdoptBinaries(const std::wstring& data, const std::wstring& variant, const std::wstring& from) noexcept
+{
+    try
+    {
+        std::error_code ec;
+        size_t n = 0;
+        for (const auto& e : std::filesystem::directory_iterator(from, ec))
+            n += e.path().extension() == L".nrb";
+        const std::wstring dst = data + L"\\binaries" + variant;
+        std::filesystem::remove_all(dst, ec);
+        const bool moved = n && GetFileAttributesW((from + L"\\identity.txt").c_str()) != INVALID_FILE_ATTRIBUTES &&
+                           MoveFileExW(from.c_str(), dst.c_str(), 0);
+        if (!moved)
+            std::filesystem::remove_all(from, ec);
+        nr::logf("[mochizuki] the pipeline check's machine code %s: %zu pipelines (dlssnr-amd\\binaries%ls)",
+                 moved ? "kept for the build" : "not kept", n, variant.c_str());
+        return moved;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
 namespace
 {
 bool ProbeWanted()
@@ -1325,19 +1629,21 @@ bool ProbeWanted()
 } // namespace
 
 void* BinaryProbe::Prepare(VkPhysicalDevice physical, const std::vector<VkExtensionProperties>& offered,
-                           std::vector<const char*>& extensions, void* next)
+                           std::vector<const char*>& extensions, void* next, bool always)
 {
-    if (!ProbeWanted())
+    if (!ProbeWanted() && !always)
         return next;
     auto has = [&](const char* name)
     {
         return std::any_of(offered.begin(), offered.end(),
                            [name](const VkExtensionProperties& p) { return !std::strcmp(p.extensionName, name); });
     };
+    const bool probe = ProbeWanted();
     for (const char* e : { VK_KHR_MAINTENANCE_5_EXTENSION_NAME, VK_KHR_PIPELINE_BINARY_EXTENSION_NAME })
         if (!has(e))
         {
-            nr::logf("[mochizuki] pipeline binary probe: the device does not offer %s; not probed", e);
+            if (probe)
+                nr::logf("[mochizuki] pipeline binary probe: the device does not offer %s; not probed", e);
             return next;
         }
     VkPhysicalDevicePipelineBinaryFeaturesKHR hasBinaries {
@@ -1350,7 +1656,8 @@ void* BinaryProbe::Prepare(VkPhysicalDevice physical, const std::vector<VkExtens
     vkGetPhysicalDeviceFeatures2(physical, &features);
     if (!hasMaintenance5.maintenance5 || !hasBinaries.pipelineBinaries)
     {
-        nr::logf("[mochizuki] pipeline binary probe: maintenance5 %u, pipelineBinaries %u; not probed",
+        if (probe)
+            nr::logf("[mochizuki] pipeline binary probe: maintenance5 %u, pipelineBinaries %u; not probed",
                  hasMaintenance5.maintenance5, hasBinaries.pipelineBinaries);
         return next;
     }
@@ -1360,7 +1667,8 @@ void* BinaryProbe::Prepare(VkPhysicalDevice physical, const std::vector<VkExtens
     binaries.pipelineBinaries = VK_TRUE;
     maintenance5.pNext = &binaries;
     binaries.pNext = next;
-    enabled = true;
+    enabled = probe;
+    active = true;
     return &maintenance5;
 }
 

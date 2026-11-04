@@ -1,6 +1,7 @@
 // mz_rdna3.h. The probe shaders are rdna3_probe/*.comp, built by tools/build-mochizuki-runtime.cmd into headers
 // (glslang --vn) of the same names.
 #include "mz_rdna3.h"
+#include "mz_interpose.h"
 
 #include <intrin.h>
 #include <shellapi.h>
@@ -487,12 +488,18 @@ bool HasExtension(const std::vector<VkExtensionProperties>& list, const char* e)
 }
 
 // The child: a device on the adapter, then every listed file compiled on `threads` threads. "start i" before file i
-// and "ok i ms" or "fail i VkResult" after; "error ..." when no device could be made; "done" at the end.
-void Child(const LUID& luid, unsigned threads, const std::wstring& listPath, Lines& out)
+// and "ok i ms" or "fail i VkResult" after; "error ..." when no device could be made; "done" at the end. With `data`
+// (the runtime's dlssnr-amd) and a prewarm manifest for data\shaders<variant>, a file the manifest names is compiled
+// with the create infos it lists, its machine code kept in the folder `keep` (mzi::ManifestPipelines).
+void Child(const LUID& luid, unsigned threads, const std::wstring& listPath, Lines& out, const std::wstring& data = {},
+           const std::wstring& variant = {}, const std::wstring& keep = {})
 {
     const std::vector<std::wstring> files = ReadList(listPath);
+    // With the manifest the device is the network's own, as Vulkan::Create makes it (application name, features,
+    // extensions): the driver keys its pipeline cache on them, and the build has to find what this compiles.
+    const bool mirror = !data.empty() && !keep.empty();
     VkApplicationInfo app { VK_STRUCTURE_TYPE_APPLICATION_INFO };
-    app.pApplicationName = "OptiScaler NR pipeline check";
+    app.pApplicationName = mirror ? "OptiScaler NR" : "OptiScaler NR pipeline check";
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ii { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
     ii.pApplicationInfo = &app;
@@ -528,9 +535,12 @@ void Child(const LUID& luid, unsigned threads, const std::wstring& listPath, Lin
     VkPhysicalDeviceVulkan12Features has12 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, robustExtension ? &hasRobust : nullptr };
     VkPhysicalDeviceFeatures2 has { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &has12 };
     vkGetPhysicalDeviceFeatures2(physical, &has);
-    const bool robust = robustExtension && hasRobust.pipelineRobustness;
+    const bool robust = robustExtension && hasRobust.pipelineRobustness && !mirror;
 
-    // What the network's device enables (MochizukiNrRuntime.cpp Vulkan::Create), FP8 left out.
+    // What the network's device enables (MochizukiNrRuntime.cpp Vulkan::Create), FP8 left out, and the matrices too
+    // where the driver has none (an RX 6000: the RDNA2 network has no cooperative matrices).
+    const bool coopExtension =
+        HasExtension(offered, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME) && (!mirror || variant == L"-rdna3");
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR };
     VkPhysicalDeviceVulkan11Features f11 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
     VkPhysicalDeviceVulkan12Features f12 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
@@ -543,6 +553,7 @@ void Child(const LUID& luid, unsigned threads, const std::wstring& listPath, Lin
     f11.storageBuffer16BitAccess = VK_TRUE;
     f12.storageBuffer8BitAccess = f12.shaderFloat16 = f12.shaderInt8 = f12.vulkanMemoryModel = VK_TRUE;
     f12.bufferDeviceAddress = has12.bufferDeviceAddress;
+    f12.timelineSemaphore = mirror && has12.timelineSemaphore;
     f13.subgroupSizeControl = f13.synchronization2 = VK_TRUE;
     wml.workgroupMemoryExplicitLayout = wml.workgroupMemoryExplicitLayout8BitAccess =
         wml.workgroupMemoryExplicitLayout16BitAccess = VK_TRUE;
@@ -553,11 +564,20 @@ void Child(const LUID& luid, unsigned threads, const std::wstring& listPath, Lin
     f13.pNext = &wml;
     if (robust)
         wml.pNext = &rob;
-    VkPhysicalDeviceFeatures2 f2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &coop };
-    std::vector<const char*> extensions = { VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME,
-                                            VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME };
+    VkPhysicalDeviceFeatures2 f2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                                   coopExtension ? static_cast<void*>(&coop) : &f11 };
+    std::vector<const char*> extensions = { VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME };
+    if (coopExtension)
+        extensions.insert(extensions.begin(), VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
     if (robust)
         extensions.push_back(VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
+    if (mirror)
+        for (const char* e : { "VK_KHR_external_memory_win32", "VK_KHR_external_semaphore_win32" })
+            if (HasExtension(offered, e))
+                extensions.push_back(e);
+    mzi::BinaryProbe binaryFeatures; // VK_KHR_pipeline_binary, to keep the machine code
+    if (mirror)
+        wml.pNext = binaryFeatures.Prepare(physical, offered, extensions, wml.pNext, true);
     const float priority = 1.f;
     VkDeviceQueueCreateInfo qi { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
     qi.queueCount = 1;
@@ -571,6 +591,21 @@ void Child(const LUID& luid, unsigned threads, const std::wstring& listPath, Lin
     if (VkResult r = vkCreateDevice(physical, &di, nullptr, &device))
         return out.Put("error vkCreateDevice VkResult " + std::to_string(r));
     const uint32_t push = std::min<uint32_t>(props.limits.maxPushConstantsSize, 256);
+    std::unique_ptr<mzi::ManifestPipelines> manifest;
+    std::wstring binaries;
+    if (mirror && binaryFeatures.active)
+    {
+        manifest = std::make_unique<mzi::ManifestPipelines>(data, variant);
+        std::error_code ec;
+        std::filesystem::remove_all(keep, ec);
+        if (!manifest->Total() || !std::filesystem::create_directories(keep, ec))
+            manifest.reset();
+        else
+        {
+            binaries = keep;
+            std::ofstream(std::filesystem::path(keep + L"\\identity.txt"), std::ios::binary) << mzi::BinaryIdentity(physical) << "\n";
+        }
+    }
     char crash[MAX_PATH] {}, hang[MAX_PATH] {};
     GetEnvironmentVariableA("MZ_TEST_RDNA3_COMPILE_CRASH", crash, MAX_PATH);
     GetEnvironmentVariableA("MZ_TEST_RDNA3_COMPILE_HANG", hang, MAX_PATH);
@@ -586,6 +621,15 @@ void Child(const LUID& luid, unsigned threads, const std::wstring& listPath, Lin
                 __fastfail(FAST_FAIL_FATAL_APP_EXIT);
             if (hang[0] && leaf == hang)
                 Sleep(INFINITE);
+            if (manifest && manifest->Count(files[i]))
+            {
+                const auto t0 = std::chrono::steady_clock::now();
+                const VkResult r = manifest->Compile(device, files[i], binaries);
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                out.Put(r ? "fail " + std::to_string(i) + " VkResult " + std::to_string(r)
+                          : "ok " + std::to_string(i) + " " + std::to_string(int(ms)));
+                continue;
+            }
             std::ifstream f(std::filesystem::path(files[i]), std::ios::binary | std::ios::ate);
             std::vector<uint32_t> code(f ? size_t(f.tellg()) / 4 : 0);
             f.seekg(0);
@@ -691,7 +735,8 @@ struct Run
 // One child over `indices` of `files`, `threads` at a time. Waits for it, killing it after `timeoutMs` without
 // progress or once `stop` is set.
 Run RunChild(const LUID& luid, const std::vector<std::wstring>& files, const std::vector<size_t>& indices,
-             unsigned threads, const std::wstring& work, const std::atomic<bool>* stop, DWORD timeoutMs)
+             unsigned threads, const std::wstring& work, const std::atomic<bool>* stop, DWORD timeoutMs,
+             const std::wstring& extra = {})
 {
     Run run;
     const std::wstring list = work + L"\\pipelines.txt", log = work + L"\\pipelines.log";
@@ -707,7 +752,7 @@ Run RunChild(const LUID& luid, const std::vector<std::wstring>& files, const std
     swprintf_s(luidText, L"%08lX%08lX", static_cast<unsigned long>(luid.HighPart), luid.LowPart);
     std::wstring cmd = L"\"" + std::wstring(system) + L"\\rundll32.exe\" \"" + ModulePath() +
                        L"\",MochizukiNrPipelineCheck " + luidText + L" " + std::to_wstring(threads) + L" \"" + list +
-                       L"\" \"" + log + L"\"";
+                       L"\" \"" + log + L"\"" + extra;
     STARTUPINFOW si { sizeof si };
     PROCESS_INFORMATION pi {};
     if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS,
@@ -846,12 +891,13 @@ std::string LayoutCheck(VkPhysicalDevice physical, VkDevice device, VkQueue queu
 }
 
 std::string PipelineCheck(const LUID& luid, const std::vector<std::wstring>& files, const std::wstring& work,
-                          const std::atomic<bool>* stop, bool& ran, std::string& note)
+                          const std::atomic<bool>* stop, bool& ran, std::string& note, unsigned timeout,
+                          const std::wstring& data, const std::wstring& variant)
 {
     const auto t0 = std::chrono::steady_clock::now();
     ran = false;
     CreateDirectoryW(work.c_str(), nullptr);
-    DWORD timeoutMs = kPipelineTimeoutMs;
+    DWORD timeoutMs = timeout;
     if (char t[16] {}; GetEnvironmentVariableA("MZ_TEST_RDNA3_TIMEOUT_MS", t, sizeof t))
         timeoutMs = DWORD(std::strtoul(t, nullptr, 10));
     // As the prewarm: below-normal priority, a few threads, so the game keeps its CPU.
@@ -859,7 +905,11 @@ std::string PipelineCheck(const LUID& luid, const std::vector<std::wstring>& fil
     std::vector<size_t> all(files.size());
     for (size_t i = 0; i < all.size(); ++i)
         all[i] = i;
-    Run run = RunChild(luid, files, all, threads, work, stop, timeoutMs);
+    const std::wstring keep = work + L"\\binaries";
+    std::error_code ec;
+    std::filesystem::remove_all(keep, ec);
+    Run run = RunChild(luid, files, all, threads, work, stop, timeoutMs,
+                       data.empty() ? std::wstring() : L" \"" + data + L"\" \"" + variant + L"\" \"" + keep + L"\"");
     const auto done = [&]
     {
         char text[200];
@@ -920,7 +970,8 @@ std::string PipelineCheck(const LUID& luid, const std::vector<std::wstring>& fil
 }
 } // namespace mzr3
 
-// rundll32 "<this DLL>",MochizukiNrPipelineCheck <adapter LUID> <threads> <list file> <log file> (mzr3::PipelineCheck).
+// rundll32 "<this DLL>",MochizukiNrPipelineCheck <adapter LUID> <threads> <list file> <log file>
+// [<dlssnr-amd> <variant> <binaries folder>] (mzr3::PipelineCheck).
 extern "C" __declspec(dllexport) void CALLBACK MochizukiNrPipelineCheckW(HWND, HINSTANCE, LPWSTR command, int)
 {
     int n = 0;
@@ -935,7 +986,10 @@ extern "C" __declspec(dllexport) void CALLBACK MochizukiNrPipelineCheckW(HWND, H
     out.file = CreateFileW(argv[3], GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (out.file == INVALID_HANDLE_VALUE)
         ExitProcess(3);
-    mzr3::Child(luid, unsigned(std::wcstoul(argv[1], nullptr, 10)), argv[2], out);
+    if (n >= 7)
+        mzr3::Child(luid, unsigned(std::wcstoul(argv[1], nullptr, 10)), argv[2], out, argv[4], argv[5], argv[6]);
+    else
+        mzr3::Child(luid, unsigned(std::wcstoul(argv[1], nullptr, 10)), argv[2], out);
     CloseHandle(out.file);
     ExitProcess(0);
 }

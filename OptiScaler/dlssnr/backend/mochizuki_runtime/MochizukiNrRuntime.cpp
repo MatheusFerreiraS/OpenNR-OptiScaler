@@ -231,26 +231,37 @@ const TestHooks& Hooks()
 }
 std::atomic<bool> g_buildOomInjected { false }; // MZ_TEST_BUILD_OOM_ONCE: once per process
 
-// The RDNA3 network's checks (mz_rdna3.h): their verdicts, by device and driver. MZ_RDNA3_CHECK=0 skips both checks,
-// =pipelines the layout probes only (diagnostics: MZ_FORCE_RDNA3 on an RX 9000 then builds and runs).
-std::wstring Rdna3CheckFile() { return DataDirectory() + L"\\dlssnr-amd\\rdna3-check.txt"; }
+// The FP16 networks' checks (mz_rdna3.h): their verdicts, by device and driver, in dlssnr-amd\rdna3-check.txt or
+// rdna2-check.txt. MZ_RDNA3_CHECK=0 (MZ_RDNA2_CHECK=0) skips them, MZ_RDNA3_CHECK=pipelines the RDNA3 layout probes
+// only (diagnostics: MZ_FORCE_RDNA3 on an RX 9000 then builds and runs). The RDNA2 network has no layout probes: its
+// fragments are arrays in a layout of its own, not the hardware's.
+const wchar_t* Fp16Tag(nr::Arch arch) { return arch == nr::Arch::rdna2 ? L"rdna2" : L"rdna3"; }
+std::wstring Fp16CheckFile(nr::Arch arch) { return DataDirectory() + L"\\dlssnr-amd\\" + Fp16Tag(arch) + L"-check.txt"; }
 
-bool Rdna3CheckSkips(bool layout)
+bool Fp16CheckSkips(nr::Arch arch, bool layout)
 {
     char v[16] {};
-    if (!GetEnvironmentVariableA("MZ_RDNA3_CHECK", v, sizeof v))
+    if (!GetEnvironmentVariableA(arch == nr::Arch::rdna2 ? "MZ_RDNA2_CHECK" : "MZ_RDNA3_CHECK", v, sizeof v))
         return false;
     return !std::strcmp(v, "0") || (layout && !std::strcmp(v, "pipelines"));
 }
 
-// The RDNA3 network's pipelines (shaders-rdna3, and the RenoDX stage's in shaders\renodx), and the key the pipeline
-// check's verdict is kept under: the device's, and a hash of the files' names and sizes, so other shaders (a new
-// release) are checked again.
-std::vector<std::wstring> Rdna3PipelineFiles(std::string& key)
+// A diagnostic switch set to 0 (MZ_CHECK_CACHE=0: the pipeline check keeps no machine code for the build).
+bool MzEnvOff(const char* name)
+{
+    char v[8] {};
+    return GetEnvironmentVariableA(name, v, sizeof v) && !std::strcmp(v, "0");
+}
+
+// An FP16 network's pipelines (shaders-rdna3 or shaders-rdna2, and the RenoDX stage's in shaders\renodx), and the key
+// the pipeline check's verdict is kept under: the device's, and a hash of the files' names and sizes, so other shaders
+// (a new release) are checked again.
+std::vector<std::wstring> Fp16PipelineFiles(nr::Arch arch, std::string& key)
 {
     std::vector<std::wstring> files;
     std::error_code ec;
-    for (const wchar_t* dir : { L"\\dlssnr-amd\\shaders-rdna3", L"\\dlssnr-amd\\shaders\\renodx" })
+    for (const std::wstring& dir :
+         { std::wstring(L"\\dlssnr-amd\\shaders-") + Fp16Tag(arch), std::wstring(L"\\dlssnr-amd\\shaders\\renodx") })
         for (const auto& e : std::filesystem::recursive_directory_iterator(DataDirectory() + dir, ec))
             if (e.path().extension() == L".spv")
                 files.push_back(e.path().wstring());
@@ -767,9 +778,13 @@ struct Vulkan
     VkQueue buildQueue {}; // the network builds': a second queue of the family at a lower priority, else `queue`
     uint32_t family = 0;
     bool bufferDeviceAddress = false; // enabled on `device`; the network reads its arena through it where faster
-    bool rdna3 = false; // the RDNA3 network on FP16 matrices (RuntimeConfig::rdna3): no FP8 on the device
-    bool rdna3Aco = false; // ... as ACO's gfx11 machine code (Rdna3Aco)
-    uint32_t deviceId = 0, driverVersion = 0; // as AMD's driver reports them: the key of the RDNA3 verdicts
+    // The network (RuntimeConfig::arch): rdna4 the FP8 one; with no FP8 on the device rdna3, on FP16 matrices, or
+    // rdna2, with no matrices (its fragments emulated in ALU).
+    nr::Arch arch = nr::Arch::rdna4;
+    bool rdna3Aco = false; // the RDNA3 network as ACO's gfx11 machine code (Rdna3Aco)
+    bool rdna2Aco = false; // the RDNA2 network as ACO's gfx10.3 machine code (Rdna2Aco)
+    uint32_t deviceId = 0, driverVersion = 0; // as AMD's driver reports them: the key of the FP16 networks' verdicts
+    bool Fp16() const { return nr::fp16_network(arch); }
     VkPhysicalDeviceMemoryProperties memory {};
     PFN_vkGetMemoryWin32HandlePropertiesKHR memoryHandleProperties {};
     PFN_vkImportSemaphoreWin32HandleKHR importSemaphore {};
@@ -814,7 +829,7 @@ struct Vulkan
             VkPhysicalDevice device {};
             std::string name;
             uint32_t driverVersion = 0;
-            bool rdna3 = false;
+            nr::Arch arch = nr::Arch::rdna4;
         };
         std::vector<Candidate> matches;
         for (VkPhysicalDevice p : all)
@@ -877,8 +892,16 @@ struct Vulkan
         // required nor enabled. An RX 9000 (device 0x75xx) still needs FP8: the RDNA3 network computes a wrong
         // picture there, as its kernels assume gfx11's fragment layout. MZ_FORCE_RDNA3=1 takes it on any card
         // (a test of the pipelines, builds and frames on RDNA4).
-        char force[4] {};
-        const bool forceRdna3 = GetEnvironmentVariableA("MZ_FORCE_RDNA3", force, sizeof force) == 1 && force[0] == '1';
+        // A device with neither FP8 nor those matrices (RX 6000, gfx103x) runs the RDNA2 network: the RDNA3 one with
+        // its fragments emulated in ALU, so it needs no matrix extension at all and computes the right picture on
+        // any GPU. MZ_FORCE_RDNA2=1 takes it on any card (on an RX 9000 the picture is checked against FP8's).
+        const auto env1 = [](const char* name)
+        {
+            char v[4] {};
+            return GetEnvironmentVariableA(name, v, sizeof v) == 1 && v[0] == '1';
+        };
+        const bool forceRdna2 = env1("MZ_FORCE_RDNA2");
+        const bool forceRdna3 = !forceRdna2 && env1("MZ_FORCE_RDNA3");
         const auto fp16Matrices = [this](VkPhysicalDevice p)
         {
             auto query = reinterpret_cast<PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR>(
@@ -899,8 +922,8 @@ struct Vulkan
                                           c.ResultType == VK_COMPONENT_TYPE_FLOAT32_KHR && !c.saturatingAccumulation;
                                });
         };
-        bool candidateRdna3 = false; // check's answer for the device it checked
-        std::string rdna3Why;
+        nr::Arch candidate = nr::Arch::rdna4; // check's answer for the device it checked
+        std::string fp16Why;
 
         // The capability precheck: what vkCreateDevice would refuse with the chain above, found and named before it
         // is called, as the reason the device fails (empty when it passes). Vulkan 1.3 and the extensions first,
@@ -952,9 +975,20 @@ struct Vulkan
             deviceId = reported.properties.deviceID;
             driverVersion = reported.properties.driverVersion;
             const bool rdna4 = amd && (reported.properties.deviceID & 0xFF00) == 0x7500;
-            candidateRdna3 = forceRdna3 || (!hasFp8Extension && amd && !rdna4);
+            // RDNA2 (gfx103x) by device id: Navi 21/22/23 0x73A0-0x73FF, Navi 24 0x7420-0x743F, and the APUs Van Gogh
+            // 0x163F, Rembrandt 0x1681, Raphael 0x164E, Mendocino 0x1506. Its driver branch (9.2.10.342) reports the
+            // FP16 16x16x16 subgroup matrices and emulates them itself (phase 0: 256 VGPRs and scratch on the RDNA3
+            // kernels), so a missing configuration cannot be the test, and it must never get the RDNA3 network.
+            const uint32_t id = reported.properties.deviceID;
+            const bool rdna2 = amd && ((id >= 0x73A0 && id <= 0x73FF) || (id >= 0x7420 && id <= 0x743F) ||
+                                       id == 0x163F || id == 0x1681 || id == 0x164E || id == 0x1506);
+            bool fp16 = forceRdna3 || forceRdna2 || (!hasFp8Extension && amd && !rdna4);
+            const bool hasCoopExtension = offers(offered, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
+            candidate = nr::Arch::rdna4;
             for (const char* e : extensions)
-                if (!(candidateRdna3 && !std::strcmp(e, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME)) && !offers(offered, e))
+                if (!(fp16 && !std::strcmp(e, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME)) &&
+                    !(fp16 && (!forceRdna3 || rdna2) && !std::strcmp(e, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME)) &&
+                    !offers(offered, e))
                     return std::string("[unsupported] the driver lacks ") + e;
             VkPhysicalDeviceCooperativeMatrixFeaturesKHR hasCoop {
                 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR
@@ -973,27 +1007,54 @@ struct Vulkan
             has11.pNext = &has12;
             has12.pNext = &has13;
             has13.pNext = &hasWml;
-            VkPhysicalDeviceFeatures2 has { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &hasCoop };
+            // Without the matrix extension its structure is left out of the chain (an RX 6000).
+            VkPhysicalDeviceFeatures2 has { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                                            hasCoopExtension ? static_cast<void*>(&hasCoop) : hasCoop.pNext };
             vkGetPhysicalDeviceFeatures2(p, &has);
-            if (!candidateRdna3 && amd && !rdna4 && (!hasFp8.shaderFloat8 || !hasFp8.shaderFloat8CooperativeMatrix))
-                candidateRdna3 = true;
-            if (candidateRdna3)
+            if (!fp16 && amd && !rdna4 && (!hasFp8.shaderFloat8 || !hasFp8.shaderFloat8CooperativeMatrix))
+                fp16 = true;
+            if (fp16)
             {
-                rdna3Why = forceRdna3          ? "MZ_FORCE_RDNA3=1"
-                           : !hasFp8Extension ? "the driver has no VK_EXT_shader_float8"
-                                              : "the driver offers no FP8 matrices";
-                if (!fp16Matrices(p))
-                    return std::string("[unsupported] ") + rdna3Why +
+                fp16Why = forceRdna2          ? "MZ_FORCE_RDNA2=1"
+                          : rdna2             ? "an RDNA2 GPU (gfx103x), which has no FP8 and no matrix instructions"
+                          : forceRdna3        ? "MZ_FORCE_RDNA3=1"
+                          : !hasFp8Extension ? "the driver has no VK_EXT_shader_float8"
+                                             : "the driver offers no FP8 matrices";
+                if (!forceRdna2 && !rdna2 && hasCoopExtension && hasCoop.cooperativeMatrix && fp16Matrices(p))
+                    candidate = nr::Arch::rdna3;
+                else if (forceRdna3 && !rdna2)
+                    return std::string("[unsupported] ") + fp16Why +
                            " and reports no FP16 x FP16 -> FP32 16x16x16 subgroup matrices";
+                else
+                {
+                    candidate = nr::Arch::rdna2;
+                    if (!forceRdna2 && !rdna2)
+                        fp16Why += " nor FP16 x FP16 -> FP32 16x16x16 subgroup matrices";
+                    // The emulated fragments trade rows between lanes by subgroup shuffles, and every RDNA2 kernel
+                    // rounds its f32 -> f16 conversions to nearest even (RoundingModeRTE, rdna2/include/coopmm.glsl).
+                    VkPhysicalDeviceVulkan12Properties p12 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES };
+                    VkPhysicalDeviceVulkan11Properties p11 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES,
+                                                             &p12 };
+                    VkPhysicalDeviceProperties2 p2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p11 };
+                    vkGetPhysicalDeviceProperties2(p, &p2);
+                    if (!(p11.subgroupSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT) ||
+                        !(p11.subgroupSupportedOperations & VK_SUBGROUP_FEATURE_SHUFFLE_BIT))
+                        return std::string("[unsupported] ") + fp16Why +
+                               ", and the RDNA2 network needs subgroup shuffles in compute shaders";
+                    if (!p12.shaderRoundingModeRTEFloat16)
+                        return std::string("[unsupported] ") + fp16Why +
+                               ", and the RDNA2 network needs shaderRoundingModeRTEFloat16";
+                }
             }
             const struct
             {
                 VkBool32 wanted, offered;
                 const char* name;
             } features[] = {
-                { coop.cooperativeMatrix, hasCoop.cooperativeMatrix, "cooperativeMatrix" },
-                { candidateRdna3 ? VK_FALSE : fp8.shaderFloat8, hasFp8.shaderFloat8, "shaderFloat8" },
-                { candidateRdna3 ? VK_FALSE : fp8.shaderFloat8CooperativeMatrix, hasFp8.shaderFloat8CooperativeMatrix,
+                { candidate == nr::Arch::rdna2 ? VK_FALSE : coop.cooperativeMatrix, hasCoop.cooperativeMatrix,
+                  "cooperativeMatrix" },
+                { fp16 ? VK_FALSE : fp8.shaderFloat8, hasFp8.shaderFloat8, "shaderFloat8" },
+                { fp16 ? VK_FALSE : fp8.shaderFloat8CooperativeMatrix, hasFp8.shaderFloat8CooperativeMatrix,
                   "shaderFloat8CooperativeMatrix" },
                 { f11.storageBuffer16BitAccess, has11.storageBuffer16BitAccess, "storageBuffer16BitAccess" },
                 { f12.storageBuffer8BitAccess, has12.storageBuffer8BitAccess, "storageBuffer8BitAccess" },
@@ -1021,7 +1082,7 @@ struct Vulkan
         for (Candidate& c : matches)
         {
             const std::string reason = check(c.device);
-            c.rdna3 = candidateRdna3;
+            c.arch = candidate;
             if (!reason.empty())
             {
                 if (matches.size() > 1)
@@ -1030,9 +1091,9 @@ struct Vulkan
                 if (refused.empty())
                     refused = reason;
             }
-            // FP8 before the RDNA3 network, then the newest driver.
-            else if (!chosen || (chosen->rdna3 && !c.rdna3) ||
-                     (chosen->rdna3 == c.rdna3 && c.driverVersion > chosen->driverVersion))
+            // FP8 before the RDNA3 network before the RDNA2 one, then the newest driver.
+            else if (!chosen || c.arch < chosen->arch ||
+                     (chosen->arch == c.arch && c.driverVersion > chosen->driverVersion))
                 chosen = &c;
         }
         if (!chosen)
@@ -1052,25 +1113,42 @@ struct Vulkan
                      matches.size(), size_t(chosen - matches.data()));
             check(physical);
         }
-        rdna3 = chosen->rdna3;
-        if (rdna3)
+        arch = chosen->arch;
+        // Not offered or not asked for: off, out of the device's chain and extension list (FP8 on both FP16
+        // networks, the matrices on RDNA2's).
+        void* chain = &coop;
+        if (arch == nr::Arch::rdna3)
         {
-            // Not offered or not asked for: off, out of the device's chain and extension list.
             coop.pNext = &f11;
-            nr::logf("[mochizuki] the RDNA3 network, on FP16 matrices: %s", rdna3Why.c_str());
+            nr::logf("[mochizuki] the RDNA3 network, on FP16 matrices: %s", fp16Why.c_str());
             Rdna3Aco();
         }
+        else if (arch == nr::Arch::rdna2)
+        {
+            chain = &f11;
+            nr::logf("[mochizuki] the RDNA2 network, its matrices emulated in ALU (FP16 products, FP32 sums): %s",
+                     fp16Why.c_str());
+            Rdna2Aco();
+        }
         else
+        {
             nr::logf("[mochizuki] the FP8 network (VK_EXT_shader_float8)");
+            const std::string asked = nr::binary::directory();
+            if (!asked.empty() && std::filesystem::path(asked).filename() != "aco")
+                nr::binary::disable("the FP8 network has no ACO records (dlssnr-amd\\aco\\)");
+        }
         // Optional: without it the network takes its descriptor reads.
         bufferDeviceAddress = deviceAddress;
         f12.bufferDeviceAddress = bufferDeviceAddress ? VK_TRUE : VK_FALSE;
         // MZ_PROBE_PIPELINE_BINARY=1 only (mz_interpose.h): two more extensions, and their features after wml.
         std::vector<const char*> enabled(std::begin(extensions), std::end(extensions));
-        if (rdna3)
+        if (Fp16())
             enabled.erase(std::find(enabled.begin(), enabled.end(), VK_EXT_SHADER_FLOAT8_EXTENSION_NAME));
+        if (arch == nr::Arch::rdna2)
+            enabled.erase(std::find(enabled.begin(), enabled.end(), VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME));
         mzi::BinaryProbe probe;
-        wml.pNext = probe.Prepare(physical, offered, enabled, wml.pNext);
+        // The FP16 networks import the pipeline check's machine code (mz_interpose.h, AdoptBinaries).
+        wml.pNext = probe.Prepare(physical, offered, enabled, wml.pNext, Fp16() && !MzEnvOff("MZ_CHECK_CACHE"));
 
         // A second queue, when the family has one, takes the network builds (the core submits only while it is
         // constructed), so a build never holds the frames' queue; the frames keep the higher priority.
@@ -1081,7 +1159,7 @@ struct Vulkan
         // MZ_ONE_QUEUE=1 (diagnostic, the RX 7000 kit 4): no second queue, the builds share the frames' one.
         if (const char* one = std::getenv("MZ_ONE_QUEUE"); one && std::atoi(one)) qi.queueCount = 1;
         qi.pQueuePriorities = priorities;
-        VkDeviceCreateInfo di { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &coop };
+        VkDeviceCreateInfo di { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, chain };
         di.queueCreateInfoCount = 1;
         di.pQueueCreateInfos = &qi;
         di.enabledExtensionCount = uint32_t(enabled.size());
@@ -1106,15 +1184,15 @@ struct Vulkan
             vkGetDeviceProcAddr(device, "vkImportSemaphoreWin32HandleKHR"));
         if (!memoryHandleProperties || !importSemaphore)
             throw std::runtime_error("the Win32 external memory entry points are missing");
-        if (rdna3)
-            Rdna3Layout();
+        if (Fp16())
+            Fp16Checks();
     }
 
-    // ACO for the RDNA3 network, when it was asked for (ConfigureAco set dlssnr-amd\aco up): mochizuki0323 plans
-    // mauri870's network as gfx11 machine code, which would sit in dlssnr-amd\aco-gfx11\ laid out as aco\ is
-    // (records\ named by the hash of the SPIR-V in shaders\, which linux\build\build_network.py rdna3 makes). It is
-    // taken when its records are there and the PAL adapter takes this GPU's code objects (nr::pal::takes_machine);
-    // otherwise the driver compiles the network from shaders-rdna3. Neither is so yet: the adapter is gfx12 only.
+    // ACO for the RDNA3 network, when it was asked for (ConfigureAco set dlssnr-amd\aco up): the network as Mesa ACO
+    // gfx11 machine code in dlssnr-amd\aco-gfx11\ laid out as aco\ is (records\ named by the hash of the SPIR-V in
+    // shaders\, which linux\build\build_network.py rdna3 makes; tools\aco-records makes the records). It is taken when
+    // its records are there and the PAL adapter takes this GPU's code objects (nr::pal::takes_machine); a pipeline
+    // whose record is missing or does not import is compiled by the driver from shaders-rdna3 (nr_pipeline_binary.hpp).
     void Rdna3Aco()
     {
         const std::string asked = nr::binary::directory();
@@ -1130,7 +1208,7 @@ struct Vulkan
                                   GetFileAttributesA((bundle + "\\shaders").c_str()) == INVALID_FILE_ATTRIBUTES
                               ? "no gfx11 ACO records (dlssnr-amd\\aco-gfx11\\records\\)"
                           : !nr::pal::takes_machine(mach)
-                              ? "the PAL adapter takes gfx1200/gfx1201 code objects only, not this GPU's"
+                              ? "the PAL adapter does not take this GPU's code objects"
                               : nullptr;
         if (why)
         {
@@ -1145,18 +1223,52 @@ struct Vulkan
         nr::logf("[mochizuki] ACO: the RDNA3 network runs ACO's gfx11 machine code from %s", bundle.c_str());
     }
 
-    // The RDNA3 network's fragment layout on this device (mzr3::LayoutCheck), once a driver, and the pipeline check's
-    // verdict when it failed before: either keeps the network off ("[unsupported] ...", the adapter's reason for the
-    // process; the menu shows it).
-    void Rdna3Layout() const
+    // ACO for the RDNA2 network, when it was asked for: the network as Mesa ACO gfx10.3 machine code in
+    // dlssnr-amd\aco-gfx103x\ (shaders\ = shaders-rdna2's SPIR-V as it is, records\ named by its hash;
+    // tools\aco-records\produce-rdna2.ps1 makes both). One gfx1030 record set serves every RDNA2 GPU: the PAL container
+    // is built with the GPU's own machine (nr_pal_binary.hpp synthesize). A pipeline whose record is missing or does
+    // not import is compiled by the driver from shaders-rdna2 (nr_pipeline_binary.hpp).
+    void Rdna2Aco()
     {
-        const std::wstring file = Rdna3CheckFile();
+        if (nr::binary::directory().empty())
+        {
+            nr::binary::disable("the RDNA2 network has no ACO records");
+            return;
+        }
+        const std::string data = RootUtf8(DataDirectory()) + "\\dlssnr-amd";
+        const std::string bundle = data + "\\aco-gfx103x";
+        if (GetFileAttributesA((bundle + "\\records").c_str()) == INVALID_FILE_ATTRIBUTES ||
+            GetFileAttributesA((bundle + "\\shaders").c_str()) == INVALID_FILE_ATTRIBUTES)
+        {
+            const char* why = "no gfx10.3 ACO records (dlssnr-amd\\aco-gfx103x\\records\\)";
+            nr::logf("[mochizuki] ACO off for the RDNA2 network: %s; the driver compiles it", why);
+            nr::binary::disable(std::string("the RDNA2 network: ") + why);
+            return;
+        }
+        nr::binary::configure(bundle, { data + "\\shaders-rdna2", data + "\\shaders-rdna2\\temporal" },
+                              nr::binary::cache_dir(), {});
+        rdna2Aco = true;
+        nr::logf("[mochizuki] ACO: the RDNA2 network runs ACO's gfx10.3 machine code from %s", bundle.c_str());
+    }
+
+    // An FP16 network's checks: the pipeline check's verdict when it failed before on this driver and, for the RDNA3
+    // network, its fragment layout on this device (mzr3::LayoutCheck), once a driver. Either keeps the network off
+    // ("[unsupported] ...", the adapter's reason for the process; the menu shows it). The RDNA2 network's fragments
+    // are arrays of its own, so it has no layout to check.
+    void Fp16Checks() const
+    {
+        const std::wstring file = Fp16CheckFile(arch);
+        const char* tag = nr::arch_name(arch);
         const std::string key = mzr3::Key(deviceId, driverVersion);
+        const std::string kept = std::string(" (an earlier check's, kept in dlssnr-amd\\") +
+                                 (arch == nr::Arch::rdna2 ? "rdna2" : "rdna3") + "-check.txt)";
         std::string pipelines = key, why;
-        Rdna3PipelineFiles(pipelines);
-        if (!Rdna3CheckSkips(false) && mzr3::Cached(file, pipelines, "pipelines", why) && !why.empty())
-            why += " (an earlier check's, kept in dlssnr-amd\\rdna3-check.txt)";
-        else if (Rdna3CheckSkips(true))
+        Fp16PipelineFiles(arch, pipelines);
+        if (!Fp16CheckSkips(arch, false) && mzr3::Cached(file, pipelines, "pipelines", why) && !why.empty())
+            why += kept;
+        else if (arch == nr::Arch::rdna2)
+            return;
+        else if (Fp16CheckSkips(arch, true))
         {
             nr::logf("[mochizuki] the RDNA3 layout probes are skipped (MZ_RDNA3_CHECK)");
             return;
@@ -1164,7 +1276,7 @@ struct Vulkan
         else if (mzr3::Cached(file, key, "layout", why))
         {
             if (!why.empty())
-                why += " (an earlier check's, kept in dlssnr-amd\\rdna3-check.txt)";
+                why += kept;
         }
         else
         {
@@ -1176,12 +1288,12 @@ struct Vulkan
         }
         if (why.empty())
             return;
-        nr::logf("[mochizuki] RDNA3 network off: %s", why.c_str());
+        nr::logf("[mochizuki] %s network off: %s", tag, why.c_str());
         // The first failure for the menu, whose status line holds 256 characters; the log has them all.
         const size_t more = size_t(std::count(why.begin(), why.end(), ';'));
         if (more)
             why = why.substr(0, why.find(';')) + " (and " + std::to_string(more) + " more, mochizuki_nr.log)";
-        throw std::runtime_error("[unsupported] RDNA3 network off: " + why);
+        throw std::runtime_error(std::string("[unsupported] ") + tag + " network off: " + why);
     }
 
     uint32_t MemoryType(uint32_t bits, VkMemoryPropertyFlags wanted) const
@@ -1947,7 +2059,7 @@ struct Session
     std::chrono::steady_clock::time_point abandonedAt;
     std::unique_ptr<ProductRuntime> built;
     char buildError[1024] {}; // a fixed buffer, so the builder cannot throw on its way to buildDone
-    std::string rdna3Off;     // under buildMutex: why the RDNA3 network stays off for the session (Rdna3Pipelines)
+    std::string fp16Off;      // under buildMutex: why an FP16 network stays off for the session (Fp16Pipelines)
     NrError::Kind buildErrorKind = NrError::Other;
     double buildSeconds = 0;
     // Networks the frames no longer use (RetireNetwork), each with the finished value of the last frame handed to the
@@ -2807,9 +2919,9 @@ struct Session
         const UINT64 reno =
             key.renodx ? UINT64(key.width) * key.height * 128 + width * height * (64 + 48 * key.maxPasses) : 0;
         const UINT64 first = key.firstPass ? UINT64(16) * key.width * key.height : 0; // the core's first_full
-        // The RDNA3 network's FP16 twins: twice the weight arena, and twice the activation arena per model pixel
-        // (1080p, MZ_FORCE_RDNA3 on an RX 9070 XT: the process grew by 1877 MB against 799).
-        const UINT64 twins = vk.rdna3 ? (336ull << 20) + 384 * model(UINT(width)) * model(UINT(height)) : 0;
+        // An FP16 network's twins (RDNA3, RDNA2): twice the weight arena, and twice the activation arena per model
+        // pixel (1080p, MZ_FORCE_RDNA3 on an RX 9070 XT: the process grew by 1877 MB against 799).
+        const UINT64 twins = vk.Fp16() ? (336ull << 20) + 384 * model(UINT(width)) * model(UINT(height)) : 0;
         return kNetworkFixedBytes + activations + scaled + reno + first + twins;
     }
 
@@ -3001,9 +3113,22 @@ struct Session
                        []
                        {
                            const std::string data = RootUtf8(DataDirectory()) + "\\dlssnr-amd";
-                           const std::string bundle = data + "\\aco";
-                           if (GetFileAttributesA((bundle + "\\records").c_str()) == INVALID_FILE_ATTRIBUTES ||
-                               GetFileAttributesA((bundle + "\\shaders").c_str()) == INVALID_FILE_ATTRIBUTES)
+                           const auto has = [](const std::string& b)
+                           {
+                               return GetFileAttributesA((b + "\\records").c_str()) != INVALID_FILE_ATTRIBUTES &&
+                                      GetFileAttributesA((b + "\\shaders").c_str()) != INVALID_FILE_ATTRIBUTES;
+                           };
+                           std::string bundle = data + "\\aco";
+                           // Without RDNA4's bundle an FP16 network's own one is enough: Rdna2Aco / Rdna3Aco take it
+                           // once the device says which network runs (an RDNA4 device then has none: Vulkan::Create).
+                           if (!has(bundle))
+                               for (const char* own : { "\\aco-gfx103x", "\\aco-gfx11" })
+                                   if (has(data + own))
+                                   {
+                                       bundle = data + own;
+                                       break;
+                                   }
+                           if (!has(bundle))
                            {
                                nr::logf("[mochizuki] ACO asked for, but %s has no records\\ and shaders\\: the "
                                         "driver compiles the network",
@@ -3024,7 +3149,11 @@ struct Session
                            std::vector<std::string> shells { bundle + "\\shell", data + "\\shaders",
                                                              data + "\\shaders\\temporal" };
                            nr::binary::configure(bundle, std::move(shells), cache, std::move(aliases));
-                           nr::logf("[mochizuki] ACO: the network runs ACO's machine code from %s", bundle.c_str());
+                           if (bundle == data + "\\aco")
+                               nr::logf("[mochizuki] ACO: the network runs ACO's machine code from %s", bundle.c_str());
+                           else
+                               nr::logf("[mochizuki] ACO: no dlssnr-amd\\aco; %s, for the network it is made for only",
+                                        bundle.c_str());
                        });
     }
 
@@ -3189,9 +3318,9 @@ struct Session
             BuildFailed();
         {
             std::lock_guard lock(buildMutex);
-            if (!rdna3Off.empty())
+            if (!fp16Off.empty())
             {
-                why = rdna3Off;
+                why = fp16Off;
                 return false;
             }
         }
@@ -3303,8 +3432,8 @@ struct Session
             config.model_scale = key.scale;
             config.max_passes = key.maxPasses;
             config.preprocess = key.prep;
-            config.int4_mixed = key.int4 && !vk.rdna3 ? 1 : 0; // the RDNA3 network has no int4 mixed
-            config.rdna3 = vk.rdna3;
+            config.int4_mixed = key.int4 && !vk.Fp16() ? 1 : 0; // the FP16 networks have no int4 mixed
+            config.arch = vk.arch;
             // The new model goes back to the 310.8 one by itself when dlssnr-small.bin is missing, and logs it.
             config.network = key.original ? 0 : 1;
             config.cascade_detail_only = key.cascade;
@@ -3425,44 +3554,53 @@ struct Session
         BuildMarker& operator=(const BuildMarker&) = delete;
     };
 
-    // Before the first RDNA3 network build on a driver, on the builder thread and before it takes the build's locks:
-    // every pipeline the network needs compiled in a child process (mzr3::PipelineCheck). One AMD's compiler crashes
-    // on, hangs on or refuses keeps the network off for the session (rdna3Off) and for these shaders on this driver (rdna3-check.txt).
-    void Rdna3Pipelines()
+    // Before the first FP16 network build (RDNA3, RDNA2) on a driver, on the builder thread and before it takes the
+    // build's locks: every pipeline the network needs compiled in a child process (mzr3::PipelineCheck). One AMD's
+    // compiler crashes on, hangs on or refuses keeps the network off for the session (fp16Off) and for these shaders on
+    // this driver (rdna3-check.txt, rdna2-check.txt).
+    void Fp16Pipelines()
     {
-        if (Rdna3CheckSkips(false))
+        if (Fp16CheckSkips(vk.arch, false))
             return;
-        const std::wstring file = Rdna3CheckFile();
+        const char* tag = nr::arch_name(vk.arch);
+        const std::wstring file = Fp16CheckFile(vk.arch);
         std::string key = mzr3::Key(vk.deviceId, vk.driverVersion), why;
-        const std::vector<std::wstring> files = Rdna3PipelineFiles(key);
+        const std::vector<std::wstring> files = Fp16PipelineFiles(vk.arch, key);
         if (!mzr3::Cached(file, key, "pipelines", why))
         {
-            nr::logf("[mochizuki] RDNA3 pipeline check: %zu pipelines, each compiled once in a child process first",
+            nr::logf("[mochizuki] %s pipeline check: %zu pipelines, each compiled once in a child process first", tag,
                      files.size());
             bool ran = false;
             std::string note;
             nr::g_build_stage = 6;
-            why = mzr3::PipelineCheck(device->GetAdapterLuid(), files, DataDirectory() + L"\\dlssnr-amd\\rdna3-check",
-                                     &abandon, ran, note);
+            const std::wstring data = DataDirectory() + L"\\dlssnr-amd", work = data + L"\\" + Fp16Tag(vk.arch) + L"-check",
+                               variant = std::wstring(L"-") + Fp16Tag(vk.arch);
+            why = mzr3::PipelineCheck(device->GetAdapterLuid(), files, work, &abandon, ran, note,
+                                      vk.arch == nr::Arch::rdna2 ? mzr3::kPipelineTimeoutRdna2Ms
+                                                                 : mzr3::kPipelineTimeoutMs,
+                                      MzEnvOff("MZ_CHECK_CACHE") ? std::wstring() : data, variant);
             nr::g_build_stage = 1;
+            // What the check compiled with the core's create infos, imported by the build below.
+            if (ran && why.empty())
+                mzi::AdoptBinaries(data, variant, work + L"\\binaries");
             if (abandon)
                 throw std::runtime_error("stopped: the session is being destroyed");
             if (!ran)
             {
-                nr::logf("[mochizuki] the RDNA3 pipeline check could not run (%s); the network builds without it",
+                nr::logf("[mochizuki] the %s pipeline check could not run (%s); the network builds without it", tag,
                          why.c_str());
                 return;
             }
-            nr::logf("[mochizuki] RDNA3 pipeline check %s: %s", why.empty() ? "passed" : "failed", note.c_str());
+            nr::logf("[mochizuki] %s pipeline check %s: %s", tag, why.empty() ? "passed" : "failed", note.c_str());
             mzr3::Keep(file, key, "pipelines", why);
         }
         if (why.empty())
             return;
-        const std::string off = "RDNA3 network off: " + why;
+        const std::string off = std::string(tag) + " network off: " + why;
         nr::logf("[mochizuki] %s", off.c_str());
         {
             std::lock_guard lock(buildMutex);
-            rdna3Off = off;
+            fp16Off = off;
         }
         RememberError(off.c_str());
         throw std::runtime_error(off);
@@ -3490,8 +3628,8 @@ struct Session
         NrError::Kind kind = NrError::Other;
         try
         {
-            if (vk.rdna3 && !vk.rdna3Aco)
-                Rdna3Pipelines();
+            if (vk.Fp16() && !vk.rdna3Aco && !vk.rdna2Aco)
+                Fp16Pipelines();
             // One core build at a time in the process, waited for in steps so that Destroy can end the wait.
             std::unique_lock core(CoreBuildMutex(), std::defer_lock);
             while (!core.try_lock_for(std::chrono::milliseconds(kWatchMs)))
@@ -3507,7 +3645,8 @@ struct Session
             // the core then loads; the capture records this build's for the next one, and Finish saves what the core
             // compiled after its own save (mz_interpose.h).
             const BuildMarker marker;
-            mzi::Capture pipelines(host.device, host.physical, DataDirectory(), vk.rdna3 ? L"-rdna3" : L"");
+            mzi::Capture pipelines(host.device, host.physical, DataDirectory(),
+                                   vk.Fp16() ? std::wstring(L"-") + Fp16Tag(vk.arch) : std::wstring());
             if (marker.lastDied)
             {
                 nr::logf("[mochizuki] the last network build in this folder never finished (the game crashed or was "
@@ -5207,7 +5346,9 @@ int32_t GetInfo(void* context, MochizukiNrInfo* out)
         info.preprocess_ev = s->infoPrepEv;
         info.white_point = s->infoWhite;
         info.renodx_effective = s->infoReno;
-        info.network = s->vk.rdna3 ? (s->vk.rdna3Aco ? 2u : 1u) : 0u;
+        info.network = s->vk.arch == nr::Arch::rdna2   ? 3u
+                       : s->vk.arch == nr::Arch::rdna3 ? (s->vk.rdna3Aco ? 2u : 1u)
+                                                        : 0u;
         // The core's own build progress (nr_log.hpp: builds run one at a time), while this session builds.
         if (info.building)
         {
