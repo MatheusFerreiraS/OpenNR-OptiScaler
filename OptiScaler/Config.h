@@ -1106,7 +1106,7 @@ class Config
     CustomOptional<bool> OpenNrRrEnabled { true };
     // mochizuki NR on the denoised render-size image, between the network and its temporal post: off or display (the
     // network keeps its own history, the shown image adds the NR as a delta)
-    CustomOptional<std::string> OpenNrRrNrOnDenoised { "off" };
+    CustomOptional<std::string> OpenNrRrNrOnDenoised { "display" };
     // what that NR reads on the D3D12 backend: denoised (the network's image, jittered) or output (an experiment: RR's
     // finished picture at the render size, no jitter, the change kept in a history on OptiScaler's side)
     CustomOptional<std::string> OpenNrRrNrImage { "denoised" };
