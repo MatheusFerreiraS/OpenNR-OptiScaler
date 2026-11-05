@@ -613,7 +613,7 @@ void ClearInfoContext(void* context)
 void ApplyFastMode(void* context)
 {
     if (s_setFastMode != nullptr && context != nullptr)
-        s_setFastMode(context, Config::Instance()->OpenNrRrFastMode.value_or_default() ? 1 : 0);
+        s_setFastMode(context, Config::Instance()->OpenNrRrMode.value_or_default() == "legacy" ? 0 : 1);
 }
 
 int FastModeState()
