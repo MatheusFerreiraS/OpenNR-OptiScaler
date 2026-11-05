@@ -198,7 +198,8 @@ struct RuntimeConfig {
     // The network: the 310.8 model (dlssnr.bin) or the 310.9 small model
     // (dlssnr-small.bin). Same shaders; the plan and the weights differ.
     // -1 = as DLSSNR_MODEL / dlssnr-amd.ini [Network] Model say (small or original;
-    // neither: small), 0 = the original model, 1 = the small model. The small model
+    // neither: small), 0 = the original model, 1 = the small model, 2 = its faster variant
+    // CC_SMALL_FP8_EXPERIMENTAL (RDNA4 with ACO; its own shaders and weights; else the small model). The small model
     // needs an installed tree with dlssnr-small.bin; without it, the original model.
     int network = -1;
 #if NR_INT4
@@ -566,6 +567,8 @@ public:
 #if NR_INT4
     // Whether this runtime runs the int4 mixed network (asked for and everything it needs present).
     bool int4_mixed() const;
+    // Whether it runs CC_SMALL_FP8_EXPERIMENTAL (network() is then NetworkModel::Small).
+    bool experimental() const;
 #endif
     // Change the post block's history strength (TemporalConfig::history_strength)
     // between frames. Takes effect on the next recording; no-op without a

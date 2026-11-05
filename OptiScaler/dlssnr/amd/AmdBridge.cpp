@@ -1050,6 +1050,12 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     // one colour allocation, so the gate settles and warms up on that allocation (and its format) instead, and a
     // subrect change only restarts the history.
     const bool mochizuki = active == DlssNr::Backend::Kind::Mochizuki;
+    // After the upscale the vectors are still on the render grid; the runtime would take them for the frame's extent.
+    if (mochizuki && afterUpscale && f.motion && !f.motionWidth)
+    {
+        f.motionWidth = f.guideWidth;
+        f.motionHeight = f.guideHeight;
+    }
     const bool dynamicResolution =
         mochizuki && Config::Instance()->MochizukiDynamicResolution.value_or_default() != "exact";
     // Post-upscale answers to the "after RR" controls, so the two placements can be tuned apart.
@@ -1577,9 +1583,11 @@ std::string StandDownNote()
 
 std::string Status()
 {
-    // The final image's status only while it is the path that runs: danielblnc or mochizuki, no upscaler.
-    if (AmdPresentExperimental::IsTarget() && !State::Instance().currentFeature &&
-        DlssNr::Backend::PresentRuntimeSupported())
+    // The final image's status only while it is the path that runs: danielblnc or mochizuki, no upscaler, or
+    // mochizuki's Present placement.
+    if ((AmdPresentExperimental::IsTarget() && !State::Instance().currentFeature &&
+         DlssNr::Backend::PresentRuntimeSupported()) ||
+        DlssNr::Backend::MochizukiPlacementNow() == DlssNr::Backend::MochizukiPlace::Present)
         return AmdPresentExperimental::Status();
     {
         std::lock_guard l(messageMutex);

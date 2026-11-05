@@ -644,6 +644,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             MochizukiAco.set_from_config(readBool("DlssNr", "MochizukiAco"));
             MochizukiInt4.set_from_config(readBool("DlssNr", "MochizukiInt4"));
             MochizukiOriginalModel.set_from_config(readBool("DlssNr", "MochizukiOriginalModel"));
+            MochizukiExperimental.set_from_config(readBool("DlssNr", "MochizukiExperimental"));
+            MochizukiPlacement.set_from_config(readString("DlssNr", "MochizukiPlacement", true));
             MochizukiCascadeDetail.set_from_config(readBool("DlssNr", "MochizukiCascadeDetail"));
             MochizukiAntiHalo.set_from_config(readBool("DlssNr", "MochizukiAntiHalo"));
             MochizukiJitterHistory.set_from_config(readBool("DlssNr", "MochizukiJitterHistory"));
@@ -1948,6 +1950,10 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "MochizukiInt4", GetBoolValue(Instance()->MochizukiInt4.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiOriginalModel",
                      GetBoolValue(Instance()->MochizukiOriginalModel.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiExperimental",
+                     GetBoolValue(Instance()->MochizukiExperimental.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPlacement",
+                     Instance()->MochizukiPlacement.value_for_config().value_or("auto").c_str());
         ini.SetValue("DlssNr", "MochizukiCascadeDetail",
                      GetBoolValue(Instance()->MochizukiCascadeDetail.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiAntiHalo",

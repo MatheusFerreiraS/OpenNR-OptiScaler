@@ -51,7 +51,7 @@ cl %CFLAGS% %INCLUDES% /c "%UP%\windows\src\core\nr_renodx.cpp" /Fo"%OBJ%\nr_ren
 cl %CFLAGS% %INCLUDES% /c "OptiScaler\dlssnr\backend\mochizuki_runtime\mz_interpose.cpp" /Fo"%OBJ%\mz_interpose.obj" || goto fail
 cl %CFLAGS% %INCLUDES% /DLMXXF_NR_RUNTIME_EXPORTS /c "OptiScaler\dlssnr\backend\mochizuki_runtime\MochizukiNrRuntime.cpp" /Fo"%OBJ%\MochizukiNrRuntime.obj" || goto fail
 cl %CFLAGS% %INCLUDES% /I "%OBJ%\rdna3_probe" /c "OptiScaler\dlssnr\backend\mochizuki_runtime\mz_rdna3.cpp" /Fo"%OBJ%\mz_rdna3.obj" || goto fail
-link /nologo /DLL /OUT:"%OUT%\MochizukiNrRuntime.dll" "%OBJ%\MochizukiNrRuntime.obj" "%OBJ%\mz_interpose.obj" "%OBJ%\mz_rdna3.obj" "%OBJ%\nr_runtime.obj" "%OBJ%\nr_native_plan.obj" "%OBJ%\nr_renodx.obj" "%VULKAN_SDK%\Lib\vulkan-1.lib" d3d12.lib shell32.lib || goto fail
+link /nologo /DLL /OUT:"%OUT%\MochizukiNrRuntime.dll" "%OBJ%\MochizukiNrRuntime.obj" "%OBJ%\mz_interpose.obj" "%OBJ%\mz_rdna3.obj" "%OBJ%\nr_runtime.obj" "%OBJ%\nr_native_plan.obj" "%OBJ%\nr_renodx.obj" "%VULKAN_SDK%\Lib\vulkan-1.lib" d3d12.lib shell32.lib bcrypt.lib || goto fail
 
 python "%UP%\windows\build\build_network.py" rdna4 --out "%OUT%\dlssnr-amd\shaders" || goto fail
 rem The RDNA3 network (RX 7000, no FP8) in shaders-rdna3\: mauri870/DLSSNR-RDNA3's linux\shaders\rdna3, unrolled for
@@ -82,6 +82,13 @@ xcopy /e /i /q /y "%UP%\linux\data\int4\rdna4\vit" "%OUT%\dlssnr-amd\int4\vit" >
 xcopy /e /i /q /y "%UP%\linux\data\int4\rdna4\swin" "%OUT%\dlssnr-amd\int4\swin" >nul || goto fail
 copy /y "%UP%\linux\data\int4\rdna4\settings.txt" "%OUT%\dlssnr-amd\int4\" >nul || goto fail
 xcopy /e /i /q /y "%OUT%\dlssnr-amd\aco\int4\shaders" "%OUT%\dlssnr-amd\int4\shaders" >nul || goto fail
+
+rem CC_SMALL_FP8_EXPERIMENTAL (LMXXF_NR_FRAME_FLAG_EXPERIMENTAL), ACO's machine code only: the Linux network built with
+rem its changes (its records are in aco\records, by the SPIR-V's hash) and the difference file its weights are made from,
+rem at first use, by MochizukiNrRuntime.dll.
+python "%UP%\linux\build\build_network.py" rdna4 --experimental --out "%OUT%\dlssnr-amd\aco\experimental\shaders" || goto fail
+copy /y "%UP%\linux\data\experimental\dlssnr-small-experimental.delta" "%OUT%\dlssnr-amd\aco\experimental\" >nul || goto fail
+copy /y "%UP%\linux\data\experimental\dlssnr-small-experimental.sha256" "%OUT%\dlssnr-amd\aco\experimental\" >nul || goto fail
 
 rem The int4 weights are made from the model (never in this tree): dlssnr-int4-weights.exe runs the graph builder's
 rem own decoder on dlssnr.bin and the tables above. With MZ_MODEL set to a dlssnr.bin, this writes

@@ -232,7 +232,9 @@ extern "C"
            (RX 7000, experimental), 2 the RDNA3 one from ACO's gfx11 machine code, 3 the RDNA2 one, its matrices emulated
            in ALU (RX 6000, experimental). */
         uint32_t network;
-        /* The fields end at byte 352, sizeof. */
+        uint32_t experimental; /* 1: the frames run on CC_SMALL_FP8_EXPERIMENTAL */
+        uint32_t reserved1;    /* 0; keeps the struct's size whole without implicit padding */
+        /* The fields end at byte 360, sizeof. */
     } MochizukiNrInfo;
 
     /* All but GetFeatures return an LmxxfNrStatus. SetControls takes effect on the next PrepareFrame; call it on the

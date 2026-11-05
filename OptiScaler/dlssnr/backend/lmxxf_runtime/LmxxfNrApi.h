@@ -113,6 +113,10 @@ extern "C"
 /* lmxxf: the codec's white point measured from the frame's mean luminance (auto_white) instead of a fixed 1.0, on the
    encode and every decode, for games that hand very dark linear colour. Per frame, no rebuild. */
 #define LMXXF_NR_FRAME_FLAG_AUTO_WHITE (1u << 15)
+/* mochizuki, RDNA4 with the session's ACO: upstream's CC_SMALL_FP8_EXPERIMENTAL, 310.9's new model made faster, the
+   picture somewhat different (needs dlssnr-amd\aco\experimental; its weights are made from dlssnr-small.bin on first
+   use). Anything missing: the new model, and the log says why. A change rebuilds the network, as INT4. */
+#define LMXXF_NR_FRAME_FLAG_EXPERIMENTAL (1u << 16)
 
     typedef struct LmxxfNrFrameInfo
     {

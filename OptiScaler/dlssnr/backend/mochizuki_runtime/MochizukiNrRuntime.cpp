@@ -41,6 +41,7 @@
 #include <d3d12.h>
 #include <winternl.h> // NTSTATUS, for d3dkmthk.h
 #include <d3dkmthk.h> // D3DKMTQueryVideoMemoryInfo, for the VRAM check (VideoMemory)
+#include <bcrypt.h>   // SHA-256, for MakeExperimentalWeights
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.h>
 
@@ -1737,6 +1738,116 @@ struct Geometry
     bool operator==(const Geometry&) const = default;
 };
 
+// CC_SMALL_FP8_EXPERIMENTAL's weights: dlssnr-small.bin with the entries of aco\experimental's difference file XORed in
+// (upstream's install.ps1 New-ExperimentalWeights), kept once their SHA-256 is the one beside it. Made here, at first
+// use, because the difference is all a release ships: none of NVIDIA's weights. In aco-cache, as what the runtime writes
+// there goes when mochizuki is uninstalled. False, with the reason logged, when they cannot be made; the core then
+// builds the new model.
+static bool MakeExperimentalWeights()
+{
+    namespace fs = std::filesystem;
+    const fs::path data = fs::path(DataDirectory()) / L"dlssnr-amd", xroot = data / L"aco" / L"experimental";
+    const fs::path out = data / L"aco-cache" / L"dlssnr-small-experimental.nrb";
+    std::error_code ec;
+    if (fs::is_regular_file(out, ec))
+        return true;
+    fs::create_directories(out.parent_path(), ec);
+    const auto slurp = [](const fs::path& p)
+    {
+        std::vector<uint8_t> bytes;
+        if (FILE* f = _wfopen(p.c_str(), L"rb"))
+        {
+            std::fseek(f, 0, SEEK_END);
+            bytes.resize(size_t(_ftelli64(f)));
+            std::fseek(f, 0, SEEK_SET);
+            if (std::fread(bytes.data(), 1, bytes.size(), f) != bytes.size())
+                bytes.clear();
+            std::fclose(f);
+        }
+        return bytes;
+    };
+    const auto fail = [](const char* why)
+    {
+        nr::logf("[mochizuki] CC_SMALL_FP8_EXPERIMENTAL's weights: %s", why);
+        return false;
+    };
+    std::vector<uint8_t> pack = slurp(data / L"dlssnr-small.bin");
+    const std::vector<uint8_t> delta = slurp(xroot / L"dlssnr-small-experimental.delta"),
+                               wanted = slurp(xroot / L"dlssnr-small-experimental.sha256");
+    if (pack.size() < 16 || std::memcmp(pack.data(), "NRMODEL1", 8))
+        return fail("no dlssnr-small.bin");
+    if (delta.size() < 12 || std::memcmp(delta.data(), "NRXDIFF1", 8) || wanted.size() < 64)
+        return fail("aco\\experimental is incomplete");
+    const auto u32 = [](const uint8_t* p)
+    {
+        uint32_t v;
+        std::memcpy(&v, p, 4);
+        return v;
+    };
+    const auto u64 = [](const uint8_t* p)
+    {
+        uint64_t v;
+        std::memcpy(&v, p, 8);
+        return v;
+    };
+    // Both files are read with every offset checked: a short or damaged one fails here and the hash below stays right.
+    struct Entry
+    {
+        uint64_t offset, size;
+    };
+    std::vector<std::pair<std::string, Entry>> index;
+    size_t at = 16;
+    for (uint32_t k = 0, count = u32(pack.data() + 8); k < count; ++k)
+    {
+        if (at + 4 > pack.size() || at + 4 + u32(pack.data() + at) + 16 > pack.size())
+            return fail("dlssnr-small.bin is damaged");
+        const uint32_t n = u32(pack.data() + at);
+        index.push_back({ std::string(reinterpret_cast<const char*>(pack.data() + at + 4), n),
+                          Entry { u64(pack.data() + at + 4 + n), u64(pack.data() + at + 12 + n) } });
+        at += 4 + size_t(n) + 16;
+    }
+    std::sort(index.begin(), index.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    at = 12;
+    for (uint32_t k = 0, count = u32(delta.data() + 8); k < count; ++k)
+    {
+        if (at + 4 > delta.size() || at + 4 + u32(delta.data() + at) + 8 > delta.size())
+            return fail("the difference file is damaged");
+        const uint32_t n = u32(delta.data() + at);
+        const std::string name(reinterpret_cast<const char*>(delta.data() + at + 4), n);
+        const uint64_t size = u64(delta.data() + at + 4 + n);
+        at += 4 + size_t(n) + 8;
+        const auto e = std::lower_bound(index.begin(), index.end(), name,
+                                        [](const auto& a, const std::string& b) { return a.first < b; });
+        if (e == index.end() || e->first != name || e->second.size != size || size > delta.size() - at ||
+            e->second.offset + size > pack.size())
+            return fail("dlssnr-small.bin is not the model its difference file was made from");
+        for (uint64_t i = 0; i < size; ++i)
+            pack[e->second.offset + i] ^= delta[at + i];
+        at += size_t(size);
+    }
+    uint8_t hash[32] {};
+    if (BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, pack.data(), ULONG(pack.size()), hash, sizeof hash) != 0)
+        return fail("SHA-256 failed");
+    char text[65] {};
+    for (int i = 0; i < 32; ++i)
+        std::snprintf(text + 2 * i, 3, "%02x", hash[i]);
+    if (std::memcmp(text, wanted.data(), 64))
+        return fail("dlssnr-small.bin is not the model its difference file was made from (SHA-256)");
+    const fs::path tmp = out.wstring() + L".tmp"; // a .nrb.tmp, which an uninstall takes too
+    FILE* f = _wfopen(tmp.c_str(), L"wb");
+    const bool written = f && std::fwrite(pack.data(), 1, pack.size(), f) == pack.size();
+    if (f)
+        std::fclose(f);
+    fs::rename(tmp, out, ec);
+    if (!written || ec)
+    {
+        fs::remove(tmp, ec);
+        return fail("could not write them in aco-cache");
+    }
+    nr::logf("[mochizuki] CC_SMALL_FP8_EXPERIMENTAL's weights made");
+    return true;
+}
+
 // What a network is built for: the frame extent (the bucket, with dynamic resolution), colour format, model scale
 // (quantised), pass count and colour encoding.
 struct NetworkKey
@@ -1752,6 +1863,7 @@ struct NetworkKey
     bool original = false;  // RuntimeConfig::network 0, the 310.8 model (LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL)
     bool firstPass = false; // RuntimeConfig::first_pass_output (LMXXF_NR_FRAME_FLAG_FIRST_PASS), with passes
     bool hist16 = true;     // RuntimeConfig::history_f16 (MochizukiNrControls::history_precision)
+    bool experimental = false; // RuntimeConfig::network 2 (LMXXF_NR_FRAME_FLAG_EXPERIMENTAL)
     // MochizukiNrControls::renodx: the network runs inside the RenoDX stage (ProductRuntime::reno), at the stage's
     // extent (renoWidth x renoHeight), one pass at a time, maxPasses being the stage's pass count. The source encoding
     // and the linear unit decide the stage's units for its life.
@@ -2102,7 +2214,7 @@ struct Session
     // What GetInfo reports: atomics and a copy of the last error, never the runtime, since it may ask from any thread.
     std::atomic<bool> infoBuilding { false };
     std::atomic<uint32_t> infoModelWidth { 0 }, infoModelHeight { 0 }, infoFrameWidth { 0 }, infoFrameHeight { 0 },
-        infoMaxPasses { 0 }, infoPasses { 1 }, motionRefused { 0 }, dispatches { 0 }, infoReno { 0 };
+        infoMaxPasses { 0 }, infoPasses { 1 }, motionRefused { 0 }, dispatches { 0 }, infoReno { 0 }, infoExperimental { 0 };
     std::atomic<float> infoBuildSeconds { 0 };
     std::atomic<float> infoPrepEv { NAN };
     std::atomic<float> infoWhite { 1.f };
@@ -3272,6 +3384,7 @@ struct Session
         infoModelHeight = runtime->model_height();
         infoMaxPasses = net.maxPasses;
         infoReno = runtime->reno != nullptr;
+        infoExperimental = runtime->experimental();
         infoBuildSeconds = float(buildSeconds);
         if (runtime->model_width() != net.width || runtime->model_height() != net.height || net.maxPasses > 1)
             nr::logf("[mochizuki] network ready at %ux%u (model %ux%u, up to %u passes) in %.1f s%s", net.width,
@@ -3436,6 +3549,8 @@ struct Session
             config.arch = vk.arch;
             // The new model goes back to the 310.8 one by itself when dlssnr-small.bin is missing, and logs it.
             config.network = key.original ? 0 : 1;
+            if (key.experimental && !vk.Fp16() && MakeExperimentalWeights())
+                config.network = 2;
             config.cascade_detail_only = key.cascade;
             config.first_pass_output = key.firstPass;
             config.history_f16 = key.hist16;
@@ -3479,9 +3594,10 @@ struct Session
                 std::snprintf(options, sizeof options, ", in the RenoDX stage at %ux%u, %u pass%s", key.renoWidth,
                               key.renoHeight, key.maxPasses, key.maxPasses == 1 ? "" : "es");
             nr::logf("[mochizuki] building %s at %ux%u, VkFormat %d%s%s%s",
-                     nr::network_codename(key.int4       ? nr::kSilverAardwoldInt4
-                                          : key.original ? nr::kSilverAardwold
-                                                         : nr::kSmallFp8),
+                     nr::network_codename(key.int4           ? nr::kSilverAardwoldInt4
+                                          : key.original     ? nr::kSilverAardwold
+                                          : key.experimental ? nr::kSmallFp8Experimental
+                                                             : nr::kSmallFp8),
                      key.width, key.height, int(key.format), key.linear ? ", linear colour" : "", options,
                      keep ? "; the frames keep the current one meanwhile" : "");
             UseUtf8Paths();
@@ -4884,6 +5000,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             g.firstPass = firstPass;
             NetworkKey key { g.width,       g.height, netVk,   scale,    maxPasses, linear,
                              s->prepWanted, int4,     cascade, original, firstPass, historyF16 };
+            key.experimental = !original && !int4 && (info->flags & LMXXF_NR_FRAME_FLAG_EXPERIMENTAL) != 0;
             // The RenoDX stage: its own extent, pass count, preprocess and units; the model scale and the pass extras
             // are the native route's.
             if (renodx)
@@ -5271,7 +5388,7 @@ static_assert(offsetof(MochizukiNrInfo, reserved0) == 44 && offsetof(MochizukiNr
               offsetof(MochizukiNrInfo, preprocess_ev) == 324 && offsetof(MochizukiNrInfo, white_point) == 328 &&
               offsetof(MochizukiNrInfo, build_stage) == 332 && offsetof(MochizukiNrInfo, build_total) == 340 &&
               offsetof(MochizukiNrInfo, renodx_effective) == 344 && offsetof(MochizukiNrInfo, network) == 348 &&
-              sizeof(MochizukiNrInfo) == 352);
+              sizeof(MochizukiNrInfo) == 360);
 
 // The bytes GetInfo writes into a struct of `size` bytes: the whole fields that fit, never part of one, and never
 // Info's tail padding. A host that appends a field there (sizeof does not grow) then sees struct_size end before it.
@@ -5349,6 +5466,7 @@ int32_t GetInfo(void* context, MochizukiNrInfo* out)
         info.network = s->vk.arch == nr::Arch::rdna2   ? 3u
                        : s->vk.arch == nr::Arch::rdna3 ? (s->vk.rdna3Aco ? 2u : 1u)
                                                         : 0u;
+        info.experimental = s->infoExperimental;
         // The core's own build progress (nr_log.hpp: builds run one at a time), while this session builds.
         if (info.building)
         {

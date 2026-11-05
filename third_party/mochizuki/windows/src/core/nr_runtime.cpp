@@ -697,6 +697,7 @@ struct Runtime::Impl {
     bool direct_in{};
 #if NR_INT4
     bool int4_mixed{};   // the int4 mixed network (Runtime::int4_mixed)
+    bool experimental{};   // CC_SMALL_FP8_EXPERIMENTAL (Runtime::experimental)
 #endif
     // The post block stores into an image in the frame's (UNORM) format and the
     // write-back is a copy; see the graph's --out0-format.
@@ -2332,6 +2333,8 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
     // small model. Its weights (dlssnr-small.bin, made by install.ps1 from the 310.9 DLL) are only in an installed
     // tree; missing: the original model, and the log says why.
     NetworkModel network = NetworkModel::Small;
+    bool experimental = false;
+    const std::filesystem::path xroot = data / "aco" / "experimental";
     {
         std::string env;
 #ifdef _WIN32
@@ -2345,7 +2348,25 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
         const int v = config.network >= 0 ? config.network : ev >= 0 ? ev : iv;
         if (v == 0) network = NetworkModel::Original;
         std::error_code ec;
-        const char* missing = network != NetworkModel::Small ? nullptr
+        // CC_SMALL_FP8_EXPERIMENTAL: the small model with its own weights (the host makes them at first use, in
+        // aco-cache) and shaders (aco/experimental/shaders: the Linux network's, run as ACO's machine code, RDNA4's only);
+        // anything missing: the small model.
+        if (v == 2) {
+            const char* missing = !installed ? "not an installed tree"
+                : config.arch != Arch::rdna4 ? "it is RDNA4's network"
+                : aco.empty() ? "it needs ACO (a driver with pipeline binaries)"
+                : !std::filesystem::is_regular_file(xroot / "shaders" / "fixed-attention.txt", ec) ||
+                          !std::filesystem::is_directory(xroot / "shaders" / "temporal", ec) ? "dlssnr-amd/aco/experimental/ is incomplete"
+                : !std::filesystem::is_regular_file(data / "aco-cache" / "dlssnr-small-experimental.nrb", ec) ? "its weights are missing"
+                : nullptr;
+            if (missing) {
+                nr::logf("[nr] CC_SMALL_FP8_EXPERIMENTAL (%s) but %s: CC_SMALL_FP8", from, missing);
+                impl_->network_note = missing;
+            } else {
+                experimental = true;
+            }
+        }
+        const char* missing = network != NetworkModel::Small || experimental ? nullptr
             : !installed ? "not an installed tree"
             : !std::filesystem::is_regular_file(data / "dlssnr-small.bin", ec) ? "dlssnr-amd/dlssnr-small.bin is missing (run install.ps1 with the 310.9.16 nvngx_dlssnr.dll)"
             : nullptr;
@@ -2354,10 +2375,13 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
             impl_->network_note = missing;
             network = NetworkModel::Original;
         } else {
-            nr::logf("[nr] %s model (%s)", network == NetworkModel::Small ? "small" : "original", from);
+            nr::logf("[nr] %s model (%s)", network == NetworkModel::Small ? experimental ? "small experimental" : "small"
+                                                                         : "original", from);
         }
+        if (network != NetworkModel::Small) experimental = false;
     }
     impl_->network = network;
+    impl_->experimental = experimental;
     impl_->post_blend_scale = network == NetworkModel::Small ? kPostBlendScaleSmall : kPostBlendScale;
     // [Network] Motion Without Depth = 1, the default: the pre block reads each pixel's own motion vector, as NVIDIA's
     // DLLs (310.8, 310.9) do - their host never binds the depth, so the kernel's nearest-of-five depth pick never runs
@@ -2515,6 +2539,13 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
         "--host-boundary", arena_reuse() ? "--reuse" : "--no-reuse", "--source-width", std::to_string(mw),
         "--source-height", std::to_string(mh), "--accumulation", config.accumulation,
         "--pipeline-cache", (installed ? data / arch_cache(config.arch) : root / "dlssnr-amd.pipelinecache").string()};
+    if (experimental) {   // its own shaders (ACO SPIR-V: kept with ACO on) and pipeline cache
+        for (size_t i = 0; i + 1 < arguments.size(); ++i) {
+            if (arguments[i] == "--spv-dir") arguments[i + 1] = (xroot / "shaders").string();
+            if (arguments[i] == "--pipeline-cache") arguments[i + 1] = (data / "aco-cache" / "pipeline-experimental.nrb").string();
+        }
+        arguments.push_back("--spv-dir-aco");
+    }
 #if NR_INT4
     if (int4)   // the int4 network: its own shaders and its own pipeline cache
         for (size_t i = 0; i + 1 < arguments.size(); ++i) {
@@ -2525,7 +2556,8 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
     // The weights as one file (windows/build/pack_model.py); the names inside are
     // the relative paths the graph asks for under --unpacked.
     if (installed) {
-        const auto pack = data / (network == NetworkModel::Small ? "dlssnr-small.bin" : "dlssnr.bin");
+        const auto pack = experimental ? data / "aco-cache" / "dlssnr-small-experimental.nrb"
+                          : data / (network == NetworkModel::Small ? "dlssnr-small.bin" : "dlssnr.bin");
         if (!std::filesystem::is_regular_file(pack))
             throw std::runtime_error("missing " + pack.string() + " (run install.ps1 again)");
         arguments.push_back("--model-pack"); arguments.push_back(pack.string());
@@ -2936,6 +2968,7 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
 #if NR_INT4
         // The int4 network's temporal pre/post variants are built with its defines (hard-swish, whose scale
         // NR_HS_FOLDPP folds into the pre/post weights): int4/shaders/temporal, never the default ones.
+        if (experimental) shaders = std::filesystem::canonical(xroot / "shaders" / "temporal");
         if (int4) shaders = std::filesystem::canonical(i4root / "shaders" / "temporal");
 #endif
         require_variant_profile(shaders);
@@ -3481,6 +3514,7 @@ uint32_t Runtime::model_height() const { return impl_->mh; }
 NetworkModel Runtime::network() const { return impl_->network; }
 #if NR_INT4
 bool Runtime::int4_mixed() const { return impl_->int4_mixed; }
+bool Runtime::experimental() const { return impl_->experimental; }
 #endif
 
 void Runtime::set_style_grade(bool on) { impl_->style_grade_on = on; }
