@@ -49,7 +49,7 @@ or downloaded by the installer.
   and [mochizuki0323's Vulkan port](https://gitlab.com/mochizuki0323/DLSSNR-AMD).
 - **NR before upscaling, or on the final image** in games without an upscaler (D3D9, D3D11, D3D12, Vulkan, OpenGL).
 - **OpenRR**: our own DLSS Ray Reconstruction runtime (MIT), built from the game's `nvngx_dlssd.dll` 310.9.1. When it
-  can't run, Ray Reconstruction falls back to FSR-RR. In D3D12 games mochizuki can run on its denoised image. Settings
+  can't run, Ray Reconstruction falls back to FSR-RR. In D3D12 games mochizuki runs on its denoised image by default. Settings
   in `[OpenNR-RR]`.
 - **Foveated NR** (experimental, off by default, `Foveation`): the network runs at full density in the centre and lower
   toward the edges, about 15 to 35% less neural pass time. mochizuki before the upscaler, also with OpenRR in D3D12
