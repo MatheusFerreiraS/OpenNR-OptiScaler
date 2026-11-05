@@ -1112,6 +1112,8 @@ class Config
     CustomOptional<std::string> OpenNrRrNrImage { "denoised" };
     // denoised: how fast the NR's delta follows where the camera moves, 0.01..1; 0.3 is the behaviour before 0.05
     CustomOptional<float> OpenNrRrNrDeltaRate { 0.05f };
+    // the runtime's cheaper kernels, a small measured loss of precision, flipped live from the menu
+    CustomOptional<bool> OpenNrRrFastMode { false };
     // what runs the network: auto (D3D12 in the game's own command list when the runtime's check passes, otherwise
     // Vulkan), d3d12 or vulkan; read when the runtime is created
     CustomOptional<std::string> OpenNrRrBackend { "auto" };

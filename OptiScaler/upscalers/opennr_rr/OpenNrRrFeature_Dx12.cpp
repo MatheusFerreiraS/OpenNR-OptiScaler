@@ -39,6 +39,8 @@ decltype(OnrRrApi3::GetHopTiming) s_getHopTiming = nullptr;
 decltype(OnrRrApi4::GetBackend) s_getBackend = nullptr;
 decltype(OnrRrApi4::Record) s_record = nullptr;
 decltype(&OnrRrSetDeltaRate) s_setDeltaRate = nullptr;
+decltype(&OnrRrSetFastMode) s_setFastMode = nullptr;
+decltype(&OnrRrGetFastMode) s_getFastMode = nullptr;
 decltype(OnrRrApi4::RecordPost) s_recordPost = nullptr;
 // ABI 5: the Vulkan host backend (PrepareVkDevice / FinishVkDevice / RecordVk); null with an older runtime
 OnrRrApi5 s_api5 {};
@@ -288,6 +290,8 @@ bool Load()
     s_getBackend = api4.GetBackend;
     s_record = api4.Record;
     s_setDeltaRate = reinterpret_cast<decltype(&OnrRrSetDeltaRate)>(GetProcAddress(module, "OnrRrSetDeltaRate"));
+    s_setFastMode = reinterpret_cast<decltype(&OnrRrSetFastMode)>(GetProcAddress(module, "OnrRrSetFastMode"));
+    s_getFastMode = reinterpret_cast<decltype(&OnrRrGetFastMode)>(GetProcAddress(module, "OnrRrGetFastMode"));
     s_recordPost = api4.RecordPost;
     if (has5)
         s_api5 = api5;
@@ -604,6 +608,19 @@ void ClearInfoContext(void* context)
     std::lock_guard lock(s_mutex);
     if (s_infoContext == context)
         s_infoContext = nullptr;
+}
+
+void ApplyFastMode(void* context)
+{
+    if (s_setFastMode != nullptr && context != nullptr)
+        s_setFastMode(context, Config::Instance()->OpenNrRrFastMode.value_or_default() ? 1 : 0);
+}
+
+int FastModeState()
+{
+    if (s_getFastMode == nullptr)
+        return -1;
+    return s_getFastMode(s_infoContext);
 }
 
 std::string DenoisedNrStatus()
@@ -1128,6 +1145,7 @@ bool OpenNrRrFeatureDx12::EvaluateInternal(ID3D12GraphicsCommandList* InCommandL
 
     if (s_setDeltaRate != nullptr)
         s_setDeltaRate(_context, std::clamp(Config::Instance()->OpenNrRrNrDeltaRate.value_or_default(), .01f, 1.f));
+    OpenNrRr::ApplyFastMode(_context);
 
     void* job = nullptr;
 
@@ -1184,6 +1202,7 @@ bool OpenNrRrFeatureDx12::EvaluateD3d12(ID3D12GraphicsCommandList* InCommandList
 
     if (s_setDeltaRate != nullptr)
         s_setDeltaRate(_context, std::clamp(Config::Instance()->OpenNrRrNrDeltaRate.value_or_default(), .01f, 1.f));
+    OpenNrRr::ApplyFastMode(_context);
 
     std::string why;
     uint32_t edit = s_api2.PrepareDenoised != nullptr ? EditFromConfig(&why) : ONR_RR_EDIT_OFF;

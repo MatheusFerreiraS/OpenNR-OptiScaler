@@ -3532,6 +3532,26 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             ScopedIndent indent {};
             ImGui::Spacing();
 
+            {
+                const int fastState = OpenNrRr::FastModeState();
+                if (fastState < 0)
+                    ImGui::BeginDisabled();
+                if (bool fastMode = config->OpenNrRrFastMode.value_or_default(); ImGui::Checkbox("Fast mode", &fastMode))
+                    config->OpenNrRrFastMode = fastMode;
+                if (fastState < 0)
+                    ImGui::EndDisabled();
+                ShowTooltip(fastState < 0 ? "This OpenRR runtime does not have the mode."
+                                          : "Trades a small, measured loss of image precision for a lower GPU time:\n"
+                                            "cheaper kernels, same network, same histories. Flips live, within a frame or\n"
+                                            "two, so you can compare back and forth. The first time it is ticked in a session\n"
+                                            "its kernels are built in the background and the image stays as it is until then.");
+                if (fastState >= 1)
+                {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled(fastState == 1 ? "on" : fastState == 2 ? "building..." : "not available");
+                }
+            }
+
             // the NR hop and the backend choice are D3D12's; a Vulkan game runs on its own device
             if (currentFeature->Api() != API::Vulkan)
             {
@@ -3663,7 +3683,9 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                 const char* stateName = info.state == ONR_RR_STATE_READY      ? "ready"
                                         : info.state == ONR_RR_STATE_BUILDING ? "building"
                                                                               : "failed";
-                ImGui::Text("State: %s, GPU %.2f ms (average)", stateName, info.gpu_ms_average);
+                const int fastLine = OpenNrRr::FastModeState();
+                ImGui::Text("State: %s, GPU %.2f ms (average), fast mode %s", stateName, info.gpu_ms_average,
+                            fastLine == 1 ? "on" : fastLine == 2 ? "building" : fastLine == 3 ? "not available" : "off");
                 ImGui::Text("Running on: %s", info.backend == ONR_RR_BACKEND_D3D12         ? "D3D12 (the game's command list)"
                                               : info.backend == ONR_RR_BACKEND_VULKAN_HOST ? "Vulkan (the game's command buffer)"
                                                                                            : "Vulkan");

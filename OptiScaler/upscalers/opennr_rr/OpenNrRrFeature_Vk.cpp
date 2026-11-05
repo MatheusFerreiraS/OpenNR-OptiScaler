@@ -617,6 +617,8 @@ bool OpenNrRrFeatureVk::EvaluateInternal(VkCommandBuffer InCmdBuffer, NVSDK_NGX_
     if (!FillFrame(*InParameters, frame))
         return false;
 
+    OpenNrRr::ApplyFastMode(_context);
+
     if (const int32_t rc = _api->RecordVk(_context, &frame, InCmdBuffer); rc != ONR_RR_OK)
     {
         FallBack(std::format("RecordVk rc={}: {}", rc, OpenNrRr::LastError()));
