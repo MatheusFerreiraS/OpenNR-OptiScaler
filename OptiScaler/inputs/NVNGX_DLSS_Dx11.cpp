@@ -598,6 +598,17 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D11_CreateFeature(ID3D11DeviceContext
         if (Config::Instance()->Dx11Upscaler.has_value())
             upscalerChoice = Config::Instance()->Dx11Upscaler.value();
 
+        // The model has no path on a native D3D11 upscaler, so with NR on it would just never run, and any save writes
+        // the native default into the Dx11Upscaler key. The same upscaler over the D3D12 bridge carries NR.
+        if (Config::Instance()->DlssNrEnabled.value_or_default() &&
+            (upscalerChoice == Upscaler::FSR22 || upscalerChoice == Upscaler::FSR31 || upscalerChoice == Upscaler::XeSS))
+        {
+            const auto bridged = upscalerChoice == Upscaler::XeSS ? Upscaler::XeSS_on12 : Upscaler::FFX_on12;
+            LOG_INFO("NR is on: using {} instead of native {}", UpscalerDisplayName(bridged),
+                     UpscalerDisplayName(upscalerChoice));
+            upscalerChoice = bridged;
+        }
+
         LOG_INFO("Creating new {} feature", UpscalerDisplayName(upscalerChoice));
 
         Dx11Contexts[handleId] = {};

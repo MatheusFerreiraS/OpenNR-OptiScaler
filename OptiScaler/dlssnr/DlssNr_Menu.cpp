@@ -1787,7 +1787,8 @@ void RenderMenu(Config* config, float menuResScale)
                 ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
                                    "%s runs natively on D3D11, which the model has no path for.",
                                    feature->Name().c_str());
-                ImGui::TextDisabled("Pick an upscaler marked w/Dx12 above, then restart the game.");
+                ImGui::TextDisabled("Pick an upscaler marked w/Dx12 above, or Save Settings and restart: with NR on, "
+                                    "the game starts on the w/Dx12 one.");
             }
             else if (enabled)
                 ImGui::TextUnformatted("Waiting for the upscaler to run.");
