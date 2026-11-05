@@ -23,6 +23,8 @@
 #include <format>
 #include <memory>
 #include <mutex>
+#include <utility>
+#include <vector>
 
 namespace LmxxfCut = DlssNr::Backend::LmxxfCut;
 
@@ -299,42 +301,40 @@ bool Load()
     return true;
 }
 
-// The nvngx_dlssd.dll the weights are built from: OptiScaler's own lookup first, then the one the game loaded, then
-// one beside the game's exe.
-std::wstring FindDlssd(const char** source)
+// Where an nvngx_dlssd.dll to build the weights from may be, in order: a copy kept for them alone, OptiScaler's own
+// lookup, the one the game loaded, the one beside the game's exe. Usable takes the first the runtime accepts: OptiScaler's
+// lookup can name danielblnc's host copy, another version, while the game has the right one.
+std::vector<std::pair<const char*, std::wstring>> DlssdCandidates()
 {
-    // a copy kept for the weights alone (the 310.9.1 the runtime reads), so the game's own stays where it is
+    std::vector<std::pair<const char*, std::wstring>> found;
+    const auto add = [&found](const char* source, const std::wstring& path)
+    {
+        for (const auto& [_, seen] : found)
+            if (_wcsicmp(seen.c_str(), path.c_str()) == 0)
+                return;
+        found.emplace_back(source, path);
+    };
+
     std::error_code ec;
     if (const auto own = Util::DllPath().parent_path() / L"opennr-rr" / L"nvngx_dlssd.dll"; std::filesystem::exists(own, ec))
-    {
-        *source = "opennr-rr folder";
-        return own.wstring();
-    }
+        add("opennr-rr folder", own.wstring());
 
     if (const auto& known = State::Instance().NVNGX_DLSSD_Path; known.has_value())
-    {
-        *source = "OptiScaler's nvngx_dlssd.dll path";
-        return known.value();
-    }
+        add("OptiScaler's nvngx_dlssd.dll path", known.value());
 
     if (HMODULE loaded = GetModuleHandleW(L"nvngx_dlssd.dll"); loaded != nullptr)
     {
         wchar_t path[MAX_PATH] {};
         if (GetModuleFileNameW(loaded, path, MAX_PATH) != 0)
-        {
-            *source = "loaded by the game";
-            return path;
-        }
+            add("loaded by the game", path);
     }
 
-    if (auto found = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssd.dll"); found.has_value())
-    {
-        *source = "beside the game's exe";
-        return found->wstring();
-    }
+    if (const auto beside = Util::ExePath().remove_filename() / L"nvngx_dlssd.dll"; std::filesystem::exists(beside, ec))
+        add("beside the game's exe", beside.wstring());
+    else if (auto deeper = Util::FindFilePath(Util::ExePath().remove_filename(), "nvngx_dlssd.dll"); deeper.has_value())
+        add("under the game's exe", deeper->wstring());
 
-    *source = "not found";
-    return {};
+    return found;
 }
 
 enum class DepthKind
@@ -502,24 +502,39 @@ bool Usable(LUID adapter)
     if (!Load())
         return false;
 
-    const char* source = nullptr;
-    s_dlssdPath = FindDlssd(&source);
-    LOG_INFO("OpenRR: nvngx_dlssd.dll {} ({})", source, wstring_to_string(s_dlssdPath));
-
-    int32_t rc;
+    const auto candidates = DlssdCandidates();
+    int32_t rc = ONR_RR_OK;
+    std::string firstReason;
+    s_dlssdPath.clear();
+    // none found still asks the runtime, for the answer about the GPU
+    for (size_t i = 0; i < (std::max)(candidates.size(), size_t(1)); ++i)
     {
-        ScopedSkipVulkanHooks skipVulkanHooks {};
-        ScopedCreatingD3DDevice creatingDevice {};
-        ScopedSkipSpoofingGlobal skipSpoofing {};
-        rc = s_api.Check(&adapter, s_dlssdPath.empty() ? nullptr : s_dlssdPath.c_str());
+        const wchar_t* path = candidates.empty() ? nullptr : candidates[i].second.c_str();
+        if (path != nullptr)
+            LOG_INFO("OpenRR: nvngx_dlssd.dll {} ({})", candidates[i].first, wstring_to_string(path));
+        {
+            ScopedSkipVulkanHooks skipVulkanHooks {};
+            ScopedCreatingD3DDevice creatingDevice {};
+            ScopedSkipSpoofingGlobal skipSpoofing {};
+            rc = s_api.Check(&adapter, path);
+        }
+        if (rc == ONR_RR_OK)
+        {
+            if (path != nullptr)
+                s_dlssdPath = path;
+            break;
+        }
+        auto why = RuntimeError();
+        if (why.empty())
+            why = std::format("not supported here (rc {})", rc);
+        LOG_INFO("OpenRR: Check rc={}: {}", rc, why);
+        if (firstReason.empty())
+            firstReason = why;
     }
 
     if (rc != ONR_RR_OK)
     {
-        s_reason = RuntimeError();
-        if (s_reason.empty())
-            s_reason = std::format("not supported here (rc {})", rc);
-        LOG_INFO("OpenRR: Check rc={}: {}", rc, s_reason);
+        s_reason = firstReason;
         return false;
     }
 
@@ -593,8 +608,7 @@ std::string LastError() { return RuntimeError(); }
 
 bool DlssdFound()
 {
-    const char* source = nullptr;
-    return !FindDlssd(&source).empty();
+    return !DlssdCandidates().empty();
 }
 
 void SetInfoContext(void* context)
