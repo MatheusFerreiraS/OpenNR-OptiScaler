@@ -9,8 +9,8 @@ MZR_U(MochizukiRenoStyle, 0u, 0, 2, 1, "Style", reno_style, "The model's Style: 
 MZR_F(MochizukiRenoLocalTone, 1.0f, 0.0f, 2.0f, 1, "Local tone", reno_local_tone, "The model's local lighting.")
 MZR_F(MochizukiRenoLocalStructure, 1.0f, 0.0f, 2.0f, 1, "Local structure", reno_local_structure,
       "The model's structure strength.")
-MZR_F(MochizukiRenoSkinStructure, 1.0f, 0.0f, 2.0f, 1, "Skin structure", reno_skin_structure,
-      "Structure on skin, 0 to 2 (1 is the model's default). Needs the auto mask.")
+MZR_F(MochizukiRenoSkinStructure, 1.0f, 0.0f, 1.0f, 1, "Skin structure", reno_skin_structure,
+      "Structure on skin, 0 to 1 (1 is the model's default). Needs the auto mask.")
 MZR_B(MochizukiRenoAutoMask, false, 0, 1, 1, "Auto mask", reno_auto_mask,
       "The model's character mask, so skin gets its own structure.")
 MZR_B(MochizukiRenoSkinIndependent, true, 0, 1, 1, "Independent skin", reno_skin_independent,
@@ -35,8 +35,8 @@ MZR_F(MochizukiRenoPass2LocalTone, 1.0f, 0.0f, 2.0f, 3, "Local tone", reno_pass_
       "This pass's local lighting.")
 MZR_F(MochizukiRenoPass2Structure, 1.0f, 0.0f, 2.0f, 3, "Local structure", reno_pass_local_structure_0,
       "This pass's structure strength.")
-MZR_F(MochizukiRenoPass2Skin, 1.0f, 0.0f, 2.0f, 3, "Skin structure", reno_pass_skin_structure_0,
-      "This pass's skin structure, 0 to 2 (1 is the model's default).")
+MZR_F(MochizukiRenoPass2Skin, 1.0f, 0.0f, 1.0f, 3, "Skin structure", reno_pass_skin_structure_0,
+      "This pass's skin structure, 0 to 1 (1 is the model's default).")
 MZR_B(MochizukiRenoPass2AutoMask, false, 0, 1, 3, "Auto mask", reno_pass_auto_mask_0, "This pass's character mask.")
 MZR_F(MochizukiRenoPass3Transfer, 1.0f, 0.0f, 1.0f, 4, "Transfer strength", reno_pass_transfer_1,
       "How much of this pass's brightness change is kept.")
@@ -51,8 +51,8 @@ MZR_F(MochizukiRenoPass3LocalTone, 1.0f, 0.0f, 2.0f, 4, "Local tone", reno_pass_
       "This pass's local lighting.")
 MZR_F(MochizukiRenoPass3Structure, 1.0f, 0.0f, 2.0f, 4, "Local structure", reno_pass_local_structure_1,
       "This pass's structure strength.")
-MZR_F(MochizukiRenoPass3Skin, 1.0f, 0.0f, 2.0f, 4, "Skin structure", reno_pass_skin_structure_1,
-      "This pass's skin structure, 0 to 2 (1 is the model's default).")
+MZR_F(MochizukiRenoPass3Skin, 1.0f, 0.0f, 1.0f, 4, "Skin structure", reno_pass_skin_structure_1,
+      "This pass's skin structure, 0 to 1 (1 is the model's default).")
 MZR_B(MochizukiRenoPass3AutoMask, false, 0, 1, 4, "Auto mask", reno_pass_auto_mask_1, "This pass's character mask.")
 MZR_F(MochizukiRenoPass4Transfer, 1.0f, 0.0f, 1.0f, 5, "Transfer strength", reno_pass_transfer_2,
       "How much of the brightness change of pass 4 and later is kept.")
@@ -67,8 +67,8 @@ MZR_F(MochizukiRenoPass4LocalTone, 1.0f, 0.0f, 2.0f, 5, "Local tone", reno_pass_
       "The local lighting of pass 4 and later.")
 MZR_F(MochizukiRenoPass4Structure, 1.0f, 0.0f, 2.0f, 5, "Local structure", reno_pass_local_structure_2,
       "The structure strength of pass 4 and later.")
-MZR_F(MochizukiRenoPass4Skin, 1.0f, 0.0f, 2.0f, 5, "Skin structure", reno_pass_skin_structure_2,
-      "The skin structure of pass 4 and later; -1 is the model's own.")
+MZR_F(MochizukiRenoPass4Skin, 1.0f, 0.0f, 1.0f, 5, "Skin structure", reno_pass_skin_structure_2,
+      "The skin structure of pass 4 and later, 0 to 1 (1 is the model's default).")
 MZR_B(MochizukiRenoPass4AutoMask, false, 0, 1, 5, "Auto mask", reno_pass_auto_mask_2,
       "The character mask of pass 4 and later.")
 MZR_F(MochizukiRenoColorStrength, 1.0f, 0.0f, 1.0f, 6, "Colour strength", reno_color_strength,
