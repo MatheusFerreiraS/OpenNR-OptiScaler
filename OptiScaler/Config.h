@@ -273,6 +273,8 @@ template <> struct EnumConfig<ReprojectionFill>
 
 class Config
 {
+    bool WriteIni();
+
   public:
     Config();
 
@@ -1554,6 +1556,9 @@ class Config
     bool LoadFromPath(const wchar_t* InPath);
     bool SaveIni();
     bool SaveXeFG();
+
+    // What the last save could not do, for the menu to say. Empty when OptiScaler.ini took it.
+    std::string saveProblem;
 
     void CheckUpscalerFiles();
 

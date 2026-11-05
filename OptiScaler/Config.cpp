@@ -41,10 +41,25 @@ static inline bool isFloat(const std::string& str, float& value)
     return (iss >> value) && iss.eof();
 }
 
+// Where a save goes when OptiScaler.ini cannot be overwritten. It counts until the ini is newer, so a hand edit or the
+// installer still wins, and a save that reaches the ini again removes it.
+static std::filesystem::path FallbackIniPath(const std::filesystem::path& iniPath)
+{
+    auto path = iniPath;
+    return path.replace_extension(L".saved.ini");
+}
+
 Config::Config()
 {
     absoluteFileName = Util::DllPath().parent_path() / fileName;
-    Reload(absoluteFileName);
+
+    const auto fallback = FallbackIniPath(absoluteFileName);
+    std::error_code iniError, fallbackError;
+    const auto iniTime = std::filesystem::last_write_time(absoluteFileName, iniError);
+    const auto fallbackTime = std::filesystem::last_write_time(fallback, fallbackError);
+
+    if (fallbackError || (!iniError && fallbackTime <= iniTime) || !Reload(fallback))
+        Reload(absoluteFileName);
 }
 
 // The one authority on "back to defaults" for the FSR-RR denoiser. Clearing
@@ -2550,11 +2565,51 @@ bool Config::SaveIni()
         ini.Delete("Nukems", "MakeDepthCopy", true);
     }
 
-    auto pathWStr = absoluteFileName.wstring();
+    return WriteIni();
+}
 
-    LOG_INFO("Trying to save ini to: {0}", wstring_to_string(pathWStr));
+bool Config::WriteIni()
+{
+    const auto path = absoluteFileName.wstring();
+    const auto fallback = FallbackIniPath(absoluteFileName);
 
-    return ini.SaveFile(absoluteFileName.wstring().c_str()) >= 0;
+    LOG_INFO("Trying to save ini to: {0}", wstring_to_string(path));
+
+    saveProblem.clear();
+
+    if (ini.SaveFile(path.c_str()) >= 0)
+    {
+        std::error_code ignored;
+        std::filesystem::remove(fallback, ignored);
+        return true;
+    }
+
+    const auto error = GetLastError();
+    const auto attributes = GetFileAttributesW(path.c_str());
+    std::string reason = std::format("Windows error {}", error);
+
+    if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_READONLY))
+        reason = "the file is read-only";
+    else if (error == ERROR_ACCESS_DENIED)
+        reason = "access denied";
+    else if (error == ERROR_SHARING_VIOLATION)
+        reason = "another program has it open";
+
+    LOG_ERROR("Can't write {}: {} ({})", wstring_to_string(path), reason, error);
+
+    if (ini.SaveFile(fallback.c_str()) >= 0)
+    {
+        LOG_WARN("Settings saved to {}", wstring_to_string(fallback.wstring()));
+        saveProblem = std::format("Can't write OptiScaler.ini ({}).\nSaved to {} beside it, it loads from there on the "
+                                  "next start.",
+                                  reason, wstring_to_string(fallback.filename().wstring()));
+        return true;
+    }
+
+    saveProblem = std::format("Settings NOT saved, can't write OptiScaler.ini ({}).\nRun the game as administrator or "
+                              "install it outside Program Files.",
+                              reason);
+    return false;
 }
 
 bool Config::SaveXeFG()
@@ -2563,10 +2618,7 @@ bool Config::SaveXeFG()
     ini.SetValue("XeFG", "JitteredMV", GetBoolValue(Instance()->FGXeFGJitteredMV.value_for_config()).c_str());
     ini.SetValue("XeFG", "HighResMV", GetBoolValue(Instance()->FGXeFGHighResMV.value_for_config()).c_str());
 
-    auto pathWStr = absoluteFileName.wstring();
-    LOG_INFO("Trying to save ini to: {0}", wstring_to_string(pathWStr));
-
-    return ini.SaveFile(absoluteFileName.wstring().c_str()) >= 0;
+    return WriteIni();
 }
 
 void Config::CheckUpscalerFiles()

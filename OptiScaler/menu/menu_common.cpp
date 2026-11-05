@@ -11660,7 +11660,13 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
     }
 
     if (ImGui::Button("Save Settings"))
-        config->SaveIni();
+    {
+        const bool saved = config->SaveIni();
+
+        if (!config->saveProblem.empty())
+            ImGui::InsertNotification({ saved ? ImGuiToastType::Warning : ImGuiToastType::Error, 20000, "%s",
+                                        config->saveProblem.c_str() });
+    }
 
     ImGui::SameLine(0.0f, 6.0f);
 
