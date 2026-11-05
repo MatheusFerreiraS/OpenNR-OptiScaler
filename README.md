@@ -19,7 +19,7 @@ Ko-fi: <https://ko-fi.com/T6T213OVFE>
 | NR, danielblnc 0.8.0 (NeuralHub host) | RX 7000, RX 9000 |
 | NR, lmxxf 0.45 | RX 9070 and RX 9060 series |
 | NR, mochizuki 0.0.8.2 (Vulkan) | RX 9000; RX 7000, RDNA3 APUs and RX 6000 on experimental networks |
-| Ray Reconstruction, OpenRR 0.1.0 | RX 9000, D3D12 and Vulkan games |
+| Ray Reconstruction, OpenRR 0.1.1 | RX 9000, D3D12 and Vulkan games |
 | Ray Reconstruction, FSR-RR (AMD Ray Regeneration) | RX 9000 |
 
 ## Install
@@ -49,8 +49,8 @@ or downloaded by the installer.
   and [mochizuki0323's Vulkan port](https://gitlab.com/mochizuki0323/DLSSNR-AMD).
 - **NR before upscaling, or on the final image** in games without an upscaler (D3D9, D3D11, D3D12, Vulkan, OpenGL).
 - **OpenRR**: our own DLSS Ray Reconstruction runtime (MIT), built from the game's `nvngx_dlssd.dll` 310.9.1. When it
-  can't run, Ray Reconstruction falls back to FSR-RR. In D3D12 games mochizuki runs on its denoised image by default. Settings
-  in `[OpenNR-RR]`.
+  can't run, Ray Reconstruction falls back to FSR-RR. In D3D12 games mochizuki runs on its denoised image by default. `Mode` picks New (default, cheaper kernels, about 8% faster at a small measured loss of precision) or Legacy. Settings in
+  `[OpenNR-RR]`.
 - **Foveated NR** (experimental, off by default, `Foveation`): the network runs at full density in the centre and lower
   toward the edges, about 15 to 35% less neural pass time. mochizuki before the upscaler, also with OpenRR in D3D12
   games; mochizuki and danielblnc on the final image in D3D11 and D3D12.
