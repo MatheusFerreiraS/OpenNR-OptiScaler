@@ -113,7 +113,7 @@ Upstream moved to GitLab; 0.0.8.1 (`339938c`, with TheAutomatic's RDNA3 merge re
   `pipelines.json`): the noise read, `post_no_out1`, and CC_SMALL_FP8_EXPERIMENTAL's `NR_SACT` / `NR_FIXP` /
   `NR_VOMERGE`, all off in the shipped pipelines. The ACO records of the changed shaders are upstream's new ones:
   62 of 62 default and 75 of 75 int4 match the SPIR-V built here (the folder's other 39 records are
-  CC_SMALL_FP8_EXPERIMENTAL's, not built here);
+  CC_SMALL_FP8_EXPERIMENTAL's; see its section);
 - UTF-8 paths everywhere (`nr_path_u8.hpp`), `nr_vram_tag.hpp`, `nr_gpu_completion.hpp` (the stage's retire
   tickets), `nrvk::blit` (a compute blit on compute-only lists, `runtime_blit.comp`), the PAL adapter's gfx11 and
   gfx11.5 code objects and record version 2 (`nr_pal_binary.hpp`), the ACO loader's fixes (a failure of ACO's code
@@ -134,7 +134,7 @@ Upstream moved to GitLab; 0.0.8.1 (`339938c`, with TheAutomatic's RDNA3 merge re
 
 Not taken: upstream's own RDNA3 network (`windows/shaders/rdna3`, `windows/data/aco/rdna3`, `build_aco_network.py`;
 see RDNA3), the wilsjo2 style and flow, NR Control (`windows/shaders/control`; `nr_control_shared.hpp` follows
-upstream and is not used), CC_SMALL_FP8_EXPERIMENTAL (its weights are made by upstream's installer, ACO only),
+upstream and is not used),
 `--lazy-images` (the input copy and answer image made on first use: the composition here binds them at build), the
 live History Precision switch (`set_history_f16`; a change here takes a new network), the `carry_history` changes,
 supersampling Model resolution, the 0.0.8.2 resize queue and prefetch (upstream's host), signing and packaging.
@@ -295,6 +295,46 @@ upstream KeepBoth). Without ACO or the files the core logs why and builds the de
 Harness (as above, ACO on), default / int4: 1080p 10.1 / 9.2 ms, 1280x720 5.9 / 5.2, 3840x2160 38.5 / 34.9. The
 picture is 39-41 dB from the default network's, 0.6-0.8% darker on average. A switch in a running session: the int4
 network ready in 4.5 s, the frames on the old one meanwhile. First int4 build 23 s (the imports), then 4.7 s.
+
+## CC_SMALL_FP8_EXPERIMENTAL (OptiScaler's `MochizukiExperimental`)
+
+Upstream's fourth network (0.0.8, Windows since 0.0.8.1, at the same `c53878b`; no newer release on 2026-11-05): the 310.9
+small model made faster, in FP8 like it, ACO's machine code only, so RX 9000 only. ReLU as the Swin MLP activation
+(`NR_SACT`), one fixed attention table a layer on three decoder layers (`NR_FIXP`, the V and output projections merged,
+`NR_VOMERGE`), the changed layers' weights fitted to the original network's outputs. Vendored for it:
+`linux/shaders/rdna4/pipelines-experimental.json` and `linux/data/experimental/` (`*.delta`, each changed entry XOR the
+small model's, which holds none of NVIDIA's weights; `*.sha256`, of the result). The 39 records were already in
+`windows/data/aco/records`, and the graph's `fixed-attention.txt`, `--spv-dir-aco` and `fswin32nhd` came with 0.0.8.2.
+
+Local patch 33: `nr_runtime.cpp` `RuntimeConfig::network = 2` and `Runtime::experimental()` as upstream has them, except
+the places: the shaders in `dlssnr-amd/aco/experimental/shaders` (`tools/build-mochizuki-runtime.cmd`), which
+`pin-mochizuki.ps1` and the installers take as they are, upstream's `dlssnr-amd/experimental` being a new top folder for
+them; and the weights and pipeline cache as `dlssnr-amd/aco-cache/dlssnr-small-experimental.nrb` and
+`pipeline-experimental.nrb`, since an uninstall removes the `.nrb` files there. Upstream's installer makes the weights;
+here the host does, at the first use (`MochizukiNrRuntime.cpp` `MakeExperimentalWeights`, 0.5 s, the small model with the
+difference XORed in, kept when the SHA-256 is upstream's). Anything missing: the small model, and the log says why.
+`config.arch` other than RDNA4 or no ACO: the same.
+
+The host asks for it a frame at a time (`LMXXF_NR_FRAME_FLAG_EXPERIMENTAL`, part of the network key), like int4 mixed: a
+change builds it while the frames keep the current one (1.0 s here). `MochizukiNrInfo::experimental` says it runs.
+
+Harness (RX 9070 XT, AMD Software 26.10.1, ACO, 60 frames, 4 rounds, the runtime's own GPU time), default / this: 720p 3.14 /
+2.78 ms, 1080p 4.97 / 4.40, 1440p 7.1 / 6.5, 4K 13.71 / 12.10. The picture 45.9-47.0 dB from the default network's
+(pan of 8 px a frame at 1080p: 47.0 dB). All default paths byte-identical to the build before: RDNA4 small and 310.8
+model, 720p and 1080p, driver and ACO, pan, int4 mixed; forced RDNA3 and RDNA2. The flag on the forced networks or without
+ACO: byte-identical to it being off.
+
+## NR's place (OptiScaler's `MochizukiPlacement`)
+
+Upstream's route for OptiScaler has a Placement a layer: `before` the upscaler (a copy of the colour it hands the upscaler),
+`after` it (on its output), `present` (the back buffer at the game's Present, before frame generation; its default since
+0.0.8). OptiScaler's key: `before` is the seam mochizuki always had and stays the default. `after` is the seam danielblnc
+already took (`AmdBridge::After`, `WriteAmdPostAnswer`), now open to mochizuki: the vectors stay on the render grid
+(`motion_width` the guides' extent; a uniform pan with the vectors on half the grid gives the same bytes as on the whole).
+`present` is PresentExperimental's frame (`NR without upscaling`) in a game whose upscaler runs too, on optical flow, not
+the game's vectors as upstream's, and SDR back buffers only. Without an upscaler that checkbox is upstream's Present.
+Both only on a native D3D12 swapchain (`Backend::MochizukiPlacementNow`); OpenRR's NR on the denoised image stands down
+for them. Nothing in the core.
 
 ## RenoDX (always on in OptiScaler)
 

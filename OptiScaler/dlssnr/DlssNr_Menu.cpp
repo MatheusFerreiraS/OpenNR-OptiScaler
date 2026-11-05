@@ -475,7 +475,8 @@ static void ResetMochizuki(Config* c)
 {
     // The keys the page no longer shows (no effect in the RenoDX stage) go back to their defaults too.
     Unset(c->MochizukiHistoryStrength, c->MochizukiStabilizerStrength, c->MochizukiStabilizerThreshold,
-          c->MochizukiInt4, c->MochizukiOriginalModel, c->MochizukiCascadeDetail, c->MochizukiAntiHalo,
+          c->MochizukiInt4, c->MochizukiOriginalModel, c->MochizukiExperimental, c->MochizukiCascadeDetail,
+          c->MochizukiAntiHalo,
           c->MochizukiJitterHistory, c->MochizukiAntiHaloStrength, c->MochizukiPassEstimate, c->MochizukiApplyModel,
           c->MochizukiUseDepth, c->MochizukiDynamicResolution, c->MochizukiPreprocess, c->MochizukiPreprocessExposure,
           c->MochizukiPreprocessBias, c->MochizukiPreprocessCurve, c->MochizukiPreprocessContrast,
@@ -589,7 +590,8 @@ void RenderMenu(Config* config, float menuResScale)
                                      "\nis off, so this session runs no NR."
                                    : "NR without upscaling runs on the danielblnc and mochizuki runtimes. lmxxf runs"
                                      "\ninside an upscaler call, so a game without one gets no NR.");
-        if (present && State::Instance().currentFeature != nullptr)
+        if (present && State::Instance().currentFeature != nullptr &&
+            DlssNr::Backend::MochizukiPlacementNow() != DlssNr::Backend::MochizukiPlace::Present)
             ImGui::TextColored(
                 ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "%s",
                 "This game has an upscaler, and NR runs inside it. NR without upscaling still sets XeFG's"
@@ -672,8 +674,8 @@ void RenderMenu(Config* config, float menuResScale)
                 HelpMarker("danielblnc: the DLSS-NR-on-AMD runtime, every control below."
                            "\nlmxxf: open-source HIP kernels in the game's own queue, before Super"
                            "\nResolution only. Detail, colour and debug view."
-                           "\nmochizuki: open-source Vulkan network on its own device, before Super"
-                           "\nResolution only. Its own passes, resolution, strengths and model controls."
+                           "\nmochizuki: open-source Vulkan network on its own device. Its own processing"
+                           "\npoint, passes, resolution, strengths and model controls."
                            "\n\nThe choice is stored as NrBackend. Press Save Settings and restart the"
                            "\ngame to switch.");
             }
@@ -906,21 +908,46 @@ void RenderMenu(Config* config, float menuResScale)
                 ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f), label);
             }
 
-            // The runtime takes only the seam before Super Resolution. EvaluateAtSeam ignores ApplyAfterRR for it,
-            // but the key is danielblnc's placement too, so it is only cleared on request.
             const ImVec4 warning(0.95f, 0.70f, 0.20f, 1.0f);
+            // Upstream's Placement. MochizukiPlacement alone places it, with an upscaler: without one NR without
+            // upscaling, above, is upstream's Present. Read once, at the first frame: changing it needs a restart.
+            {
+                const std::string placementKey = config->MochizukiPlacement.value_or_default();
+                int placement = !_stricmp(placementKey.c_str(), "after") ? 1 : !_stricmp(placementKey.c_str(), "present") ? 2 : 0;
+                static const int startedWith = placement;
+                if (ImGui::Combo("Processing point", &placement,
+                                 "Before the upscaler\0After the upscaler\0At Present (finished picture)\0"))
+                    config->MochizukiPlacement = placement == 1 ? "after" : placement == 2 ? "present" : "before";
+                if (placement != startedWith)
+                {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1.f, 0.8f, 0.f, 1.f), "(save and restart)");
+                }
+                else if (placement && DlssNr::Backend::MochizukiPlacementNow() == DlssNr::Backend::MochizukiPlace::BeforeSr)
+                    ImGui::TextColored(warning, "This route runs NR before the upscaler.");
+                HelpMarker("With an upscaler, on a native D3D12 game. Without one, NR without upscaling above is At"
+                           "\nPresent. The D3D11, Vulkan and D3D9 routes run before the upscaler."
+                           "\nBefore: on the render resolution frame, the game's motion vectors; cheapest, the upscaler"
+                           "\nthen sees NR's picture. The default."
+                           "\nAfter: on the upscaler's or Ray Reconstruction's output, at display resolution, so it"
+                           "\ncosts more; the game's motion vectors. Keeps the upscaler's detail."
+                           "\nAt Present: on the finished picture before frame generation, HUD included, at display"
+                           "\nresolution; motion from optical flow, SDR back buffers only. With frame generation's"
+                           "\nHUD fix the generated frames may not carry NR."
+                           "\nThe stabilizer, foveated NR and person protection need Before.");
+            }
+            // ApplyAfterRR is danielblnc's placement, which mochizuki ignores, so it is only cleared on request.
             if (config->DlssNrApplyAfterRR.value_or_default())
             {
-                ImGui::TextColored(warning, "ApplyAfterRR is on. It places danielblnc; mochizuki runs before Super"
-                                            "\nResolution only and ignores it.");
-                if (ImGui::Button("Run before Super Resolution"))
+                ImGui::TextColored(warning, "ApplyAfterRR is on. It places danielblnc; mochizuki has its own"
+                                            "\nProcessing point above and ignores it.");
+                if (ImGui::Button("Clear ApplyAfterRR"))
                 {
                     config->DlssNrApplyAfterRR = false;
                     DlssNr::AmdBridge::InvalidateHistory();
                 }
-                HelpMarker("Sets ApplyAfterRR to false. mochizuki runs before Super Resolution (and before Ray"
-                           "\nReconstruction); danielblnc then runs before Super Resolution / Ray Reconstruction too,"
-                           "\nif you switch back to it.");
+                HelpMarker("Sets ApplyAfterRR to false; danielblnc then runs before Super Resolution / Ray"
+                           "\nReconstruction too, if you switch back to it.");
             }
 
             const auto liveSlider = [](const char* label, CustomOptional<float>& option, float lo, float hi)
@@ -1106,6 +1133,30 @@ void RenderMenu(Config* config, float menuResScale)
                                    "\npicture close to the default network's but not the same. Needs ACO. Switching builds"
                                    "\nthe other network in a few seconds while the current one keeps running; no restart."
                                    "\nMade from the old model only, so it runs that one while it is on.");
+                // Upstream's CC_SMALL_FP8_EXPERIMENTAL: its files come with the runtime, its weights from the new model.
+                std::error_code fp8Error;
+                const auto fp8Data = Util::DllPath().parent_path() / L"dlssnr-amd";
+                const bool fp8Files =
+                    std::filesystem::exists(fp8Data / L"aco" / L"experimental" / L"shaders" / L"fixed-attention.txt",
+                                            fp8Error) &&
+                    std::filesystem::exists(fp8Data / L"dlssnr-small.bin", fp8Error);
+                const bool oldModel = config->MochizukiOriginalModel.value_or_default() || int4;
+                ImGui::BeginDisabled(!aco || fp16Net || !fp8Files || oldModel);
+                bool fp8Experimental = config->MochizukiExperimental.value_or_default();
+                if (ImGui::Checkbox("FP8 experimental network (new model only)", &fp8Experimental))
+                    config->MochizukiExperimental = fp8Experimental;
+                ImGui::EndDisabled();
+                const std::string fp8Off = std::string("Not on the ") + card + ": it runs FP8 matrices as ACO's machine code,"
+                                           "\nwhich only an RX 9000 has.";
+                HelpMarker(fp16Net     ? fp8Off.c_str()
+                           : !fp8Files ? "Needs dlssnr-amd\\aco\\experimental and the new model, dlssnr-amd\\dlssnr-small.bin."
+                           : !aco      ? "Needs ACO machine code, which is off."
+                           : oldModel  ? "Made from the new model: off with Old model or int4 mixed."
+                                       : "Upstream's CC_SMALL_FP8_EXPERIMENTAL: the new model made faster (simpler activation,"
+                                         "\nfixed attention on three decoder layers, those weights refitted), so its picture"
+                                         "\ndiffers somewhat. Its weights are made from the new model at its first use. Switching"
+                                         "\nbuilds the other network in a few seconds while the current one keeps running; no"
+                                         "\nrestart.");
                 // MochizukiDynamicResolution: exact, auto or always; anything else is auto, as the host sends it.
                 const std::string dynamicResolution = config->MochizukiDynamicResolution.value_or_default();
                 int drs = dynamicResolution == "exact" ? 1 : dynamicResolution == "always" ? 2 : 0;
@@ -1137,6 +1188,9 @@ void RenderMenu(Config* config, float menuResScale)
                     if (info.model_w)
                         ImGui::Text("Network %ux%u for a %ux%u frame, %u pass%s", info.model_w, info.model_h,
                                     info.frame_w, info.frame_h, info.max_passes, info.max_passes == 1 ? "" : "es");
+                    if (info.struct_size >= offsetof(MochizukiNrInfo, experimental) + sizeof info.experimental &&
+                        info.experimental)
+                        ImGui::TextUnformatted("Running the FP8 experimental network");
                     if (info.gpu_ms_median > 0)
                         ImGui::Text("Network GPU time %.2f ms median, %.2f ms p95", info.gpu_ms_median,
                                     info.gpu_ms_p95);

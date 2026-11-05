@@ -833,8 +833,10 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             _fgLongestGapMs = now - last;
         _fgOutputPresents++;
     }
-    if (!_dx10Target && AmdPresentExperimental::IsTarget() && Config::Instance()->DlssNrEnabled.value_or_default() &&
-        !State::Instance().currentFeature && !fgPresents &&
+    // mochizuki's Present placement: on the finished picture of a game whose upscaler runs too.
+    const bool mochizukiPresent = DlssNr::Backend::MochizukiPlacementNow() == DlssNr::Backend::MochizukiPlace::Present;
+    if (!_dx10Target && (mochizukiPresent || (AmdPresentExperimental::IsTarget() && !State::Instance().currentFeature)) &&
+        Config::Instance()->DlssNrEnabled.value_or_default() && !fgPresents &&
         State::Instance().swapchainInteropApi != SwapchainInteropApi::Dx9wDx12 &&
         !(State::Instance().activeFgOutput == FGOutput::XeFG && State::Instance().currentFGSwapchain == pSwapChain &&
           !FGHooks::IsDx12InteropPresentSC(pSwapChain)) &&
@@ -994,6 +996,23 @@ void MenuOverlayDx::FinalImageFrameGen(IDXGISwapChain* fgSwapChain)
     auto& state = State::Instance();
     const auto& config = *Config::Instance();
     auto fg = state.currentFG;
+
+    // mochizuki's Present placement with frame generation: NR on the game's frame, before frame generation reads it.
+    // Frame generation keeps its own inputs from the upscaler.
+    if (DlssNr::Backend::MochizukiPlacementNow() == DlssNr::Backend::MochizukiPlace::Present &&
+        (state.currentFeature || !AmdPresentExperimental::IsTarget()))
+    {
+        DXGI_SWAP_CHAIN_DESC placed {};
+        fgSwapChain->GetDesc(&placed);
+        if (config.DlssNrEnabled.value_or_default() && fg != nullptr && fg->GetCommandQueue() != nullptr &&
+            !(placed.OutputWindow && IsIconic(placed.OutputWindow)))
+        {
+            auto settings = DlssNr::AmdBridge::SettingsFromConfig(config, config.AmdNrScale.value_or_default());
+            settings.spinDraw = 0;
+            AmdPresentExperimental::Render(fgSwapChain, fg->GetCommandQueue(), Util::DllPath().parent_path(), settings);
+        }
+        return;
+    }
 
     // The game's queue: XeFG runs its interpolation there too, so NR, the guides and XeFG are ordered
     // by the queue itself.

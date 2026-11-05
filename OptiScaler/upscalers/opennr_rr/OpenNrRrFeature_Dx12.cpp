@@ -184,6 +184,8 @@ uint32_t EditFromConfig(std::string* why)
         *why = "OpenNrRrRuntime.dll is too old for it (ABI 1)";
     else if (DlssNr::Backend::ActiveKindFromConfig() != DlssNr::Backend::Kind::Mochizuki)
         *why = "needs NrBackend=mochizuki";
+    else if (DlssNr::Backend::MochizukiPlacementNow() != DlssNr::Backend::MochizukiPlace::BeforeSr)
+        *why = "MochizukiPlacement runs NR elsewhere";
     else if (!cfg.DlssNrEnabled.value_or_default())
         *why = "NR is off";
     else if (DlssNr::Submission::g_rawExecuteCommandLists == nullptr)

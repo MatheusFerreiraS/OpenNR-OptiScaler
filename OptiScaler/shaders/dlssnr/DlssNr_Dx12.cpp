@@ -3727,12 +3727,18 @@ void EvaluateAtSeam(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* par
         // if both reached the backend, the size change between them would reset its settling check
         // on every call and neither would run. The seam not chosen is declined here.
         //
-        // lmxxf and mochizuki run before Super Resolution only (their backend refuses the seam after
-        // it), so for them the key is ignored: a value left over from danielblnc would otherwise send
-        // every frame to the seam they refuse, and NR would stay off.
+        // lmxxf runs before Super Resolution only (its backend refuses the seam after it) and mochizuki where
+        // MochizukiPlacement says, so for them the key is ignored: a value left over from danielblnc would otherwise
+        // send every frame to the seam they refuse, and NR would stay off.
         const auto kind = DlssNr::Backend::ActiveKindFromConfig();
-        const bool beforeSrOnly = kind == DlssNr::Backend::Kind::Lmxxf || kind == DlssNr::Backend::Kind::Mochizuki;
-        const bool placedAfter = cfg.DlssNrApplyAfterRR.value_or_default() && !beforeSrOnly;
+        const auto mochizukiPlace = DlssNr::Backend::MochizukiPlacementNow();
+        // At Present neither seam is taken: MenuOverlayDx runs it on the finished picture.
+        if (mochizukiPlace == DlssNr::Backend::MochizukiPlace::Present)
+            return;
+        const bool mochizukiAfter = mochizukiPlace == DlssNr::Backend::MochizukiPlace::AfterSr;
+        const bool beforeSrOnly =
+            kind == DlssNr::Backend::Kind::Lmxxf || (kind == DlssNr::Backend::Kind::Mochizuki && !mochizukiAfter);
+        const bool placedAfter = mochizukiAfter || (cfg.DlssNrApplyAfterRR.value_or_default() && !beforeSrOnly);
 
         if (postPlacement != placedAfter)
         {

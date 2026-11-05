@@ -20,6 +20,7 @@
 #include <low_latency/input/input_common.h>
 #include <menu/menu_overlay_dx.h>
 #include <dlssnr/amd/AmdPreSr.h>
+#include <dlssnr/backend/Selector.h>
 
 #include <d3d12.h>
 #include <detours/detours.h>
@@ -1257,7 +1258,8 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     }
 
     // Final-image NR on the game's frame and XeFG's inputs, before anything below reads FG state
-    if (willPresent && config->DlssNrPresent.value_or_default())
+    if (willPresent && (config->DlssNrPresent.value_or_default() ||
+                        DlssNr::Backend::MochizukiPlacementNow() == DlssNr::Backend::MochizukiPlace::Present))
         MenuOverlayDx::FinalImageFrameGen(This);
 
     IFGFeature* fg = state.currentFG;

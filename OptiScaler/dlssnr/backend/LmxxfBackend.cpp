@@ -102,8 +102,11 @@ MochizukiFrameSettings MochizukiFrame(const Config& cfg)
     const bool int4 = cfg.MochizukiInt4.value_or_default() && cfg.MochizukiAco.value_or_default();
     // int4 mixed is made from the 310.8 model only.
     const bool original = int4 || cfg.MochizukiOriginalModel.value_or_default();
+    // The new model's faster variant, likewise ACO only; the runtime checks the card and the files.
+    const bool experimental = !original && cfg.MochizukiExperimental.value_or_default() && cfg.MochizukiAco.value_or_default();
     // Cascade detail, anti-halo and the pass 3 estimate do nothing in the RenoDX stage; they go as before.
     s.flags = (int4 ? LMXXF_NR_FRAME_FLAG_INT4 : 0) | (original ? LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL : 0) |
+              (experimental ? LMXXF_NR_FRAME_FLAG_EXPERIMENTAL : 0) |
               (cfg.MochizukiCascadeDetail.value_or_default() ? LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL : 0) |
               (cfg.MochizukiAntiHalo.value_or_default() ? LMXXF_NR_FRAME_FLAG_ANTI_HALO : 0) |
               (cfg.MochizukiPassEstimate.value_or_default() ? LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE : 0);
@@ -888,7 +891,7 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
     };
     if (!cmd || !frame.colour)
         return declineFrame("lmxxf: Record missing cmd/colour");
-    if (frame.afterUpscale)
+    if (frame.afterUpscale && Lmxxf())
         return declineFrame("lmxxf: runs before Super Resolution only; set ApplyAfterRR=false (NO NR)");
     if (previousPending)
     {

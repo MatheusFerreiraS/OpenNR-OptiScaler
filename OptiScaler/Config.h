@@ -497,6 +497,14 @@ class Config
     // The 310.8 model instead of 310.9's new one, which runs when dlssnr-amd\dlssnr-small.bin is there; int4 mixed
     // implies it. A change rebuilds the network (LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL).
     CustomOptional<bool> MochizukiOriginalModel { false };
+    // With ACO on an RX 9000, on the new model: upstream's CC_SMALL_FP8_EXPERIMENTAL, that model made faster (ReLU, fixed
+    // attention on three decoder layers, its changed weights fitted). The picture differs somewhat. A change rebuilds the
+    // network like int4 mixed (LMXXF_NR_FRAME_FLAG_EXPERIMENTAL).
+    CustomOptional<bool> MochizukiExperimental { false };
+    // Where mochizuki runs in a native D3D12 game with an upscaler, as upstream's Placement: before (the upscaler's
+    // input), after (its output, or Ray Reconstruction's) or present (the finished picture on the back buffer). Anything
+    // else is before. Taken at the game's start. See Backend::MochizukiPlacementNow.
+    CustomOptional<std::string> MochizukiPlacement { "before" };
     // No effect while the network runs in the RenoDX stage, which stacks its own passes (RenoPasses) and resolves
     // each itself; kept, out of the menu and the INI, for passes outside it. With two or three passes: the later ones
     // add only detail (LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL); the result is held inside the first pass's local

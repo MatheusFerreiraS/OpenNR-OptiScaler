@@ -251,6 +251,12 @@ MochizukiInt4=false
 ; the default when it is there). int4 mixed always runs on the 310.8 model. ApplyModel=false runs the network
 ; at full cost but shows the original frame.
 MochizukiOriginalModel=false
+; Experimental: with ACO on an RX 9000, upstream's CC_SMALL_FP8_EXPERIMENTAL, the new model made faster, the picture
+; somewhat different; off with OriginalModel or Int4. Its weights are made once from dlssnr-small.bin at its first use.
+MochizukiExperimental=false
+; Placement in a native D3D12 game with an upscaler: before (its input), after (its output, at display resolution) or
+; present (the finished picture, HUD included, on optical flow, SDR only). Taken when the game starts.
+MochizukiPlacement=before
 MochizukiApplyModel=true
 ; mochizuki dynamic resolution: exact rebuilds the network for every render resolution (a second or
 ; two without NR each time); auto keeps one network, built for the largest resolution seen, once the

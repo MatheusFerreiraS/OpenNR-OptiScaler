@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "Selector.h"
 #include <Config.h>
+#include <State.h>
 #include <Util.h>
 #include <filesystem>
 
@@ -54,5 +55,22 @@ bool PresentRuntimeSupported()
 {
     const auto kind = ActiveKindFromConfig();
     return kind == Kind::Daniel || kind == Kind::Mochizuki;
+}
+
+MochizukiPlace MochizukiPlacementNow()
+{
+    static const MochizukiPlace asked = []
+    {
+        const auto key = Config::Instance()->MochizukiPlacement.value_or_default();
+        return _stricmp(key.c_str(), "after") == 0     ? MochizukiPlace::AfterSr
+               : _stricmp(key.c_str(), "present") == 0 ? MochizukiPlace::Present
+                                                       : MochizukiPlace::BeforeSr;
+    }();
+    if (asked == MochizukiPlace::BeforeSr || ActiveKindFromConfig() != Kind::Mochizuki)
+        return MochizukiPlace::BeforeSr;
+    const auto& state = State::Instance();
+    // Not selected: no present yet, or one that came through frame generation's hook, which only D3D12 games have.
+    const bool d3d12 = state.swapchainApi == API::DX12 || state.swapchainApi == API::NotSelected;
+    return d3d12 && state.swapchainInteropApi == SwapchainInteropApi::None ? asked : MochizukiPlace::BeforeSr;
 }
 } // namespace DlssNr::Backend
