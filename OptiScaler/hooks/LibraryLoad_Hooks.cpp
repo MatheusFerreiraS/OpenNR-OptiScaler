@@ -38,6 +38,25 @@
 
 // #define LOG_LIB_OPERATIONS
 
+// The first frame of a loader call outside the loader and OptiScaler: the hook's own caller is only KernelBase.
+static std::string LoadCallerName()
+{
+    const HMODULE skipped[] = { dllModule, GetModuleHandleW(L"ntdll.dll"), GetModuleHandleW(L"KernelBase.dll"),
+                                GetModuleHandleW(L"kernel32.dll") };
+    void* frames[32] {};
+    const auto count = RtlCaptureStackBackTrace(0, 32, frames, nullptr);
+
+    for (USHORT i = 0; i < count; i++)
+    {
+        const auto module = Util::GetCallerModule(frames[i]);
+
+        if (module != nullptr && std::ranges::find(skipped, module) == std::end(skipped))
+            return Util::WhoIsTheCaller(frames[i]);
+    }
+
+    return "unknown";
+}
+
 HMODULE LibraryLoadHooks::LoadLibraryCheckA(std::string libName, LPCSTR lpLibFullPath)
 {
     auto fullPath = std::string(lpLibFullPath);
@@ -170,7 +189,13 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
     // NvApi64.dll
     if (CheckDllNameW(&libName, &nvapiNamesW))
     {
-        LOG_INFO("{} call!", libNameA);
+        // Once is enough in the log: with no nvapi to find, GTA V Enhanced asked for this dll 10,000 times a second, and
+        // 46 MB of this line pushed the start of the log out of the report.
+        static std::atomic_bool logged = false;
+        if (!logged.exchange(true))
+            LOG_INFO("{} call from {}!", libNameA, LoadCallerName());
+        else
+            LOG_DEBUG("{} call!", libNameA);
 
         return LibraryLoadHooks::LoadNvApi();
     }
@@ -865,6 +890,23 @@ HMODULE LibraryLoadHooks::LoadNvApi()
         LOG_WARN("Using fakenvapi on Nvidia as the main nvapi");
         nvapi = dllModule;
         fakenvapi::setUsingAsMainNvapi(true);
+    }
+
+    // External frame generation turns fakenvapi off, and off NVIDIA that leaves no nvapi at all. Most games take the
+    // answer. One that keeps asking gets fakenvapi, as it does without External, instead of spinning here.
+    if (nvapi == nullptr && State::Instance().externalFrameGeneration)
+    {
+        static std::atomic_uint failedLoads = 0;
+
+        if (++failedLoads >= 1024)
+        {
+            static std::atomic_bool warned = false;
+            if (!warned.exchange(true))
+                LOG_WARN("External FG: no nvapi64.dll here and the game keeps asking, using fakenvapi");
+
+            nvapi = dllModule;
+            fakenvapi::setUsingAsMainNvapi(true);
+        }
     }
 
     if (nvapi != nullptr)
