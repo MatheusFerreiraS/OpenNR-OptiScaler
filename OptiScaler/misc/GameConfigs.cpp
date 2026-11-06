@@ -790,6 +790,13 @@ const std::vector<GameConfig> gameConfigs = {
         .quirks = { SkipD3D11FeatureLevelElevation },
     },
 
+    // Batman: Arkham Knight
+    // Given a feature level 11_1 device for its 11_0 request, it stops at "This version of DirectX is not supported"
+    {
+        .exes = { "batmanak.exe" },
+        .quirks = { SkipD3D11FeatureLevelElevation },
+    },
+
     // Stellar Blade
     {
         .ueExes = { "sb" },
