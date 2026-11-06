@@ -242,6 +242,10 @@ bool LoadFirstOf(ImFontAtlas* atlas, ImFont* font, const std::vector<FontFile>& 
         if (!FontFileExists(path))
             continue;
 
+        // A baked size holds loader data per source of the font: one made before this source would overrun.
+        ImFontAtlasFontDiscardBakes(atlas, font, 0);
+        font->LastBaked = nullptr;
+
         ImFontConfig config;
         config.MergeMode = true;
         config.DstFont = font;
