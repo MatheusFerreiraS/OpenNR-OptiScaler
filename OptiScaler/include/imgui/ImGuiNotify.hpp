@@ -21,6 +21,7 @@
 
 #include "imgui.h"
 #include "imgui_internal.h"
+#include <menu/i18n/MenuLocale.h>
 
 
 
@@ -120,17 +121,17 @@ private:
 
     inline void setTitle(const char* format, va_list args)
     {
-        vsnprintf(this->title, sizeof(this->title), format, args);
+        vsnprintf(this->title, sizeof(this->title), MenuLocale::Text(format), args);
     }
 
     inline void setContent(const char* format, va_list args)
     {
-        vsnprintf(this->content, sizeof(this->content), format, args);
+        vsnprintf(this->content, sizeof(this->content), MenuLocale::Text(format), args);
     }
 
     inline void setButtonLabel(const char* format, va_list args)
     {
-        vsnprintf(this->buttonLabel, sizeof(this->buttonLabel), format, args);
+        vsnprintf(this->buttonLabel, sizeof(this->buttonLabel), MenuLocale::Text(format), args);
     }
 
     inline ImVec4 toneMapColor(const ImVec4& color)
@@ -238,13 +239,13 @@ public:
             case ImGuiToastType::None:
                 return nullptr;
             case ImGuiToastType::Success:
-                return "Success";
+                return MenuLocale::Text("Success");
             case ImGuiToastType::Warning:
-                return "Warning";
+                return MenuLocale::Text("Warning");
             case ImGuiToastType::Error:
-                return "Error";
+                return MenuLocale::Text("Error");
             case ImGuiToastType::Info:
-                return "Info";
+                return MenuLocale::Text("Info");
             default:
                 return nullptr;
             }

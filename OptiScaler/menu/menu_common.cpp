@@ -63,6 +63,8 @@
 #include <hooks/Vulkan_Hooks.h>
 #include <low_latency/input/input_xell.h>
 
+#include "i18n/MenuLocaleImGui.h"
+
 enum class UiTargetMode
 {
     SDR,
@@ -306,6 +308,7 @@ struct FlagDefinition
 
 inline std::string StrFmt(const char* fmt, ...)
 {
+    fmt = MenuLocale::Format(fmt);
     va_list args;
     va_start(args, fmt);
     int len = std::vsnprintf(nullptr, 0, fmt, args);
@@ -595,7 +598,7 @@ void MenuCommon::ShowTooltip(const char* tip)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
     {
         ImGui::BeginTooltip();
-        ImGui::Text(tip);
+        ImGui::TextUnformatted(tip);
         ImGui::EndTooltip();
     }
 }
@@ -612,8 +615,9 @@ bool MenuCommon::ConfigCheckbox(const char* label, TOption& option, const char* 
     if (tip != nullptr)
     {
         if (needsRestart)
-            ShowTooltip((std::string(tip) + "\n\nAfter changing this option, please Save Settings.\n"
-                                            "It will be applied on next launch.")
+            ShowTooltip((std::string(MenuLocale::Text(tip)) +
+                         MenuLocale::Text("\n\nAfter changing this option, please Save Settings.\n"
+                                          "It will be applied on next launch."))
                             .c_str());
         else
             ShowTooltip(tip);
@@ -2363,6 +2367,7 @@ void MenuCommon::BeginMenuFrameIfNeeded(RenderMenuContext& ctx)
         OptiInput::FeedImGui(_isVisible);
 
         MenuHdrCheck(io);
+        MenuLocale::ApplyPending(io.Fonts);
         ImGui::NewFrame();
 
         newFrame = true;
@@ -10659,6 +10664,58 @@ void MenuCommon::RenderKeybindSettings(RenderMenuContext& ctx)
     }
 }
 
+static void RenderLanguageCombo(Config* config)
+{
+    // A name stays in English until the font for its script is in, the atlas would draw "?" otherwise.
+    const auto drawable = [](const MenuLocale::LanguageInfo& language)
+    {
+        ImFont* font = ImGui::GetFont();
+        for (const char* at = language.native; *at != 0;)
+        {
+            unsigned int c = 0;
+            at += ImTextCharFromUtf8(&c, at, nullptr);
+            if (!font->IsGlyphInFont((ImWchar) c))
+                return language.english;
+        }
+        return language.native;
+    };
+
+    const std::string setting = config->MenuLanguage.value_or("auto");
+    const auto choose = [&](const char* value)
+    {
+        config->MenuLanguage = std::string(value);
+        MenuLocale::Request(value);
+    };
+
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14.0f);
+
+    std::string preview = "Auto";
+    for (int i = 0; i < MenuLocale::LanguageCount(); i++)
+    {
+        if (setting == MenuLocale::Language(i).code)
+            preview = drawable(MenuLocale::Language(i));
+    }
+
+    if (ImGui::BeginCombo("Language", preview.c_str()))
+    {
+        if (ImGui::Selectable("Auto##language", setting == "auto"))
+            choose("auto");
+
+        for (int i = 0; i < MenuLocale::LanguageCount(); i++)
+        {
+            const MenuLocale::LanguageInfo& language = MenuLocale::Language(i);
+            const std::string id = std::string(drawable(language)) + "##" + language.code;
+            if (ImGui::Selectable(id.c_str(), setting == language.code))
+                choose(language.code);
+        }
+
+        ImGui::EndCombo();
+    }
+
+    if (MenuLocale::FontMissing())
+        ImGui::TextDisabled("No font for this language on this system, showing English");
+}
+
 void MenuCommon::RenderMenuScaleSettings(RenderMenuContext& ctx)
 {
     auto config = ctx.config;
@@ -10695,6 +10752,9 @@ void MenuCommon::RenderMenuScaleSettings(RenderMenuContext& ctx)
     }
 
     ImGui::PopItemWidth();
+
+    RenderLanguageCombo(config);
+    ShowTooltip("Auto follows the language of Windows. Translations are machine-made");
 }
 
 static const char* ApiName(API api)
@@ -11068,7 +11128,7 @@ void MenuCommon::RenderMainMenuStatusPills(RenderMenuContext& ctx)
         list->AddRect(at, end, ImGui::GetColorU32(ImGuiCol_Border), height * 0.5f);
         list->AddCircleFilled({ at.x + pad + dot, at.y + height * 0.5f }, dot, pill.on ? onDot : offDot);
         list->AddText({ at.x + pad + dot * 2.0f + pad * 0.75f, at.y + (height - text.y) * 0.5f },
-                      ImGui::GetColorU32(pill.on ? ImGuiCol_Text : ImGuiCol_TextDisabled), pill.label);
+                      ImGui::GetColorU32(pill.on ? ImGuiCol_Text : ImGuiCol_TextDisabled), MenuLocale::Text(pill.label));
         ImGui::Dummy({ width, height });
     };
 
@@ -12584,6 +12644,8 @@ void MenuCommon::Init(HWND InHwnd, bool isUWP)
                                                                          fontSize, &fontConfig);
         }
     }
+
+    MenuLocale::Request(Config::Instance()->MenuLanguage.value_or("auto").c_str());
 
     if (!Config::Instance()->OverlayMenu.value_or_default())
     {

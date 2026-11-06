@@ -28,6 +28,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include <menu/i18n/MenuLocaleImGui.h>
+
 namespace DlssNr
 {
 

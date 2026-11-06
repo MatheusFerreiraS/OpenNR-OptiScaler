@@ -989,6 +989,8 @@ class Config
     CustomOptional<bool> DisableSplash { false };
     CustomOptional<float> FontSize { 14.0f };
     CustomOptional<std::wstring, NoDefault> TTFFontPath;
+    // A language code of the menu's tables. No value means the language of Windows
+    CustomOptional<std::string, NoDefault> MenuLanguage;
     CustomOptional<int> FGShortcutKey { VK_END };
     // Saves the presented frame without OptiScaler's overlays. ScreenshotPath empty means
     // <Pictures>\OptiScaler\<exe name>. With the menu open, ScreenshotWithMenu adds a copy with it.

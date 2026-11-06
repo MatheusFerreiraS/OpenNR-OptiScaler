@@ -916,6 +916,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             FontSize.set_from_config(readFloat("Menu", "FontSize"));
             TTFFontPath.set_from_config(readWString("Menu", "TTFFontPath"));
+            MenuLanguage.set_from_config(readString("Menu", "Language"));
 
             FGShortcutKey.set_from_config(readShortcut("Menu", "FGShortcutKey"));
             ScreenshotKey.set_from_config(readShortcut("Menu", "ScreenshotKey"));
@@ -2249,6 +2250,7 @@ bool Config::SaveIni()
         ini.SetValue("Menu", "FpsOverlayAlpha", GetFloatValue(Instance()->FpsOverlayAlpha.value_for_config()).c_str());
         ini.SetValue("Menu", "FpsScale", GetFloatValue(Instance()->FpsScale.value_for_config()).c_str());
         ini.SetValue("Menu", "FontSize", GetFloatValue(Instance()->FontSize.value_for_config()).c_str());
+        ini.SetValue("Menu", "Language", Instance()->MenuLanguage.value_for_config_or("auto").c_str());
         ini.SetValue("Menu", "TTFFontPath",
                      wstring_to_string(Instance()->TTFFontPath.value_for_config_or(L"auto")).c_str());
 
