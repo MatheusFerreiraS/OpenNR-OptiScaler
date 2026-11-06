@@ -109,8 +109,15 @@ def literals(src):
         prev = value
 
 
+# Literals that match on status text or that the code draws unchanged.
+NOT_KEYS = {"ON {}x", "OpenNR v", "RDNA3 network off: ", "RDNA2 network off: ", " (NO NR)", " (Game DLSS-FG x{})", "Not on the ",
+            "Pass ", "NR ", ", ACO", "es", "aco", "dlssnr-amd", "libxess", "daniel", "danielblnc", "lmxxf", "mochizuki"}
+
+
 def looks_technical(key):
     """A key name, an enum, a file, a bare format: the same in every language, so no key."""
+    if key in NOT_KEYS:
+        return True
     key = key.strip()
     if not re.search(r"[A-Za-z]{2}", key):
         return True

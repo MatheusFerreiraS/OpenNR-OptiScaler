@@ -2809,10 +2809,11 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             auto formatFg = [&](std::string_view name, int maxFakeFrames)
             {
                 if (fakeFramesCount > maxFakeFrames)
-                    return std::format(" ({} Doesn't support more than {}x)", name, maxFakeFrames);
+                    return std::vformat(MenuLocale::Text(" ({} Doesn't support more than {}x)"),
+                                        std::make_format_args(name, maxFakeFrames));
 
                 else if (fakeFramesCount == 0)
-                    return std::format(" ({} off)", name);
+                    return std::vformat(MenuLocale::Text(" ({} off)"), std::make_format_args(name));
 
                 return std::format(" ({} x{})", name, fakeFramesCount + 1);
             };
@@ -2837,7 +2838,7 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
             else if (state.GameDlssgBlocksOwnFG())
             {
                 fgText = state.GameDlssgGenerating() ? std::format(" (Game DLSS-FG x{})", state.dlssgLastSetFrames + 1)
-                                                     : std::string(" (Game DLSS-FG off)");
+                                                     : std::string(MenuLocale::Text(" (Game DLSS-FG off)"));
             }
             else if (state.activeFgOutput == FGOutput::DLSSG && fg)
             {
@@ -3261,7 +3262,7 @@ void MenuCommon::RenderUpscalerStateMessage(RenderMenuContext& ctx)
             if (state.libxessExists || XeSSProxy::Module() != nullptr)
                 upscalers.push_back("XeSS");
 
-            auto joined = upscalers | std::views::join_with(std::string { " or " });
+            auto joined = upscalers | std::views::join_with(std::string { MenuLocale::Text(" or ") });
 
             std::string joinedUpscalers(joined.begin(), joined.end());
 

@@ -1113,10 +1113,11 @@ void RenderMenu(Config* config, float menuResScale)
                 if (ImGui::Checkbox("ACO machine code (restart)", &aco))
                     config->MochizukiAco = aco;
                 ImGui::EndDisabled();
-                const std::string acoOff = std::string("Not on the ") + card +
-                                           ": ACO's machine code is made for the RX 9000 only, so the\ndriver compiles "
-                                           "the " + card + " network.";
-                const std::string int4Off = std::string("Not on the ") + card + ": there is no int4 mixed network for it.";
+                const std::string acoOff = MenuLocale::Printf(
+                    "Not on the %s: ACO's machine code is made for the RX 9000 only, so the\ndriver compiles "
+                    "the %s network.", card, card);
+                const std::string int4Off =
+                    MenuLocale::Printf("Not on the %s: there is no int4 mixed network for it.", card);
                 HelpMarker(rx6000 ? "On the RX 6000: runs ACO's gfx10.3 machine code when dlssnr-amd\\aco-gfx103x is"
                                     "\ninstalled (experimental); without it, or with this off, the driver compiles the"
                                     "\nnetwork. Save Settings and start the game again to apply it."
@@ -1148,8 +1149,8 @@ void RenderMenu(Config* config, float menuResScale)
                 if (ImGui::Checkbox("FP8 experimental network (new model only)", &fp8Experimental))
                     config->MochizukiExperimental = fp8Experimental;
                 ImGui::EndDisabled();
-                const std::string fp8Off = std::string("Not on the ") + card + ": it runs FP8 matrices as ACO's machine code,"
-                                           "\nwhich only an RX 9000 has.";
+                const std::string fp8Off = MenuLocale::Printf("Not on the %s: it runs FP8 matrices as ACO's machine code,"
+                                                              "\nwhich only an RX 9000 has.", card);
                 HelpMarker(fp16Net     ? fp8Off.c_str()
                            : !fp8Files ? "Needs dlssnr-amd\\aco\\experimental and the new model, dlssnr-amd\\dlssnr-small.bin."
                            : !aco      ? "Needs ACO machine code, which is off."
@@ -1997,7 +1998,7 @@ void RenderMenu(Config* config, float menuResScale)
 
                     for (int pass = 0; pass < liveCount; ++pass)
                     {
-                        const std::string label = "Pass " + std::to_string(pass + 1);
+                        const std::string label = MenuLocale::Printf("Pass %d##pass%d", pass + 1, pass + 1);
 
                         if (!ImGui::TreeNode(label.c_str()))
                             continue;

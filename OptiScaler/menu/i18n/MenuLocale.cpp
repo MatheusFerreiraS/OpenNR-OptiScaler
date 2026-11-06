@@ -10,6 +10,8 @@
 #include <ankerl/unordered_dense.h>
 
 #include <atomic>
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <iterator>
@@ -424,6 +426,23 @@ const char* Text(const char* english)
 
     const char* text = view.empty() ? nullptr : TextOrNull(view);
     return text != nullptr ? text : english;
+}
+
+std::string Printf(const char* fmt, ...)
+{
+    fmt = Format(fmt);
+    va_list args;
+    va_start(args, fmt);
+    const int length = vsnprintf(nullptr, 0, fmt, args);
+    va_end(args);
+    if (length <= 0)
+        return {};
+
+    std::string out((size_t) length, 0);
+    va_start(args, fmt);
+    vsnprintf(out.data(), (size_t) length + 1, fmt, args);
+    va_end(args);
+    return out;
 }
 
 const char* Format(const char* english) { return strstr(english, "##") != nullptr ? Label(english) : Text(english); }

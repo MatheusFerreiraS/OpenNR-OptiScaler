@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <string_view>
 
 struct ImFontAtlas;
@@ -39,6 +40,9 @@ const char* Text(const char* english);
 
 // For a printf format that may build a widget label: a ##id in it stays out of the translation.
 const char* Format(const char* english);
+
+// printf with the translation of fmt, for text the code builds.
+std::string Printf(const char* fmt, ...);
 
 // As Text for a slice; nullptr when there is no translation.
 const char* TextOrNull(std::string_view english);
