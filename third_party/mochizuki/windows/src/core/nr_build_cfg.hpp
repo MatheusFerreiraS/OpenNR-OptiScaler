@@ -29,7 +29,8 @@ struct BuildCfgScope {
 // next weights (NR_HS_FOLD wide layers, NR_HS_FOLD32 C=32, NR_HS_FOLDPP the pre and post blocks), the blocks that
 // take the fold (NR_HS_FOLD_BLOCKS) and the blocks whose C=32 layers run the hard-swish pipeline (NR_HS_ROUTE).
 inline void int4_settings(const std::string& text, std::map<std::string, std::string>& cfg) {
-    static const std::set<std::string> keys = {"NR_HS_FOLD", "NR_HS_FOLD32", "NR_HS_FOLDPP", "NR_HS_FOLD_BLOCKS", "NR_HS_ROUTE"};
+    static const std::set<std::string> keys = {"NR_HS_FOLD", "NR_HS_FOLD32", "NR_HS_FOLDPP", "NR_HS_FOLD_BLOCKS", "NR_HS_ROUTE",
+                                               "NR_SWI4_ROT"};
     std::istringstream lines(text);
     for (std::string l; std::getline(lines, l);) {
         while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();

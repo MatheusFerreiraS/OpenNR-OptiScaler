@@ -1,34 +1,33 @@
 #pragma once
-// [Network] Model = CC_SILVER_AARDWOLD_INT4_MIXED (any other Model: off), else the old [Int4Mixed] in dlssnr-amd.ini: Enabled (the int4 mixed network at start), Hotkey (switch int4 mixed / the default
-// network in game), KeepBoth (keep the other network resident after a switch) and Sound (the switch cue).
-// enabled -1: no file, no section or no readable value - which counts as
-// on: these are read only where int4 mixed was installed, and choosing it at install means wanting it on. hotkey
-// empty: none.
+// [Network] OptimizedLayers in dlssnr-amd.ini: CC_SILVER_AARDWOLD_OPTIMIZED's level, 0 Quality (none of its layers in
+// int4), 1 Balanced, 2 Performance, 3 Ultra Performance (the default; nr_ini_network.hpp); the words quality / balanced /
+// performance / ultra performance (or ultraperformance, ultra) too.
+// No other network has levels. Read by the runtime when its caller does not say (RuntimeConfig::layers), and by the
+// config parser. -1: no file, no such key or no readable value - which counts as Ultra Performance.
 #include <cctype>
 #include <cstdio>
 #include <string>
 #include "nr_path_u8.hpp"
-#include "nr_ini_network.hpp"
 
 namespace nr {
-struct Int4Ini {
-    int enabled = -1;
-    std::string hotkey;
-    bool keep_both = false;   // KeepBoth: both networks stay resident after a switch
-    bool sound = true;        // Sound: the switch cue
-};
-inline Int4Ini ini_int4(const std::string& path) {
-    Int4Ini r;
+inline int optimized_layers_value(std::string v) {
+    for (auto& c : v) c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (v == "0" || v == "quality") return 0;
+    if (v == "1" || v == "balanced") return 1;
+    if (v == "2" || v == "performance") return 2;
+    if (v == "3" || v == "ultra performance" || v == "ultraperformance" || v == "ultra") return 3;
+    return -1;
+}
+inline int ini_optimized_layers(const std::string& path) {
     FILE* f = nr::u8::fopen(path.c_str(), "r");
-    if (!f) return r;
+    if (!f) return -1;
     auto trim = [](std::string s) {
         while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
         size_t i = 0; while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
         return s.substr(i);
     };
     auto lower = [](std::string s) { for (auto& c : s) c = char(std::tolower(static_cast<unsigned char>(c))); return s; };
-    int model = -1;
-    std::string network_hotkey; bool have_network_hotkey = false, network_sound = true;
+    int r = -1;
     std::string section; char line[512];
     while (std::fgets(line, sizeof line, f)) {
         std::string t = line;
@@ -38,28 +37,10 @@ inline Int4Ini ini_int4(const std::string& path) {
         if (t.empty()) continue;
         if (t.front() == '[') { const auto e = t.find(']'); section = lower(trim(t.substr(1, e == std::string::npos ? std::string::npos : e - 1))); continue; }
         const auto eq = t.find('=');
-        if (eq == std::string::npos) continue;
-        const std::string key = lower(trim(t.substr(0, eq))), raw = trim(t.substr(eq + 1)), val = lower(raw);
-        // [Network] Model names the network (CC_SILVER_AARDWOLD_INT4_MIXED: int4 mixed); it wins over the old section.
-        if (section == "network") {
-            if (key == "model") {
-                const int n = network_choice(raw);
-                if (n >= 0) model = n == kSilverAardwoldInt4 ? 1 : 0;
-            } else if (key == "hotkey") network_hotkey = raw, have_network_hotkey = true;
-            else if (key == "sound") network_sound = !(val == "0" || val == "false" || val == "off" || val == "no");
-            continue;
-        }
-        if (section != "int4mixed") continue;
-        if (key == "enabled") {
-            if (val == "1" || val == "true" || val == "on" || val == "yes") r.enabled = 1;
-            else if (val == "0" || val == "false" || val == "off" || val == "no") r.enabled = 0;
-        } else if (key == "hotkey") r.hotkey = raw;
-        else if (key == "keepboth") r.keep_both = val == "1" || val == "true" || val == "on" || val == "yes";
-        else if (key == "sound") r.sound = !(val == "0" || val == "false" || val == "off" || val == "no");
+        if (eq == std::string::npos || section != "network" || lower(trim(t.substr(0, eq))) != "optimizedlayers") continue;
+        if (const int v = optimized_layers_value(trim(t.substr(eq + 1))); v >= 0) r = v;
     }
     std::fclose(f);
-    if (model >= 0) { r.enabled = model; r.sound = network_sound; }
-    if (have_network_hotkey) r.hotkey = network_hotkey;
     return r;
 }
 }  // namespace nr

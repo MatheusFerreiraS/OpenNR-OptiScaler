@@ -13,7 +13,7 @@
 namespace nr::control {
 
 inline constexpr uint32_t kMagic = 0x4C4F5243u;   // "CROL"
-inline constexpr uint32_t kVersion = 16;
+inline constexpr uint32_t kVersion = 17;   // 17: six networks (CC_SILVER_AARDWOLD_OPTIMIZED's three levels)
 inline constexpr uint32_t kPanelLines = 10;
 inline constexpr uint32_t kMaxLayers = 8;
 // The engine-data line nr_engine_panel.hpp writes when the game gives no exposure and nothing covers it (its start;

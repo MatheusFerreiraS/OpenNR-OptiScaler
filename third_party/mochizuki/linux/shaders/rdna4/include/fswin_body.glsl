@@ -1,13 +1,14 @@
 // CC_SMALL_FP8_EXPERIMENTAL (pipelines-experimental.json): NR_FIXP, the window's probability matrix is one fixed
 // 64x64 e4m3 table a layer ([query][key], 16384 bytes after the bias; written by the host for fixed-attention.txt's
-// pipelines) read as the PV product's B fragments - no QK^T, no softmax, the Q/K projections dead. NR_VOMERGE, with
-// it: the attention is linear, so the V and output projections are one matrix (in the V rows of qkv.bin); the f32
-// context is added to the residual instead of the output projection.
+// pipelines) read as the PV product's B fragments - no QK^T, no softmax, the Q/K projections dead. NR_VOMERGE: with one
+// head, P (V Wo) = (P V) Wo whatever P is, so the V and output projections are one matrix (in the V rows of qkv.bin,
+// fitted at install with the weights); the f32 context is added to the residual instead of the output projection.
+// With NR_FIXP or with the layer's own softmax (CC_SILVER_AARDWOLD_OPTIMIZED's decoder layers).
 #ifndef NR_VOMERGE
 #define NR_VOMERGE 0
 #endif
-#if NR_VOMERGE && (NR_HWAVES || NR_CONTEXT_LDS || !defined(NR_FIXP) || NR_HEADS != 1)
-#error "NR_VOMERGE: one-wave one-head C=32 bodies with NR_FIXP only"
+#if NR_VOMERGE && (NR_HWAVES || NR_CONTEXT_LDS || NR_HEADS != 1)
+#error "NR_VOMERGE: one-wave one-head C=32 bodies only"
 #endif
 // The per-item body of fswin_t.comp, moved here unchanged so that the
 // persistent kernels can instantiate it once per live-tile mask (NR_EDGE_BODIES).
@@ -347,6 +348,16 @@
                 NR_LOAD_B(xf, lds_x, NR_LXB_ (uint(m) * uint(NR_CF) + k) * 256u, 16u);
                 float v_[8];
                 for (int j = 0; j < 8; ++j) v_[j] = float(xf[j]);
+#if NR_SWI4_ROT == 8
+                // H8 inside the lane (its 8 consecutive channels), unnormalised (+-1): the int4 weights carry the
+                // rotation and its 1/sqrt(8) (nr_graph i4_obtain), the quantisers the other 1/sqrt(8) - no cross-lane
+                // exchange, no multiply. Written out: ACO keeps the loop form rolled, and v_[] indexed by a counter
+                // becomes select chains (pairs in the loop's order: h = 1, 2, 4)
+#define NR_BF_(a, c) { const float t_ = v_[a]; v_[a] = t_ + v_[c]; v_[c] = t_ - v_[c]; }
+                NR_BF_(0, 1) NR_BF_(2, 3) NR_BF_(4, 5) NR_BF_(6, 7) NR_BF_(0, 2) NR_BF_(1, 3) NR_BF_(4, 6) NR_BF_(5, 7)
+                NR_BF_(0, 4) NR_BF_(1, 5) NR_BF_(2, 6) NR_BF_(3, 7)
+#undef NR_BF_
+#endif
                 u_[d] = nr_s4pack(v_, qix + k * 16u + 8u * hh);
             }
             const uint got = subgroupShuffleXor(hh == 0u ? u_[1] : u_[0], 16u);

@@ -104,6 +104,7 @@ bool frame_display_codec(const Settings& s, uint8_t hdr_mode, const codec::Sourc
 }
 
 bool frame_pedestal_removal(const Settings& s, uint8_t hdr_mode, const codec::SourceUnits& u) {
+    if (s.display_pedestal == 0u) return false;   // NRDisplayPedestal Off (the default): never, whatever the codec
     if (!frame_display_codec(s, hdr_mode, u)) return true;
     if (s.display_pedestal == 1u) return true;
     return u.absolute && u.unit_nits > 0.f;
@@ -244,7 +245,7 @@ V6Constants make_v6(const Settings& s, const Frame6& f, uint32_t w, uint32_t h, 
     c.chroma_clamp_stops = chroma;
     c.transfer_mode = s.transfer_mode;
     c.highlight_guard_stops = s.style_highlight_guard;
-    c.dark_gate_mode = s.display_pedestal;
+    c.dark_gate_mode = s.display_pedestal == 3u ? 0u : s.display_pedestal;   // the shaders' modes: 0 auto, 1 always, 2 smooth
     return c;
 }
 
@@ -1965,7 +1966,10 @@ uint32_t Stage::record(VkCommandBuffer cmd, const StageFrame& fr, const Network&
         static const bool cd_on = [] { const char* e = std::getenv("NR_RDX_CD"); return e && e[0] == '1'; }();
         // (tried 10-25: look_compose_decode is slower than the two programs - 1.10 / 1.43 ms against 0.70 + 0.37 at 4K,
         // the compose loses its occupancy - so it stays apart; NR_RDX_CD=1 runs the fused one)
-        const bool fuse_cd = sdr_inplace && cd_on && s.codec_mode != 0u && NW == W && NH == H && look::dispatched(ls, false);
+        // RunBlackLevelRestore: on every codec but Classic, unless NRSdrBlackRestore is Off (0, the default)
+        const bool sdr_restore = s.codec_mode != 0u && s.sdr_black_restore != 0u;
+        const float restore_mode = float(s.sdr_black_restore == 3u ? 0u : s.sdr_black_restore);   // the apply's: 0 auto, 1, 2
+        const bool fuse_cd = sdr_inplace && cd_on && sdr_restore && NW == W && NH == H && look::dispatched(ls, false);
         Impl::ComposeDecode cd;
         if (fuse_cd) {
             cd.out = store_in_place ? borrow->out : write.view;
@@ -2022,12 +2026,12 @@ uint32_t Stage::record(VkCommandBuffer cmd, const StageFrame& fr, const Network&
                 LegacyConstants a = c;
                 a.proxy_size[0] = a.neural_size[0] = NW; a.proxy_size[1] = a.neural_size[1] = NH;
                 a.padding[0] = s.sdr_black_restore == 1u ? 2.f : 0.061f;
-                a.padding[1] = float(s.sdr_black_restore);
+                a.padding[1] = restore_mode;
                 m.dispatch(cmd, Impl::kApplyL,
                            SB(Impl::kApplyL, {{0, ref_view}, {1, m.proxy.view}, {2, m.neural.view}, {3, ref_view},
                                               {4, out_view}, {5, m.block_mean.view}}),
                            &a, sizeof a, gx, gy);
-            } else if (s.codec_mode != 0u && route.shaped && split_unshaped) {
+            } else if (sdr_restore && route.shaped && split_unshaped) {
                 // the unshaped measure reads only the untouched frame and the network's answer, never the
                 // decode: the reduce first, on the frame as it is, then the decode stored in place, then the apply
                 LegacyConstants r = c;
@@ -2040,12 +2044,12 @@ uint32_t Stage::record(VkCommandBuffer cmd, const StageFrame& fr, const Network&
                            &c, sizeof c, gx, gy);
                 LegacyConstants a = r;
                 a.padding[0] = s.sdr_black_restore == 1u ? 2.f : 0.061f;
-                a.padding[1] = float(s.sdr_black_restore);
+                a.padding[1] = restore_mode;
                 m.dispatch(cmd, Impl::kApplyL,
                            SB(Impl::kApplyL, {{0, ref_view}, {1, m.proxy.view}, {2, m.neural.view}, {3, ref_view},
                                               {4, out_view}, {5, m.block_mean.view}}),
                            &a, sizeof a, gx, gy);
-            } else if (s.codec_mode != 0u) {
+            } else if (sdr_restore) {
                 LegacyConstants f = c;
                 f.padding[0] = route.shaped ? 1.f : 0.f;   // the reduce's measure: the unshaped answer's resolve
                 std::memcpy(&f.padding[2], &NW, 4);
@@ -2057,7 +2061,7 @@ uint32_t Stage::record(VkCommandBuffer cmd, const StageFrame& fr, const Network&
                 LegacyConstants a = c;
                 a.proxy_size[0] = a.neural_size[0] = NW; a.proxy_size[1] = a.neural_size[1] = NH;
                 a.padding[0] = s.sdr_black_restore == 1u ? 2.f : 0.061f;
-                a.padding[1] = float(s.sdr_black_restore);
+                a.padding[1] = restore_mode;
                 m.dispatch(cmd, Impl::kApplyL,
                            SB(Impl::kApplyL, {{0, ref_view}, {1, m.proxy.view}, {2, m.neural.view}, {3, ref_view},
                                               {4, out_view}, {5, m.block_mean.view}}),
@@ -2078,7 +2082,7 @@ uint32_t Stage::record(VkCommandBuffer cmd, const StageFrame& fr, const Network&
             // RunBlackLevelRestore (in RenoDX on D3D12 and on D3D11 through its D3D12 bridge; its Vulkan path runs the
             // legacy pair alone, no restore; kept here on every route): the reduce on the pass's codec set at the
             // network's extent, the unshaped one when the look shaped the answer, then the apply.
-            if (s.codec_mode != 0u) {
+            if (sdr_restore) {
                 c.proxy_size[0] = c.neural_size[0] = NW; c.proxy_size[1] = c.neural_size[1] = NH;
                 const std::map<uint32_t, VkImageView> set{{0, ref.view}, {1, m.proxy.view}, {2, m.neural.view},
                                                           {3, ref.view}, {4, write.view}, {5, m.block_mean.view}};
@@ -2086,7 +2090,7 @@ uint32_t Stage::record(VkCommandBuffer cmd, const StageFrame& fr, const Network&
                 m.dispatch(cmd, reduce, m.S(reduce, set), &c, sizeof c, (W + 31) / 32, (H + 31) / 32);
                 LegacyConstants a = c;
                 a.padding[0] = s.sdr_black_restore == 1u ? 2.f : 0.061f;
-                a.padding[1] = float(s.sdr_black_restore);
+                a.padding[1] = restore_mode;
                 m.dispatch(cmd, Impl::kApplyL, m.S(Impl::kApplyL, set), &a, sizeof a, gx, gy);
             }
         }

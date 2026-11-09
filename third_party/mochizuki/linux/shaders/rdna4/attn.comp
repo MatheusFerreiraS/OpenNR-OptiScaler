@@ -522,6 +522,15 @@ NR_FRAG_IACC nr_a4mma(NR_FRAG_IACC c, uvec2 x, uvec2 w, const bool sw) {
 #ifndef NR_ATTN_KOFF
 #define NR_ATTN_KOFF 0
 #endif
+// NR_CONSTH (CC_SILVER_AARDWOLD_OPTIMIZED): heads whose probability matrix is 1/64 for every input. The host proves
+// it per head at weight packing (nr_graph.cpp, const-heads.txt: every position-bias entry so low that every
+// exponential sits at the lower clamp 2^-14, so the row sum is 2^-8 and P = 2^-6 exactly, an e4m3 value, for any
+// content, padding or extent) and marks the head with 0x7FC00001 in its scale slot. Such a head computes only V
+// (the same loads, MMAs and k order as the full loop for its fragments) and takes P = 2^-6; the PV product and
+// everything after it are unchanged. Byte-identical to the full computation; without marks the branch never runs.
+#ifndef NR_CONSTH
+#define NR_CONSTH 0
+#endif
 
 // Where the window's 64 tokens are, and where its output goes.
 //
@@ -994,6 +1003,9 @@ void main() {
     for (uint hh = 0u; hh < uint(NR_HPW); ++hh) {
         const uint h = hbase + ((NR_SHARE_HEAD != 0) ? hh : wave * uint(NR_HPW) + hh);
         const uint hrow = h * 96u;                 // Q at +0, K at +32, V at +64
+#if NR_CONSTH
+        const bool nr_consth = floatBitsToUint(wgt_f32[pc.s_off + h]) == 0x7FC00001u;   // P = 1/64 (host certificate)
+#endif
 
         // ---- stage 1: the QKV projection, three 64x32 tensors ------------
         for (uint part = 0u; part < uint(NR_APARTS); ++part) {
@@ -1038,6 +1050,31 @@ void main() {
                 NR_FOR_K(NR_AKF, NR_QPRIME) \
                 NR_FOR_K(NR_AKF, NR_QSTEP) \
             }
+#if NR_CONSTH   // constant heads: the V fragments (4, 5) only - the same loads, MMAs and k order as the full loop
+#define NR_FOR_JV(X) X(4) X(5)
+#define NR_QLOADS_V NR_FOR_I(NR_AM, NR_QLA_I) NR_FOR_JV(NR_QLB_J)
+#define NR_QM_IV(i)  NR_QG(i) { const int ii = i; NR_FOR_JV(NR_QM_J) }
+#define NR_QSTEP_V(kf) { \
+        const int pp  = (kf) % NR_APIPE; \
+        const int cur = ((kf) + NR_APIPE - 1) % NR_APIPE; \
+        const uint kkl = uint((((kf) + NR_APIPE - 1) % NR_AKF) * 16); \
+        const uint kgl = k0 + kkl; \
+        if ((kf) + NR_APIPE - 1 < NR_AKF) { NR_QLOADS_V } \
+        NR_FOR_I(NR_AM, NR_QM_IV) \
+    }
+#define NR_QPRIME_V(kf) if ((kf) < NR_APIPE - 1) { \
+        const int cur = (kf) % NR_APIPE; \
+        const uint kkl = uint(((kf) % NR_AKF) * 16); \
+        const uint kgl = k0 + kkl; \
+        NR_QLOADS_V \
+    }
+#define NR_QKV_LOOP_V \
+            for (uint k0 = 0u; k0 < pc.C; k0 += uint(NR_AKCHUNK)) { \
+                NR_QK04 \
+                NR_FOR_K(NR_AKF, NR_QPRIME_V) \
+                NR_FOR_K(NR_AKF, NR_QSTEP_V) \
+            }
+#endif
 #if NR_ATTN_KOFF
 #define NR_QK04 const uint k04 = k0 * 4u;
 #else
@@ -1093,6 +1130,32 @@ void main() {
         NR_FOR_I(NR_AM, NR_A4M1XY_I) NR_FOR_I(NR_AM, NR_A4M1ZW_I) \
     } \
     NR_FOR_I(NR_AM, NR_A4F_I) }
+#if NR_CONSTH   // constant heads: the V fragments (4, 5) only
+#undef NR_QKV_LOOP_V
+#define NR_A4M0XY_IV(i) NR_QG(i) { const int ii = i; NR_FOR_JV(NR_A4M0XY_J) }
+#define NR_A4M0ZW_IV(i) NR_QG(i) { const int ii = i; NR_FOR_JV(NR_A4M0ZW_J) }
+#define NR_A4M1XY_IV(i) NR_QG(i) { const int ii = i; NR_FOR_JV(NR_A4M1XY_J) }
+#define NR_A4M1ZW_IV(i) NR_QG(i) { const int ii = i; NR_FOR_JV(NR_A4M1ZW_J) }
+#define NR_A4Z_IV(i) { const int ii = i; NR_FOR_JV(NR_A4Z_J) }
+#define NR_A4F_IV(i) { const int ii = i; NR_FOR_JV(NR_A4F_J) }
+#define NR_QKV_LOOP_V { \
+    const uint i4r = pc.w_off / 4u; \
+    const uint i4xs = wgt_u32a[i4r + 1u], i4w = wgt_u32a[i4r + 2u], i4sc = wgt_u32a[i4r + 3u]; \
+    const uint nrec = uint(NR_A4_NREC); \
+    uint a4_[NR_AM], b4_[NR_AN]; \
+    NR_FOR_I(NR_AM, NR_A4XB_I) NR_FOR_JV(NR_A4WB_J) \
+    NR_FRAG_IACC ia[NR_AM][NR_AN]; \
+    NR_FOR_I(NR_AM, NR_A4Z_IV) \
+    uvec4 xa0[NR_AM], xa1[NR_AM], wb0[NR_AN], wb1[NR_AN]; \
+    { const uint ko = 0u; NR_FOR_I(NR_AM, NR_A4LX0_I) NR_FOR_JV(NR_A4LW0_J) } \
+    [[unroll]] for (uint rc = 0u; rc < nrec; rc += 2u) { \
+        { const uint ko = (rc + 1u) * 128u; NR_FOR_I(NR_AM, NR_A4LX1_I) NR_FOR_JV(NR_A4LW1_J) } \
+        NR_FOR_I(NR_AM, NR_A4M0XY_IV) NR_FOR_I(NR_AM, NR_A4M0ZW_IV) \
+        { const uint ko = min(rc + 2u, nrec - 1u) * 128u; NR_FOR_I(NR_AM, NR_A4LX0_I) NR_FOR_JV(NR_A4LW0_J) } \
+        NR_FOR_I(NR_AM, NR_A4M1XY_IV) NR_FOR_I(NR_AM, NR_A4M1ZW_IV) \
+    } \
+    NR_FOR_I(NR_AM, NR_A4F_IV) }
+#endif
 #endif
 #if NR_ATTN_EDGE && NR_IMAGE && NR_AM == 2
             // A token tile outside the image is zero-filled and the
@@ -1113,18 +1176,45 @@ void main() {
 #endif
             [[dont_flatten]] if (nr_ql2 == 3u) {
 #define NR_QLIVE 3
+#if NR_CONSTH
+                [[dont_flatten]] if (nr_consth) {
+                NR_QKV_LOOP_V
+#include "attn_v_epi.glsl"
+                } else {
+#endif
                 NR_QKV_LOOP
 #include "attn_qkv_epi.glsl"
+#if NR_CONSTH
+                }
+#endif
 #undef NR_QLIVE
             } else [[dont_flatten]] if (nr_ql2 == 1u) {
 #define NR_QLIVE 1
+#if NR_CONSTH
+                [[dont_flatten]] if (nr_consth) {
+                NR_QKV_LOOP_V
+#include "attn_v_epi.glsl"
+                } else {
+#endif
                 NR_QKV_LOOP
 #include "attn_qkv_epi.glsl"
+#if NR_CONSTH
+                }
+#endif
 #undef NR_QLIVE
             } else [[dont_flatten]] if (nr_ql2 == 2u) {
 #define NR_QLIVE 2
+#if NR_CONSTH
+                [[dont_flatten]] if (nr_consth) {
+                NR_QKV_LOOP_V
+#include "attn_v_epi.glsl"
+                } else {
+#endif
                 NR_QKV_LOOP
 #include "attn_qkv_epi.glsl"
+#if NR_CONSTH
+                }
+#endif
 #undef NR_QLIVE
             } else {
 #define NR_QLIVE 0
@@ -1358,6 +1448,12 @@ void main() {
             // This query tile's context is never stored.
             if (nr_tile_oob(i0 / 16u)) continue;
 #endif
+            NR_FRAG_B pf[4];
+#if NR_CONSTH
+            [[dont_flatten]] if (nr_consth) {
+                for (int n = 0; n < 4; ++n) for (int c = 0; c < 8; ++c) pf[n][c] = NR_E4M3(NR_F16(0.015625));
+            } else {
+#endif
             NR_FRAG_ACC lg[4];
 #if NR_ATTN_BIAS_SEED
             // The bias is the accumulator's starting value, so the sum
@@ -1418,10 +1514,12 @@ void main() {
                               + ((den[4] + den[5]) + (den[6] + den[7]));
             sum = sum + subgroupShuffleXor(sum, 16u);
             const float inv = 1.0 / max(sum, float(NR_SUM_FLOOR));
-            NR_FRAG_B pf[4];
             for (int n = 0; n < 4; ++n)
                 for (int c = 0; c < 8; ++c)
                     pf[n][c] = NR_E4M3(NR_F16(lg[n][c] * inv));
+#if NR_CONSTH
+            }
+#endif
             for (uint n = 0u; n < 2u; ++n) {
                 NR_FRAG_ACC ctx = NR_ACC_ZERO;
                 for (uint j = 0u; j < 4u; ++j) {

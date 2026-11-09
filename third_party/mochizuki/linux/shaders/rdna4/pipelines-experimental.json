@@ -1,7 +1,7 @@
 {
  "about": [
   "CC_SMALL_FP8_EXPERIMENTAL, the faster variant of the small model (build_network.py <arch> --experimental; its own",
-  "weights, dlssnr-small-experimental.bin): every pipeline of pipelines.json, \"change\" adds defines to the pipeline of that",
+  "weights, CC_SMALL_FP8_EXPERIMENTAL.bin): every pipeline of pipelines.json, \"change\" adds defines to the pipeline of that",
   "name, \"new\" builds extra pipelines from a base pipeline of pipelines.json. NR_SACT=1: ReLU as the Swin MLP activation",
   "(every fswin_t pipeline but the small model's pre block, fswinimagepreds32nh); NR_FIXP: the window attention is one",
   "fixed 64x64 probability table a layer (no QK^T, no softmax); NR_VOMERGE: with it, the V and output projections are one",

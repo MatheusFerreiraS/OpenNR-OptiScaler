@@ -18,4 +18,4 @@ NR_PRODUCT_DEFINES=(
     -DNR_TCHAIN_TILES=1
 )
 # The model pack's file name inside dlssnr-amd/ (linux/src/core/nr_runtime.cpp).
-NR_MODEL_NAME=dlssnr.bin
+NR_MODEL_NAME=CC_SILVER_AARDWOLD.bin
