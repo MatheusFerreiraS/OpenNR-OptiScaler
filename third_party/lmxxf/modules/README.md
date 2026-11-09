@@ -4,7 +4,7 @@ This directory contains precompiled AMD GPU code objects (`.hsaco`) loaded by th
 
 ## Provenance
 - **Upstream Repository**: https://github.com/lmxxf/dlss5-on-amd-9070xt-porting
-- **Commit Base**: `8181b5f2ffd2c085ad2e05d4309a0c8d06b672cc` (0.45)
+- **Commit Base**: `2f19eebcd79ac7154fa4de354342cc1c105b218a` (0.46)
 - **Target GPU Architecture**: AMD RDNA4 `gfx1201` (RX 9070, RX 9070 XT)
 - **License**: MIT, Copyright (c) 2026 Kien (`../LICENSE`)
 

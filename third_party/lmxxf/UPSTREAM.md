@@ -1,7 +1,7 @@
 # lmxxf runtime source pin
 
 - Upstream: https://github.com/lmxxf/dlss5-on-amd-9070xt-porting
-- Commit: `8181b5f2ffd2c085ad2e05d4309a0c8d06b672cc` (0.45, synced 2026-10-24)
+- Commit: `2f19eebcd79ac7154fa4de354342cc1c105b218a` (0.46, synced 2026-11-09)
 - License: MIT, Copyright (c) 2026 Kien (`LICENSE`)
 - `hip_api.h` also carries the AMD HIP runtime API MIT notice from ROCm 7.1.1
 
@@ -210,6 +210,37 @@ and writes the network's. The sync script re-applies both.
   1920x1072 and 1600x1000 (Small); Q/K at the 900 and 1080 tiers. Frame time, best of 4 ABBA medians, 0.44 -> 0.45 ms:
   71-block 720p 6.19 -> 5.84, 900p 7.59 -> 7.52, 1080p 10.41 -> 10.30, 1440p 10.39 -> 10.32; Small 720p 4.31 -> 4.12,
   900p 5.28 -> 5.23, 1080p 6.67 -> 6.57, 1440p 6.60 -> 6.53.
+- gfx1200 modules built but not run here (no RX 9060).
+
+### Sync to 0.46 (2026-11-09)
+- Upstream `2f19eebc` (0.46 release base, "Round 5"). The later commits up to `60353098` (0.46 packages, 0.46.1, links)
+  only touch `src/native_pre_upscale.h` and `src/native_submission_order_probe.cpp` among the vendorable files, both
+  excluded here; 0.46.1's fix (`5f30cc5d`, deferred FFX replay pairing for Phantom Blade Zero) is in that add-on path,
+  which OptiScaler does not have (it evaluates the game's FFX dispatch at once and never replays it later).
+- Changed in the vendored set: `Development/HIP/hip_reference_network.h`, `hip/build-modules.ps1`, `hip/deep_fast.hip`,
+  `hip/multihead_fast_padded.hip`, `hip/wave_owned_c32.inc`, `hip/wave_owned_mh.inc`,
+  `hip/c512_qkv_attention_compact.inc`. The bridge, `src/` and the shaders are unchanged; nothing to merge, and every
+  patch re-applied as before.
+- What came in (speed only, same output on the tested shapes): C32 norm and out-projection hoists with the fused pool
+  projection (`CW_NORM_HOIST`, `CW_OUTPROJ_HOIST`, `CW_POOL_FUSE`, `NR_C32_POOL=0` turns the fused pool off),
+  `CW_FMED3_CLAMP` in the C32 wave1 rows, the Softmax ones-WMMA reciprocal hoist and paired exponent bit-map (C32,
+  C64/C128/C256, SP, C512), a tighter C512 W16 FP8 gate with explicit history checks, SubmitPulse allowed on Small and
+  the Original 1088 tier (it still needs a validated driver and stays off here: `init_reject_mask=262144`), the
+  Backfeed knife (shape-limited, `NR_BACKFEED_*`) and the guarded four-accumulator denominator in
+  `c32-wave1-fast-norm900` (`CW_EXACT_DEN_SUM`).
+- Modules: still 40 per architecture, built here with the driver's COMGR (`hip/build-modules.ps1`, default targets,
+  no row options). 18 changed on each architecture: `c32-wave1`, `-rtz`, `-fast`, `-fast-norm900`, `c64-wave2`,
+  `-fast`, `c512-m32-mh`, `c512-m32-deep`, `deep_fast`, `deep_fast-packed`, `-packed-fast`,
+  `multihead-fast-padded-wave`, `-wave-packed`, `swin-persistent`, `-fast`, `vit-stream`, `-fast`, `vit-wide-deep`;
+  the other 22 rebuild byte-identical. `hip/SHA256SUMS` (both architectures), `modules/SHA256SUMS` and
+  `modules-gfx1200/SHA256SUMS` hold the local hashes (upstream's rows differ for every module, as before).
+- The sync script's own module build failed under PowerShell 7 here (`-File` binding error after the child build);
+  the modules were built with `build-modules.ps1` directly and passed with `-NoBuildModules -ModulesPath`.
+- e2e harness (RX 9070 XT, temporal on, 80 frames, static synthetic colour), against the 0.45 runtime and modules:
+  byte-identical for the 71-block model and Small, 1 and 3 passes, at 1280x720, 1600x900, 1920x1080, 2560x1440,
+  3840x2160 and 1707x960, and Small at 1920x1072 and 1600x1000 (18 cases). Network GPU time (the bridge's HIP events,
+  6 ABBA rounds, best median), 0.45 -> 0.46 ms: Small 720p 2.59 -> 2.54, 900p 3.87 -> 3.71, 1080p 5.08 -> 4.88,
+  1440p 5.05 -> 4.92; 71-block 720p 4.75 -> 4.61, 900p 6.26 -> 6.16, 1080p 8.85 -> 8.62, 1440p 8.84 -> 8.65.
 - gfx1200 modules built but not run here (no RX 9060).
 
 ## Shipping modules (`.hsaco`)
