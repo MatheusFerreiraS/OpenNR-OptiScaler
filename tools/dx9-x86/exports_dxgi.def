@@ -18,6 +18,6 @@ EXPORTS
     PIXBeginCapture=Forward_PIXBeginCapture
     PIXEndCapture=Forward_PIXEndCapture
     PIXGetCaptureState=Forward_PIXGetCaptureState
-    SetAppCompatStringPointer=Forward_SetAppCompatStringPointer
+    SetAppCompatStringPointer=_Forward_SetAppCompatStringPointer@8
     UpdateHMDEmulationStatus=Forward_UpdateHMDEmulationStatus
     OptiScalerX86Status=__OptiScalerX86Status@4
