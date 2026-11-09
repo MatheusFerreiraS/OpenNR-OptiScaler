@@ -492,10 +492,13 @@ class Config
     // only. Takes effect when the game starts again; without the driver's pipeline binaries the driver compiles as
     // before.
     CustomOptional<bool> MochizukiAco { true };
-    // With ACO: the int4 mixed network, part of it in 4-bit integers. About a tenth faster than ACO alone; the
-    // picture is close to the default network's, not the same. A change rebuilds the network in a few seconds while
-    // the frames keep the current one, without a restart.
+    // With ACO on an RX 9000: upstream's CC_SILVER_AARDWOLD_OPTIMIZED, which replaced the int4 mixed network this key
+    // first named (upstream 0.0.8.3): the 310.8 model made faster, its picture very close to that model's. A change
+    // rebuilds the network in a few seconds while the frames keep the current one, without a restart.
     CustomOptional<bool> MochizukiInt4 { false };
+    // Its Optimized layers ([Network] OptimizedLayers): 0 Quality, 1 Balanced, 2 Performance, 3 Ultra Performance (the
+    // default, as upstream's). The words quality, balanced, performance and ultra are read too. A change rebuilds.
+    CustomOptional<uint32_t> MochizukiOptimizedLayers { 3 };
     // The 310.8 model instead of 310.9's new one, which runs when dlssnr-amd\dlssnr-small.bin is there; int4 mixed
     // implies it. A change rebuilds the network (LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL).
     CustomOptional<bool> MochizukiOriginalModel { false };

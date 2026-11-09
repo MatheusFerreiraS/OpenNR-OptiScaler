@@ -643,6 +643,22 @@ bool Config::Reload(std::filesystem::path iniPath)
             NrFoveationEdge.set_from_config(readFloat("DlssNr", "FoveationEdge"));
             MochizukiAco.set_from_config(readBool("DlssNr", "MochizukiAco"));
             MochizukiInt4.set_from_config(readBool("DlssNr", "MochizukiInt4"));
+            MochizukiOptimizedLayers.set_from_config(readString("DlssNr", "MochizukiOptimizedLayers", true)
+                                                         .and_then(
+                                                             [](const std::string& v) -> std::optional<uint32_t>
+                                                             {
+                                                                 if (v == "0" || v == "quality")
+                                                                     return 0u;
+                                                                 if (v == "1" || v == "balanced")
+                                                                     return 1u;
+                                                                 if (v == "2" || v == "performance")
+                                                                     return 2u;
+                                                                 if (v == "3" || v == "ultra" ||
+                                                                     v == "ultra performance" ||
+                                                                     v == "ultraperformance")
+                                                                     return 3u;
+                                                                 return std::nullopt;
+                                                             }));
             MochizukiOriginalModel.set_from_config(readBool("DlssNr", "MochizukiOriginalModel"));
             MochizukiExperimental.set_from_config(readBool("DlssNr", "MochizukiExperimental"));
             MochizukiPlacement.set_from_config(readString("DlssNr", "MochizukiPlacement", true));
@@ -1948,6 +1964,8 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "FoveationEdge", GetFloatValue(Instance()->NrFoveationEdge.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiAco", GetBoolValue(Instance()->MochizukiAco.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiInt4", GetBoolValue(Instance()->MochizukiInt4.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiOptimizedLayers",
+                     GetIntValue(Instance()->MochizukiOptimizedLayers.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiOriginalModel",
                      GetBoolValue(Instance()->MochizukiOriginalModel.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiExperimental",

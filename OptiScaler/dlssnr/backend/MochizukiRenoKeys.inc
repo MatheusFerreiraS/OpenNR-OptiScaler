@@ -85,10 +85,10 @@ MZR_F(MochizukiRenoStyleHighlightGuard, 0.0f, 0.0f, 2.0f, 6, "Highlight guard (s
       "model darkens bright areas, as the Natural and Cinematic styles do.")
 MZR_U(MochizukiRenoDetailStability, 0u, 0, 2, 6, "Detail stability", reno_detail_stability,
       "Steadies fine detail between frames. Auto decides from where NR runs.")
-MZR_U(MochizukiRenoSdrBlackRestore, 0u, 0, 2, 6, "SDR black restore", reno_sdr_black_restore,
-      "SDR: puts back the game's black level the model lifted. Auto, in every block, or smoothed.")
-MZR_U(MochizukiRenoDisplayPedestal, 0u, 0, 2, 6, "HDR dark pedestal", reno_display_pedestal,
-      "HDR: takes off the dark lift the model adds. Auto, always, or smoothed.")
+MZR_U(MochizukiRenoSdrBlackRestore, 0u, 0, 3, 6, "SDR black restore", reno_sdr_black_restore,
+      "SDR: puts back the game's black level the model lifted. Auto, in every block, smoothed, or off (upstream's default since 0.0.8.3).")
+MZR_U(MochizukiRenoDisplayPedestal, 0u, 0, 3, 6, "HDR dark pedestal", reno_display_pedestal,
+      "HDR: takes off the dark lift the model adds. Auto, always, smoothed, or off (upstream's default since 0.0.8.3).")
 MZR_U(MochizukiRenoCodecMode, 2u, 0, 3, 6, "Codec", reno_codec_mode,
       "How HDR is encoded for the model: Classic, Anchored, Auto (default) or Display.")
 MZR_B(MochizukiRenoNeuralFloorGuard, true, 0, 1, 6, "Neural floor guard", reno_neural_floor_guard,

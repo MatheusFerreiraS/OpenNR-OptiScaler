@@ -654,9 +654,16 @@ struct SessionControls
     uint32_t maxPasses = 0;  // 0: the frame's passes
     uint32_t drsMode = 0;    // MochizukiNrControls::drs_mode: 0 exact, 1 auto, 2 always (Session::DrsExtent)
     bool renodx = true;      // MochizukiNrControls::renodx: the RenoDX stage, with `reno` in place of `model`
-    nr::renodx::Settings reno;
+    // The stage's own defaults but SDR black restore and HDR dark pedestal Auto (3), as before its 0.0.8.3 Off.
+    nr::renodx::Settings reno = []
+    {
+        nr::renodx::Settings r;
+        r.sdr_black_restore = r.display_pedestal = 3;
+        return r;
+    }();
     bool styleGrade = true;  // Runtime::set_style_grade
     bool historyF16 = true;  // RuntimeConfig::history_f16 (MochizukiNrControls::history_precision)
+    uint32_t optimizedLayers = 3; // RuntimeConfig::layers (MochizukiNrControls::optimized_layers)
 };
 
 void DefaultControls(MochizukiNrControls& c)
@@ -690,6 +697,7 @@ void DefaultControls(MochizukiNrControls& c)
     c.style_grade = 1;
     c.history_precision = 16;
     c.preprocess_inverse = 1;
+    c.optimized_layers = 3;
 #define RDX_F(member, field, def, low, high) c.member = def;
 #define RDX_U RDX_F
 #define RDX_B RDX_F
@@ -742,6 +750,7 @@ SessionControls Sanitise(const MochizukiNrControls& c)
     out.renodx = c.renodx != 0;
     out.styleGrade = c.style_grade != 0;
     out.historyF16 = c.history_precision != 32;
+    out.optimizedLayers = std::min(c.optimized_layers, 3u);
     prep.inverse = c.preprocess_inverse != 0;
 #define RDX_F(member, field, def, low, high) out.reno.field = San(c.member, low, high, def);
 #define RDX_U(member, field, def, low, high) out.reno.field = std::clamp(c.member, uint32_t(low), uint32_t(high));
@@ -750,6 +759,9 @@ SessionControls Sanitise(const MochizukiNrControls& c)
 #undef RDX_F
 #undef RDX_U
 #undef RDX_B
+    // The stage's 0.0.8.3 numbering: 0 Off, 1 and 2 as before, 3 Auto; the keys keep 0 Auto (and offer Off as 3).
+    for (uint32_t* v : { &out.reno.sdr_black_restore, &out.reno.display_pedestal })
+        *v = *v == 0 ? 3u : *v == 3 ? 0u : *v;
     // validate() does not look at these, and the core puts them straight into push constants.
     for (size_t k = std::size(c.pass); k-- > 0;)
     {
@@ -1738,46 +1750,61 @@ struct Geometry
     bool operator==(const Geometry&) const = default;
 };
 
-// CC_SMALL_FP8_EXPERIMENTAL's weights: dlssnr-small.bin with the entries of aco\experimental's difference file XORed in
-// (upstream's install.ps1 New-ExperimentalWeights), kept once their SHA-256 is the one beside it. Made here, at first
-// use, because the difference is all a release ships: none of NVIDIA's weights. In aco-cache, as what the runtime writes
-// there goes when mochizuki is uninstalled. False, with the reason logged, when they cannot be made; the core then
-// builds the new model.
-static bool MakeExperimentalWeights()
+// A file's bytes; empty when it cannot be read.
+static std::vector<uint8_t> ReadWhole(const std::filesystem::path& p)
+{
+    std::vector<uint8_t> bytes;
+    if (FILE* f = _wfopen(p.c_str(), L"rb"))
+    {
+        std::fseek(f, 0, SEEK_END);
+        bytes.resize(size_t(_ftelli64(f)));
+        std::fseek(f, 0, SEEK_SET);
+        if (std::fread(bytes.data(), 1, bytes.size(), f) != bytes.size())
+            bytes.clear();
+        std::fclose(f);
+    }
+    return bytes;
+}
+
+// SHA-256 in lower-case hex; empty when it fails.
+static std::string Sha256Hex(const std::vector<uint8_t>& bytes)
+{
+    uint8_t hash[32] {};
+    if (BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, const_cast<uint8_t*>(bytes.data()), ULONG(bytes.size()), hash,
+                   sizeof hash) != 0)
+        return {};
+    char text[65] {};
+    for (int i = 0; i < 32; ++i)
+        std::snprintf(text + 2 * i, 3, "%02x", hash[i]);
+    return text;
+}
+
+// A network's own weights, the model pack with a difference file XORed in (upstream's experimental_weights.py, its
+// install.ps1 New-ExperimentalWeights): each entry of the difference XOR the pack's entry of that name, or, for a name the
+// pack does not have ("performance/<name>"), XOR the pack's <name> as it was, added after the pack's own entries. Kept
+// in aco-cache once their SHA-256 is the one beside the difference: what the runtime writes there goes when mochizuki is
+// uninstalled. Made here, at first use, because the difference is all a release ships: none of NVIDIA's weights. False,
+// with the reason logged; the core then builds the network the weights were made from.
+static bool MakeWeights(const char* what, const std::filesystem::path& model, const std::filesystem::path& dir,
+                        const wchar_t* deltaName, const wchar_t* hashName, const std::filesystem::path& out)
 {
     namespace fs = std::filesystem;
-    const fs::path data = fs::path(DataDirectory()) / L"dlssnr-amd", xroot = data / L"aco" / L"experimental";
-    const fs::path out = data / L"aco-cache" / L"dlssnr-small-experimental.nrb";
     std::error_code ec;
     if (fs::is_regular_file(out, ec))
         return true;
     fs::create_directories(out.parent_path(), ec);
-    const auto slurp = [](const fs::path& p)
+    const std::string modelName = model.filename().string();
+    const auto fail = [what](const std::string& why)
     {
-        std::vector<uint8_t> bytes;
-        if (FILE* f = _wfopen(p.c_str(), L"rb"))
-        {
-            std::fseek(f, 0, SEEK_END);
-            bytes.resize(size_t(_ftelli64(f)));
-            std::fseek(f, 0, SEEK_SET);
-            if (std::fread(bytes.data(), 1, bytes.size(), f) != bytes.size())
-                bytes.clear();
-            std::fclose(f);
-        }
-        return bytes;
-    };
-    const auto fail = [](const char* why)
-    {
-        nr::logf("[mochizuki] CC_SMALL_FP8_EXPERIMENTAL's weights: %s", why);
+        nr::logf("[mochizuki] %s's weights: %s", what, why.c_str());
         return false;
     };
-    std::vector<uint8_t> pack = slurp(data / L"dlssnr-small.bin");
-    const std::vector<uint8_t> delta = slurp(xroot / L"dlssnr-small-experimental.delta"),
-                               wanted = slurp(xroot / L"dlssnr-small-experimental.sha256");
+    std::vector<uint8_t> pack = ReadWhole(model);
+    const std::vector<uint8_t> delta = ReadWhole(dir / deltaName), wanted = ReadWhole(dir / hashName);
     if (pack.size() < 16 || std::memcmp(pack.data(), "NRMODEL1", 8))
-        return fail("no dlssnr-small.bin");
+        return fail("no " + modelName);
     if (delta.size() < 12 || std::memcmp(delta.data(), "NRXDIFF1", 8) || wanted.size() < 64)
-        return fail("aco\\experimental is incomplete");
+        return fail("aco\\" + dir.filename().string() + " is incomplete");
     const auto u32 = [](const uint8_t* p)
     {
         uint32_t v;
@@ -1797,42 +1824,104 @@ static bool MakeExperimentalWeights()
     };
     std::vector<std::pair<std::string, Entry>> index;
     size_t at = 16;
-    for (uint32_t k = 0, count = u32(pack.data() + 8); k < count; ++k)
+    const uint32_t packCount = u32(pack.data() + 8);
+    for (uint32_t k = 0; k < packCount; ++k)
     {
         if (at + 4 > pack.size() || at + 4 + u32(pack.data() + at) + 16 > pack.size())
-            return fail("dlssnr-small.bin is damaged");
+            return fail(modelName + " is damaged");
         const uint32_t n = u32(pack.data() + at);
         index.push_back({ std::string(reinterpret_cast<const char*>(pack.data() + at + 4), n),
                           Entry { u64(pack.data() + at + 4 + n), u64(pack.data() + at + 12 + n) } });
         at += 4 + size_t(n) + 16;
     }
+    const size_t indexEnd = at;
     std::sort(index.begin(), index.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-    at = 12;
-    for (uint32_t k = 0, count = u32(delta.data() + 8); k < count; ++k)
+    const auto find = [&index](const std::string& name)
     {
-        if (at + 4 > delta.size() || at + 4 + u32(delta.data() + at) + 8 > delta.size())
-            return fail("the difference file is damaged");
-        const uint32_t n = u32(delta.data() + at);
-        const std::string name(reinterpret_cast<const char*>(delta.data() + at + 4), n);
-        const uint64_t size = u64(delta.data() + at + 4 + n);
-        at += 4 + size_t(n) + 8;
         const auto e = std::lower_bound(index.begin(), index.end(), name,
                                         [](const auto& a, const std::string& b) { return a.first < b; });
-        if (e == index.end() || e->first != name || e->second.size != size || size > delta.size() - at ||
-            e->second.offset + size > pack.size())
-            return fail("dlssnr-small.bin is not the model its difference file was made from");
-        for (uint64_t i = 0; i < size; ++i)
-            pack[e->second.offset + i] ^= delta[at + i];
-        at += size_t(size);
+        return e != index.end() && e->first == name ? e : index.end();
+    };
+    const std::string mismatch = modelName + " is not the model its difference file was made from";
+    // Two passes: the added entries first, from the pack as it is, then the changed ones in place.
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> added;
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        at = 12;
+        for (uint32_t k = 0, count = u32(delta.data() + 8); k < count; ++k)
+        {
+            if (at + 4 > delta.size() || at + 4 + u32(delta.data() + at) + 8 > delta.size())
+                return fail("the difference file is damaged");
+            const uint32_t n = u32(delta.data() + at);
+            const std::string name(reinterpret_cast<const char*>(delta.data() + at + 4), n);
+            const uint64_t size = u64(delta.data() + at + 4 + n);
+            at += 4 + size_t(n) + 8;
+            if (size > delta.size() - at)
+                return fail("the difference file is damaged");
+            auto e = find(name);
+            const bool add = e == index.end();
+            if (add)
+            {
+                const size_t slash = name.find('/');
+                e = slash == std::string::npos ? index.end() : find(name.substr(slash + 1));
+                for (const auto& a : added)
+                    if (pass == 0 && a.first == name)
+                        return fail("the difference file is damaged");
+            }
+            if (e == index.end() || e->second.size != size || e->second.offset + size > pack.size())
+                return fail(mismatch);
+            if (add && pass == 0)
+            {
+                std::vector<uint8_t> bytes(pack.begin() + ptrdiff_t(e->second.offset),
+                                           pack.begin() + ptrdiff_t(e->second.offset + size));
+                for (uint64_t i = 0; i < size; ++i)
+                    bytes[i] ^= delta[at + i];
+                added.push_back({ name, std::move(bytes) });
+            }
+            else if (!add && pass == 1)
+                for (uint64_t i = 0; i < size; ++i)
+                    pack[e->second.offset + i] ^= delta[at + i];
+            at += size_t(size);
+        }
+        if (pass == 0 && at != delta.size())
+            return fail("the difference file is damaged");
     }
-    uint8_t hash[32] {};
-    if (BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, pack.data(), ULONG(pack.size()), hash, sizeof hash) != 0)
-        return fail("SHA-256 failed");
-    char text[65] {};
-    for (int i = 0; i < 32; ++i)
-        std::snprintf(text + 2 * i, 3, "%02x", hash[i]);
-    if (std::memcmp(text, wanted.data(), 64))
-        return fail("dlssnr-small.bin is not the model its difference file was made from (SHA-256)");
+    if (!added.empty())
+    {
+        // Index lines for them, every offset moved by those lines, their bytes at the end.
+        uint64_t grow = 0;
+        for (const auto& a : added)
+            grow += 4 + a.first.size() + 16;
+        std::vector<uint8_t> grown(pack.begin(), pack.begin() + ptrdiff_t(indexEnd));
+        const uint32_t total = packCount + uint32_t(added.size());
+        std::memcpy(grown.data() + 8, &total, 4);
+        for (size_t p = 16; p < indexEnd;)
+        {
+            const uint32_t n = u32(grown.data() + p);
+            const uint64_t moved = u64(grown.data() + p + 4 + n) + grow;
+            std::memcpy(grown.data() + p + 4 + n, &moved, 8);
+            p += 4 + size_t(n) + 16;
+        }
+        const auto put = [&grown](const void* v, size_t bytes)
+        { grown.insert(grown.end(), static_cast<const uint8_t*>(v), static_cast<const uint8_t*>(v) + bytes); };
+        uint64_t end = pack.size() + grow;
+        for (const auto& a : added)
+        {
+            const uint32_t n = uint32_t(a.first.size());
+            const uint64_t size = a.second.size();
+            put(&n, 4);
+            put(a.first.data(), n);
+            put(&end, 8);
+            put(&size, 8);
+            end += size;
+        }
+        grown.insert(grown.end(), pack.begin() + ptrdiff_t(indexEnd), pack.end());
+        for (const auto& a : added)
+            grown.insert(grown.end(), a.second.begin(), a.second.end());
+        pack = std::move(grown);
+    }
+    if (Sha256Hex(pack).compare(0, 64, reinterpret_cast<const char*>(wanted.data()), 64))
+        return fail(mismatch + " (SHA-256)");
     const fs::path tmp = out.wstring() + L".tmp"; // a .nrb.tmp, which an uninstall takes too
     FILE* f = _wfopen(tmp.c_str(), L"wb");
     const bool written = f && std::fwrite(pack.data(), 1, pack.size(), f) == pack.size();
@@ -1844,7 +1933,65 @@ static bool MakeExperimentalWeights()
         fs::remove(tmp, ec);
         return fail("could not write them in aco-cache");
     }
-    nr::logf("[mochizuki] CC_SMALL_FP8_EXPERIMENTAL's weights made");
+    nr::logf("[mochizuki] %s's weights made", what);
+    return true;
+}
+
+// CC_SMALL_FP8_EXPERIMENTAL's weights: dlssnr-small.bin with aco\experimental's difference.
+static bool MakeExperimentalWeights()
+{
+    const std::filesystem::path data = std::filesystem::path(DataDirectory()) / L"dlssnr-amd";
+    return MakeWeights("CC_SMALL_FP8_EXPERIMENTAL", data / L"dlssnr-small.bin", data / L"aco" / L"experimental",
+                       L"dlssnr-small-experimental.delta", L"dlssnr-small-experimental.sha256",
+                       data / L"aco-cache" / L"dlssnr-small-experimental.nrb");
+}
+
+// CC_SILVER_AARDWOLD_OPTIMIZED's weights: dlssnr.bin with aco\optimized's difference (its "performance/" entries added for
+// Performance and Ultra Performance). With `int4`, also its int4 layers' weights, made from those by the core's own
+// decoder with int4-ultra's tables, which cover every level's (upstream's install.ps1 runs dlssnr-int4-weights.exe the
+// same way), checked against the hash in aco\optimized. Seconds of CPU the first time: the builder thread only. False
+// when the FP8 weights cannot be made (the core then builds CC_SILVER_AARDWOLD); `int4` turns false when the int4 ones
+// cannot (the core then runs Quality).
+static bool MakeOptimizedWeights(bool& int4)
+{
+    namespace fs = std::filesystem;
+    const fs::path data = fs::path(DataDirectory()) / L"dlssnr-amd", oroot = data / L"aco" / L"optimized";
+    const fs::path pack = data / L"aco-cache" / L"dlssnr-optimized.nrb";
+    if (!MakeWeights("CC_SILVER_AARDWOLD_OPTIMIZED", data / L"dlssnr.bin", oroot, L"dlssnr-optimized.delta",
+                     L"dlssnr-optimized.sha256", pack))
+        return int4 = false;
+    const fs::path out = data / L"aco-cache" / L"dlssnr-optimized-int4.nrb";
+    std::error_code ec;
+    if (!int4 || fs::is_regular_file(out, ec))
+        return true;
+    const fs::path tmp = out.wstring() + L".tmp";
+    const auto t0 = std::chrono::steady_clock::now();
+    std::string why;
+    if (nr::make_int4_weights(pack, data / L"int4-ultra", tmp, &why))
+    {
+        const std::vector<uint8_t> made = ReadWhole(tmp), wanted = ReadWhole(oroot / L"dlssnr-optimized-int4.sha256");
+        const std::string hash = made.empty() ? std::string() : Sha256Hex(made);
+        if (hash.empty())
+            why = "could not read them back";
+        else if (wanted.size() < 64 || hash.compare(0, 64, reinterpret_cast<const char*>(wanted.data()), 64))
+            why = "SHA-256 " + hash + ", not the one in aco\\optimized";
+    }
+    if (why.empty())
+    {
+        fs::rename(tmp, out, ec);
+        if (ec)
+            why = "could not write them in aco-cache";
+    }
+    if (!why.empty())
+    {
+        fs::remove(tmp, ec);
+        nr::logf("[mochizuki] CC_SILVER_AARDWOLD_OPTIMIZED's int4 weights: %s; its Optimized layers run at Quality",
+                 why.c_str());
+        int4 = false;
+        return true;
+    }
+    nr::logf("[mochizuki] CC_SILVER_AARDWOLD_OPTIMIZED's int4 weights made in %.1f s",
+             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     return true;
 }
 
@@ -1858,12 +2005,15 @@ struct NetworkKey
     uint32_t maxPasses = 1;
     bool linear = false;
     bool prep = false;      // RuntimeConfig::preprocess
-    bool int4 = false;      // RuntimeConfig::int4_mixed (LMXXF_NR_FRAME_FLAG_INT4)
+    bool int4 = false;      // CC_SILVER_AARDWOLD_OPTIMIZED, int4 mixed's successor (LMXXF_NR_FRAME_FLAG_INT4)
     bool cascade = false;   // RuntimeConfig::cascade_detail_only (LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL), with passes
     bool original = false;  // RuntimeConfig::network 0, the 310.8 model (LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL)
     bool firstPass = false; // RuntimeConfig::first_pass_output (LMXXF_NR_FRAME_FLAG_FIRST_PASS), with passes
     bool hist16 = true;     // RuntimeConfig::history_f16 (MochizukiNrControls::history_precision)
     bool experimental = false; // RuntimeConfig::network 2 (LMXXF_NR_FRAME_FLAG_EXPERIMENTAL)
+    // With int4: CC_SILVER_AARDWOLD_OPTIMIZED (RuntimeConfig::network 3) at this level of its Optimized layers
+    // (RuntimeConfig::layers, MochizukiNrControls::optimized_layers), 0 Quality .. 3 Ultra Performance.
+    uint32_t layers = 0;
     // MochizukiNrControls::renodx: the network runs inside the RenoDX stage (ProductRuntime::reno), at the stage's
     // extent (renoWidth x renoHeight), one pass at a time, maxPasses being the stage's pass count. The source encoding
     // and the linear unit decide the stage's units for its life.
@@ -2214,7 +2364,7 @@ struct Session
     // What GetInfo reports: atomics and a copy of the last error, never the runtime, since it may ask from any thread.
     std::atomic<bool> infoBuilding { false };
     std::atomic<uint32_t> infoModelWidth { 0 }, infoModelHeight { 0 }, infoFrameWidth { 0 }, infoFrameHeight { 0 },
-        infoMaxPasses { 0 }, infoPasses { 1 }, motionRefused { 0 }, dispatches { 0 }, infoReno { 0 }, infoExperimental { 0 };
+        infoMaxPasses { 0 }, infoPasses { 1 }, motionRefused { 0 }, dispatches { 0 }, infoReno { 0 }, infoExperimental { 0 }, infoOptimized { 0 };
     std::atomic<float> infoBuildSeconds { 0 };
     std::atomic<float> infoPrepEv { NAN };
     std::atomic<float> infoWhite { 1.f };
@@ -3385,6 +3535,7 @@ struct Session
         infoMaxPasses = net.maxPasses;
         infoReno = runtime->reno != nullptr;
         infoExperimental = runtime->experimental();
+        infoOptimized = runtime->optimized() ? uint32_t(1 + runtime->layers()) : 0u;
         infoBuildSeconds = float(buildSeconds);
         if (runtime->model_width() != net.width || runtime->model_height() != net.height || net.maxPasses > 1)
             nr::logf("[mochizuki] network ready at %ux%u (model %ux%u, up to %u passes) in %.1f s%s", net.width,
@@ -3545,12 +3696,19 @@ struct Session
             config.model_scale = key.scale;
             config.max_passes = key.maxPasses;
             config.preprocess = key.prep;
-            config.int4_mixed = key.int4 && !vk.Fp16() ? 1 : 0; // the FP16 networks have no int4 mixed
             config.arch = vk.arch;
             // The new model goes back to the 310.8 one by itself when dlssnr-small.bin is missing, and logs it.
             config.network = key.original ? 0 : 1;
             if (key.experimental && !vk.Fp16() && MakeExperimentalWeights())
                 config.network = 2;
+            // int4 mixed's successor (upstream 0.0.8.3): CC_SILVER_AARDWOLD_OPTIMIZED at its Optimized layers level; its
+            // weights are made on the builder thread (Build), and the core falls back by itself without them. The FP16
+            // networks have neither.
+            if (key.int4 && !vk.Fp16())
+            {
+                config.network = 3;
+                config.layers = int(key.layers);
+            }
             config.cascade_detail_only = key.cascade;
             config.first_pass_output = key.firstPass;
             config.history_f16 = key.hist16;
@@ -3594,10 +3752,10 @@ struct Session
                 std::snprintf(options, sizeof options, ", in the RenoDX stage at %ux%u, %u pass%s", key.renoWidth,
                               key.renoHeight, key.maxPasses, key.maxPasses == 1 ? "" : "es");
             nr::logf("[mochizuki] building %s at %ux%u, VkFormat %d%s%s%s",
-                     nr::network_codename(key.int4           ? nr::kSilverAardwoldInt4
-                                          : key.original     ? nr::kSilverAardwold
-                                          : key.experimental ? nr::kSmallFp8Experimental
-                                                             : nr::kSmallFp8),
+                     nr::network_label(key.int4 ? nr::network_with_layers(nr::kSilverAardwoldOptimized, int(key.layers))
+                                       : key.original     ? nr::kSilverAardwold
+                                       : key.experimental ? nr::kSmallFp8Experimental
+                                                          : nr::kSmallFp8),
                      key.width, key.height, int(key.format), key.linear ? ", linear colour" : "", options,
                      keep ? "; the frames keep the current one meanwhile" : "");
             UseUtf8Paths();
@@ -3751,6 +3909,15 @@ struct Session
             while (!core.try_lock_for(std::chrono::milliseconds(kWatchMs)))
                 if (abandon)
                     throw std::runtime_error("stopped: the session is being destroyed");
+            nr::RuntimeConfig made_config = config;
+            if (config.network == 3)
+            {
+                bool int4 = config.layers > 0;
+                if (!MakeOptimizedWeights(int4))
+                    made_config.network = 0;
+                else if (!int4)
+                    made_config.layers = 0;
+            }
             // Builds and frames on one queue: the frames wait for the build, as they always did.
             std::unique_lock lock(submitMutex, std::defer_lock);
             if (host.queue == vk.queue)
@@ -3776,7 +3943,7 @@ struct Session
                 throw std::runtime_error("stopped: the session is being destroyed");
             {
                 const nr::BuildCancelScope cancel(&abandon);
-                made = std::make_unique<ProductRuntime>(host, config, temporal, key, vk);
+                made = std::make_unique<ProductRuntime>(host, made_config, temporal, key, vk);
             }
             pipelines.Finish();
         }
@@ -4894,6 +5061,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             float history = 1.f, white = 1.f;
             uint32_t linearMode = 0, maxPassesSetting = 0, drsMode = 0;
             bool renodx = false, styleGrade = true, historyF16 = true;
+            uint32_t optimizedLayers = 3;
             nr::renodx::Settings reno;
             const float exposure = s->gameExposure.load(std::memory_order_relaxed);
             {
@@ -4910,6 +5078,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 reno = s->controls.reno;
                 styleGrade = s->controls.styleGrade;
                 historyF16 = s->controls.historyF16;
+                optimizedLayers = s->controls.optimizedLayers;
             }
             // The RenoDX stage runs its own stack, whatever the frame asks for.
             const uint32_t passes = renodx ? nr::renodx::stack_passes(reno) : framePasses;
@@ -5001,6 +5170,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             NetworkKey key { g.width,       g.height, netVk,   scale,    maxPasses, linear,
                              s->prepWanted, int4,     cascade, original, firstPass, historyF16 };
             key.experimental = !original && !int4 && (info->flags & LMXXF_NR_FRAME_FLAG_EXPERIMENTAL) != 0;
+            key.layers = int4 ? optimizedLayers : 0;
             // The RenoDX stage: its own extent, pass count, preprocess and units; the model scale and the pass extras
             // are the native route's.
             if (renodx)
@@ -5376,8 +5546,8 @@ int32_t GetLastError(char* buf, uint32_t chars)
 // MochizukiNrControls.h. Every Controls field is 4 bytes and 4-aligned and the struct ends at its last field, so the
 // whole fields a caller's struct holds are its first struct_size & ~3 bytes.
 static_assert(alignof(MochizukiNrControls) == 4 &&
-              sizeof(MochizukiNrControls) == offsetof(MochizukiNrControls, reno_fast_edit_strength) +
-                                                 sizeof(MochizukiNrControls::reno_fast_edit_strength) &&
+              sizeof(MochizukiNrControls) == offsetof(MochizukiNrControls, optimized_layers) +
+                                                 sizeof(MochizukiNrControls::optimized_layers) &&
               offsetof(MochizukiNrControls, pass) == 72 && offsetof(MochizukiNrControls, preprocess) == 136 &&
               offsetof(MochizukiNrControls, enlarge_mode) == 164 && offsetof(MochizukiNrControls, renodx) == 176 &&
               sizeof(MochizukiNrPassControls) == 32);
@@ -5467,6 +5637,7 @@ int32_t GetInfo(void* context, MochizukiNrInfo* out)
                        : s->vk.arch == nr::Arch::rdna3 ? (s->vk.rdna3Aco ? 2u : 1u)
                                                         : 0u;
         info.experimental = s->infoExperimental;
+        info.optimized = s->infoOptimized;
         // The core's own build progress (nr_log.hpp: builds run one at a time), while this session builds.
         if (info.building)
         {

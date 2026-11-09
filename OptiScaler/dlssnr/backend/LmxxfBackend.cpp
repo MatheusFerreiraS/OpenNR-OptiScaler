@@ -98,9 +98,10 @@ MochizukiFrameSettings MochizukiFrame(const Config& cfg)
     MochizukiFrameSettings s {};
     s.passes = std::clamp(cfg.MochizukiRenoPasses.value_or_default(), 1u,
                           cfg.MochizukiRenoUnlockPasses.value_or_default() ? 30u : 4u);
-    // int4 mixed runs as ACO's machine code only: without ACO the runtime would build the default network anyway.
+    // MochizukiInt4: int4 mixed then, CC_SILVER_AARDWOLD_OPTIMIZED since upstream 0.0.8.3 (at MochizukiOptimizedLayers),
+    // as ACO's machine code only: without ACO the runtime would build the default network anyway.
     const bool int4 = cfg.MochizukiInt4.value_or_default() && cfg.MochizukiAco.value_or_default();
-    // int4 mixed is made from the 310.8 model only.
+    // It is made from the 310.8 model only.
     const bool original = int4 || cfg.MochizukiOriginalModel.value_or_default();
     // The new model's faster variant, likewise ACO only; the runtime checks the card and the files.
     const bool experimental = !original && cfg.MochizukiExperimental.value_or_default() && cfg.MochizukiAco.value_or_default();
@@ -135,6 +136,7 @@ void FillMochizukiControls(const Config& cfg, MochizukiNrControls& c)
     c.noise_every_frame = cfg.MochizukiNoiseEveryFrame.value_or_default() ? 1u : 0u;
     c.style_grade = cfg.MochizukiStyleGrade.value_or_default() ? 1u : 0u;
     c.history_precision = cfg.MochizukiHistoryPrecision.value_or_default() == 32 ? 32u : 16u;
+    c.optimized_layers = std::min(cfg.MochizukiOptimizedLayers.value_or_default(), 3u);
     c.preprocess_inverse = cfg.MochizukiPreprocessInverse.value_or_default() ? 1u : 0u;
     c.renodx = 1u;
     // RenoDX's NeuralUplift switch: Enable NR already turns the stage off, so it has no key of its own

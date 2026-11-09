@@ -322,8 +322,8 @@ static bool RenoChoice(std::string_view key, const char* label, int* v, int lo, 
         { "MochizukiRenoDetailStability", "Auto\0Off\0Always\0" },
         { "MochizukiRenoLookUpsample", "Auto\0Edge-aware\0Classic\0Area input\0" },
         { "MochizukiRenoLookStabilize", "Off\0Static\0Motion\0" },
-        { "MochizukiRenoSdrBlackRestore", "Auto\0Every block\0Smooth\0" },
-        { "MochizukiRenoDisplayPedestal", "Auto\0Always\0Smooth\0" },
+        { "MochizukiRenoSdrBlackRestore", "Auto\0Every block\0Smooth\0Off\0" },
+        { "MochizukiRenoDisplayPedestal", "Auto\0Always\0Smooth\0Off\0" },
         { "MochizukiRenoCodecMode", "Classic\0Anchored\0Auto\0Display\0" },
         { "MochizukiRenoSourceEncoding", "From the format\0SDR\0Linear\0PQ\0" },
         { "MochizukiRenoFeedMode", "Auto\0Content meter\0Game exposure\0" },
@@ -475,7 +475,7 @@ static void ResetMochizuki(Config* c)
 {
     // The keys the page no longer shows (no effect in the RenoDX stage) go back to their defaults too.
     Unset(c->MochizukiHistoryStrength, c->MochizukiStabilizerStrength, c->MochizukiStabilizerThreshold,
-          c->MochizukiInt4, c->MochizukiOriginalModel, c->MochizukiExperimental, c->MochizukiCascadeDetail,
+          c->MochizukiInt4, c->MochizukiOptimizedLayers, c->MochizukiOriginalModel, c->MochizukiExperimental, c->MochizukiCascadeDetail,
           c->MochizukiAntiHalo,
           c->MochizukiJitterHistory, c->MochizukiAntiHaloStrength, c->MochizukiPassEstimate, c->MochizukiApplyModel,
           c->MochizukiUseDepth, c->MochizukiDynamicResolution, c->MochizukiPreprocess, c->MochizukiPreprocessExposure,
@@ -607,7 +607,7 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::EndDisabled();
             HelpMarker("Off: the new model of NVIDIA's 310.9.16 DLL, faster, when dlssnr-amd\\dlssnr-small.bin"
                        "\nis installed (without it the old one runs anyway)."
-                       "\nOn: the model of 310.8, which int4 mixed needs. Switching rebuilds the network.");
+                       "\nOn: the model of 310.8, which the optimized network needs. Switching rebuilds the network.");
         }
 
         bool badge = config->DlssNrBadge.value_or_default();
@@ -1114,7 +1114,7 @@ void RenderMenu(Config* config, float menuResScale)
                 const std::string acoOff = std::string("Not on the ") + card +
                                            ": ACO's machine code is made for the RX 9000 only, so the\ndriver compiles "
                                            "the " + card + " network.";
-                const std::string int4Off = std::string("Not on the ") + card + ": there is no int4 mixed network for it.";
+                const std::string int4Off = std::string("Not on the ") + card + ": there is no optimized network for it.";
                 HelpMarker(rx6000 ? "On the RX 6000: runs ACO's gfx10.3 machine code when dlssnr-amd\\aco-gfx103x is"
                                     "\ninstalled (experimental); without it, or with this off, the driver compiles the"
                                     "\nnetwork. Save Settings and start the game again to apply it."
@@ -1125,14 +1125,27 @@ void RenderMenu(Config* config, float menuResScale)
                                    "\nwrong, turn it off. Save Settings and start the game again to apply it.");
                 ImGui::BeginDisabled(!aco || fp16Net);
                 bool int4 = config->MochizukiInt4.value_or_default();
-                if (ImGui::Checkbox("int4 mixed network (old model only)", &int4))
+                if (ImGui::Checkbox("Optimized network (old model only)", &int4))
                     config->MochizukiInt4 = int4;
                 ImGui::EndDisabled();
                 HelpMarker(fp16Net ? int4Off.c_str()
-                                 : "Runs part of the network in 4-bit integers: about a tenth faster than ACO alone, the"
-                                   "\npicture close to the default network's but not the same. Needs ACO. Switching builds"
-                                   "\nthe other network in a few seconds while the current one keeps running; no restart."
+                                 : "Upstream's CC_SILVER_AARDWOLD_OPTIMIZED, which replaced int4 mixed: the old model made"
+                                   "\nfaster (simpler activation, fixed attention on a few decoder layers, those weights"
+                                   "\nrefitted), its picture very close to the old model's. Needs ACO on an RX 9000. Its"
+                                   "\nweights are made from the old model at its first use. Switching builds the other"
+                                   "\nnetwork in a few seconds while the current one keeps running; no restart."
                                    "\nMade from the old model only, so it runs that one while it is on.");
+                // Its Optimized layers: how much of it runs in int4 and with fixed attention.
+                ImGui::BeginDisabled(!aco || fp16Net || !int4);
+                int layers = int(std::min(config->MochizukiOptimizedLayers.value_or_default(), 3u));
+                if (ImGui::Combo("Optimized layers", &layers, "Quality\0Balanced\0Performance\0Ultra Performance\0"))
+                    config->MochizukiOptimizedLayers = uint32_t(layers);
+                ImGui::EndDisabled();
+                HelpMarker("How far the optimized network goes; every level stays very close to the old model's"
+                           "\npicture. Quality: no int4 layers. Balanced: int4 on some encoder, attention and"
+                           "\nfeed-forward layers. Performance: also fixed attention on the first full-resolution"
+                           "\nlayers. Ultra Performance (default, the fastest): also more int4 layers. A change"
+                           "\nrebuilds the network.");
                 // Upstream's CC_SMALL_FP8_EXPERIMENTAL: its files come with the runtime, its weights from the new model.
                 std::error_code fp8Error;
                 const auto fp8Data = Util::DllPath().parent_path() / L"dlssnr-amd";
@@ -1151,7 +1164,7 @@ void RenderMenu(Config* config, float menuResScale)
                 HelpMarker(fp16Net     ? fp8Off.c_str()
                            : !fp8Files ? "Needs dlssnr-amd\\aco\\experimental and the new model, dlssnr-amd\\dlssnr-small.bin."
                            : !aco      ? "Needs ACO machine code, which is off."
-                           : oldModel  ? "Made from the new model: off with Old model or int4 mixed."
+                           : oldModel  ? "Made from the new model: off with Old model or the optimized network."
                                        : "Upstream's CC_SMALL_FP8_EXPERIMENTAL: the new model made faster (simpler activation,"
                                          "\nfixed attention on three decoder layers, those weights refitted), so its picture"
                                          "\ndiffers somewhat. Its weights are made from the new model at its first use. Switching"
@@ -1191,6 +1204,13 @@ void RenderMenu(Config* config, float menuResScale)
                     if (info.struct_size >= offsetof(MochizukiNrInfo, experimental) + sizeof info.experimental &&
                         info.experimental)
                         ImGui::TextUnformatted("Running the FP8 experimental network");
+                    if (info.struct_size >= offsetof(MochizukiNrInfo, optimized) + sizeof info.optimized &&
+                        info.optimized)
+                        ImGui::Text("Running the optimized network, Optimized layers: %s",
+                                    info.optimized == 1   ? "Quality"
+                                    : info.optimized == 2 ? "Balanced"
+                                    : info.optimized == 3 ? "Performance"
+                                                          : "Ultra Performance");
                     if (info.gpu_ms_median > 0)
                         ImGui::Text("Network GPU time %.2f ms median, %.2f ms p95", info.gpu_ms_median,
                                     info.gpu_ms_p95);

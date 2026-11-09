@@ -243,12 +243,16 @@ MochizukiStabilizerStrength=0
 MochizukiStabilizerThreshold=2
 ; mochizuki ACO: the network as machine code made in advance by ACO (the Linux driver's compiler) from
 ; dlssnr-amd\aco\, about a fifth faster, the same picture; tested by its author on AMD Software 26.9.2.
-; A change takes effect when the game starts again. Int4: with ACO, the int4 mixed network, about a tenth
-; faster again, the picture close to the default network's but not the same; switches without a restart.
+; A change takes effect when the game starts again. Int4: with ACO on an RX 9000, upstream's
+; CC_SILVER_AARDWOLD_OPTIMIZED (int4 mixed's successor), the 310.8 model made faster, the picture very close to it;
+; switches without a restart. Its weights are made once from dlssnr.bin at its first use. OptimizedLayers: 0 Quality
+; (no int4 layers), 1 Balanced, 2 Performance (also fixed attention on the first full-resolution layers), 3 Ultra
+; Performance (more int4 layers, the fastest, the default).
 MochizukiAco=true
 MochizukiInt4=false
+MochizukiOptimizedLayers=3
 ; OriginalModel: the 310.8 model instead of 310.9.16's new one (dlssnr-amd\dlssnr-small.bin, about a third faster,
-; the default when it is there). int4 mixed always runs on the 310.8 model. ApplyModel=false runs the network
+; the default when it is there). Int4 always runs on the 310.8 model. ApplyModel=false runs the network
 ; at full cost but shows the original frame.
 MochizukiOriginalModel=false
 ; Experimental: with ACO on an RX 9000, upstream's CC_SMALL_FP8_EXPERIMENTAL, the new model made faster, the picture

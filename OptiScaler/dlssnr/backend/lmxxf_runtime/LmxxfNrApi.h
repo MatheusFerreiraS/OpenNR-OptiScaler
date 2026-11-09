@@ -84,9 +84,10 @@ extern "C"
 /* The 1080 tier on 1920x1088 instead of NVIDIA's 1920x1152 (DLSS5_NETWORK_1080_ROWS=1088): about 4% faster, slightly
    lossy at the bottom rows. A change rebuilds the network. */
 #define LMXXF_NR_FRAME_FLAG_COMPACT_1080 (1u << 7)
-/* mochizuki only: the int4 mixed network (upstream's [Int4Mixed]), faster, the picture slightly different. Needs the
-   session's ACO and dlssnr-amd\int4\ with dlssnr-int4.bin; else the default network, and the log says why. A change
-   rebuilds the network, the frames keeping the current one meanwhile while VRAM allows. */
+/* mochizuki only: upstream's CC_SILVER_AARDWOLD_OPTIMIZED (int4 mixed until 0.0.8.3), the 310.8 model made faster, at
+   MochizukiNrControls::optimized_layers. Needs RDNA4, the session's ACO and dlssnr-amd\aco\optimized (with int4 layers
+   also int4*\); its weights are made from dlssnr.bin on first use. Else CC_SILVER_AARDWOLD or the Quality level, and
+   the log says why. A change rebuilds the network, the frames keeping the current one meanwhile while VRAM allows. */
 #define LMXXF_NR_FRAME_FLAG_INT4 (1u << 8)
 /* lmxxf, three passes: run two and extrapolate the third from them (upstream's DLSS5_MULTI_PASS_PREDICT): about a
    third less time, close to a real third pass. */

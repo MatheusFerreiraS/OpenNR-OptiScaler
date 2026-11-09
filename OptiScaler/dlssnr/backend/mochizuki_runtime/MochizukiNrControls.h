@@ -201,6 +201,10 @@ extern "C"
         float reno_fast_fine_1;
         float reno_fast_fine_2;
         float reno_fast_edit_strength;
+        /* Upstream 0.0.8.3's [Network] OptimizedLayers, for CC_SILVER_AARDWOLD_OPTIMIZED (LMXXF_NR_FRAME_FLAG_INT4): 0
+         * Quality, 1 Balanced, 2 Performance, 3 Ultra Performance (default, also for a host whose struct ends before
+         * it). A change rebuilds the network. */
+        uint32_t optimized_layers;
     } MochizukiNrControls;
 
     /* What the session is doing, for a menu. Safe to ask from any thread, at any rate. */
@@ -233,7 +237,9 @@ extern "C"
            in ALU (RX 6000, experimental). */
         uint32_t network;
         uint32_t experimental; /* 1: the frames run on CC_SMALL_FP8_EXPERIMENTAL */
-        uint32_t reserved1;    /* 0; keeps the struct's size whole without implicit padding */
+        /* CC_SILVER_AARDWOLD_OPTIMIZED: 0 not running, else 1 + its Optimized layers level (1 Quality .. 4 Ultra
+           Performance) */
+        uint32_t optimized;
         /* The fields end at byte 360, sizeof. */
     } MochizukiNrInfo;
 
