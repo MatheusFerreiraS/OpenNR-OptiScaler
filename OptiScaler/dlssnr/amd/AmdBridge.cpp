@@ -507,7 +507,9 @@ bool NeuralHubFgInstalled(const std::filesystem::path& library, const std::strin
     std::error_code ec;
     const auto dir = Directory();
     const auto host = dir / L"dlssnr_amd_host";
-    return std::filesystem::exists(host / L"neuralhub_host.dll", ec) &&
+    // dlssnr_amd_host\ is made when the host first loads: before that, danielblnc 0.8.0 beside OptiScaler is the host
+    const char* build = std::filesystem::exists(host / L"neuralhub_host.dll", ec) ? "0.8.0" : RuntimeName();
+    return build && std::strcmp(build, "0.8.0") == 0 &&
            (std::filesystem::exists(host / L"nvngx_dlssg.dll", ec) ||
             std::filesystem::exists(library / L"nvngx_dlssg.dll", ec) ||
             std::filesystem::exists(dir / L"nvngx_dlssg.dll", ec));
