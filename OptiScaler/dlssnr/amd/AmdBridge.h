@@ -19,11 +19,11 @@ bool HasFiles();
 // game's own nvngx_dlssg.dll would put the host on D3D12 and take the NR away. Never with the host kept on HIP, nor on
 // a GPU before RDNA3 (HostD3d12Supported).
 bool NeuralHubFgInstalled();
-// The same with OptiScaler's library folder, HostComputeBackend, FGOutput=dlssg and the NR runtime given, and no GPU
-// check: Config's own load asks this way, since LibraryFolder() reads Config and would construct it again from inside
-// its constructor.
+// The same with OptiScaler's library folder, HostComputeBackend, FGOutput=dlssg, an FGOutput set to another FG (FSR FG,
+// XeFG, reprojection) and the NR runtime given, and no GPU check: Config's own load asks this way, since LibraryFolder()
+// reads Config and would construct it again from inside its constructor.
 bool NeuralHubFgInstalled(const std::filesystem::path& library, const std::string& backend, bool dlssgOutput,
-                          bool danielNr);
+                          bool otherFgOutput, bool danielNr);
 // The host's D3D12 compute runtime has code for gfx11 and gfx12 only: an RX 6000 (gfx10.3) gets 0x887a0005 from the
 // driver and the game dies. The GPU behind luid, or the primary one; true when its generation is unknown.
 bool HostD3d12Supported(const LUID* luid = nullptr);

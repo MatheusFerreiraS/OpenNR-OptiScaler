@@ -1153,10 +1153,10 @@ bool Config::Reload(std::filesystem::path iniPath)
                     library = Util::DllPath().parent_path() / library;
                 const auto nr = NrBackend.value_or_default();
                 const bool danielNr = nr.empty() || _stricmp(nr.c_str(), "auto") == 0 || _stricmp(nr.c_str(), "daniel") == 0;
-                const bool neuralHubFg =
-                    DlssNr::AmdBridge::NeuralHubFgInstalled(library, HostComputeBackend.value_or_default(),
-                                                            FGOutput.value_for_config_ignore_default() == FGOutput::DLSSG,
-                                                            danielNr);
+                const auto output = FGOutput.value_for_config_ignore_default();
+                const bool neuralHubFg = DlssNr::AmdBridge::NeuralHubFgInstalled(
+                    library, HostComputeBackend.value_or_default(), output == FGOutput::DLSSG,
+                    output.has_value() && *output != FGOutput::DLSSG && *output != FGOutput::NoFG, danielNr);
                 SpoofHAGS.set_volatile_value(FGInput.value_or_default() == FGInput::NvngxFG ||
                                              FGInput.value_or_default() == FGInput::DLSSG ||
                                              neuralHubFg);
