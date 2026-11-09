@@ -876,6 +876,9 @@ void OpenNrRrFeatureDx12::FallBack(const std::string& why)
 
     _fellBack = true;
     LOG_ERROR("OpenRR: {}; switching Ray Reconstruction back to the previous provider", why);
+    // The game often shows its error and exits before the next Present, so say what DRED saw here.
+    if (Device != nullptr && FAILED(Device->GetDeviceRemovedReason()))
+        Util::GetDeviceRemovedReason(Device);
     ImGui::InsertNotification(
         { ImGuiToastType::Warning, 10000, "OpenRR stopped, Ray Reconstruction goes back to FSR-RR (see the log)" });
 
