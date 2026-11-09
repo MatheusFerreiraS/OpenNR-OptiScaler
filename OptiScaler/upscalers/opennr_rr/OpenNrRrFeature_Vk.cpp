@@ -254,6 +254,12 @@ OpenNrRrFeatureVk::OpenNrRrFeatureVk(unsigned int InHandleId, NVSDK_NGX_Paramete
     _moduleLoaded = _api != nullptr;
 }
 
+feature_version OpenNrRrFeatureVk::Version()
+{
+    const auto v = OpenNrRr::RuntimeVersion();
+    return v.major != 0 || v.minor != 0 || v.patch != 0 ? v : feature_version { 0, 1, 3 };
+}
+
 OpenNrRrFeatureVk::~OpenNrRrFeatureVk()
 {
     if (State::Instance().isShuttingDown || _context == nullptr)

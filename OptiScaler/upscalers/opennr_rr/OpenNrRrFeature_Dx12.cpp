@@ -651,6 +651,36 @@ std::string DenoisedNrStatus()
     std::lock_guard lock(d.mutex);
     return d.status;
 }
+feature_version RuntimeVersion()
+{
+    feature_version v;
+
+    if (s_module == nullptr)
+        return v;
+
+    HRSRC res = FindResourceW(s_module, MAKEINTRESOURCEW(VS_VERSION_INFO), RT_VERSION);
+    HGLOBAL data = res != nullptr ? LoadResource(s_module, res) : nullptr;
+    auto bytes = data != nullptr ? static_cast<const uint8_t*>(LockResource(data)) : nullptr;
+    const DWORD size = res != nullptr ? SizeofResource(s_module, res) : 0;
+
+    for (DWORD i = 0; bytes != nullptr && i + sizeof(VS_FIXEDFILEINFO) <= size; i += 4)
+    {
+        auto info = reinterpret_cast<const VS_FIXEDFILEINFO*>(bytes + i);
+
+        if (info->dwSignature != VS_FFI_SIGNATURE)
+            continue;
+
+        v = { HIWORD(info->dwFileVersionMS), LOWORD(info->dwFileVersionMS), HIWORD(info->dwFileVersionLS) };
+        break;
+    }
+
+    // 0.1.1 shipped saying 0.1.0 there; the fast mode came with it
+    if (v.major == 0 && v.minor == 1 && v.patch == 0 && GetProcAddress(s_module, "OnrRrSetFastMode") != nullptr)
+        v.patch = 1;
+
+    return v;
+}
+
 } // namespace OpenNrRr
 
 OpenNrRrFeatureDx12::OpenNrRrFeatureDx12(unsigned int InHandleId, NVSDK_NGX_Parameter* InParameters)
@@ -661,6 +691,13 @@ OpenNrRrFeatureDx12::OpenNrRrFeatureDx12(unsigned int InHandleId, NVSDK_NGX_Para
 
     std::lock_guard lock(s_mutex);
     _moduleLoaded = Load();
+}
+
+// The runtime's own release once it loaded; before that, the one this build ships with.
+feature_version OpenNrRrFeatureDx12::Version()
+{
+    const auto v = OpenNrRr::RuntimeVersion();
+    return v.major != 0 || v.minor != 0 || v.patch != 0 ? v : feature_version { 0, 1, 3 };
 }
 
 OpenNrRrFeatureDx12::~OpenNrRrFeatureDx12()

@@ -39,6 +39,8 @@ int FastModeState();
 // The DLSS-D texture and scalar keys the inputs inventory in the log reads.
 std::vector<const char*> NgxTextureKeys();
 std::vector<const char*> NgxScalarKeys();
+// The loaded runtime's release, from its file version. Zero before it loads or without a version resource.
+feature_version RuntimeVersion();
 } // namespace OpenNrRr
 
 class OpenNrRrFeatureDx12 : public IFeature_Dx12
@@ -48,7 +50,7 @@ class OpenNrRrFeatureDx12 : public IFeature_Dx12
     ~OpenNrRrFeatureDx12();
 
     // OpenRR's release, as the overlay and the menu show it (not the runtime's ABI)
-    feature_version Version() override { return { 0, 1, 2 }; }
+    feature_version Version() override;
     Upscaler GetUpscalerType() const override { return Upscaler::OpenNrRr; }
     bool IsWithDx12() final { return false; }
     // without the NR on the denoised image, which gets a line of its own
