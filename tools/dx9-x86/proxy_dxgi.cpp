@@ -19,26 +19,43 @@ constexpr wchar_t LogName[] = L"dxgi-x86.log", Section[] = L"DxgiX86", SurfaceNa
 namespace
 {
 HMODULE systemDxgi = nullptr;
-INIT_ONCE systemOnce = INIT_ONCE_STATIC_INIT;
+SRWLOCK systemLock = SRWLOCK_INIT;
+DWORD loadingThread = 0;
 
 // No CRT here: Windows compatibility shims (AcGenral) call the forwarded exports while the process starts, before
-// this DLL's CRT is up; a std::wstring there recursed until the stack ran out (Tomb Raider 2013)
-BOOL CALLBACK LoadSystem(PINIT_ONCE, PVOID, PVOID*)
+// this DLL's CRT is up; a std::wstring there recursed until the stack ran out (Tomb Raider 2013). Loading the system
+// DLL makes the shim call this DLL's SetAppCompatStringPointer again on the same thread (it finds the exports by the
+// name dxgi.dll): that call sees the load in progress and gets nothing, where INIT_ONCE waited for itself for good.
+// A load that fails is tried again on a later call.
+HMODULE LoadSystem()
 {
-    wchar_t path[MAX_PATH + 16] {};
-    const UINT n = GetSystemDirectoryW(path, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH)
-        return TRUE;
-    lstrcatW(path, L"\\dxgi.dll");
-    systemDxgi = LoadLibraryW(path);
-    // FALSE lets a later call try again: the shims' first call comes while this DLL is still loading, and the system
-    // DLL may not load at that point
-    return systemDxgi != nullptr;
+    if (const auto loaded = reinterpret_cast<HMODULE>(InterlockedCompareExchangePointer(
+            reinterpret_cast<void**>(&systemDxgi), nullptr, nullptr)))
+        return loaded;
+    if (InterlockedCompareExchange(&loadingThread, 0, 0) == GetCurrentThreadId())
+        return nullptr;
+    AcquireSRWLockExclusive(&systemLock);
+    if (!systemDxgi)
+    {
+        wchar_t path[MAX_PATH + 16] {};
+        const UINT n = GetSystemDirectoryW(path, MAX_PATH);
+        if (n != 0 && n < MAX_PATH)
+        {
+            lstrcatW(path, L"\\dxgi.dll");
+            InterlockedExchange(&loadingThread, GetCurrentThreadId());
+            const HMODULE loaded = LoadLibraryW(path);
+            InterlockedExchange(&loadingThread, 0);
+            InterlockedExchangePointer(reinterpret_cast<void**>(&systemDxgi), loaded);
+        }
+    }
+    const HMODULE loaded = systemDxgi;
+    ReleaseSRWLockExclusive(&systemLock);
+    return loaded;
 }
 void ReplayCompat();
 FARPROC SystemProc(const char* name)
 {
-    if (!InitOnceExecuteOnce(&systemOnce, LoadSystem, nullptr, nullptr))
+    if (!LoadSystem())
         return nullptr;
     ReplayCompat();
     return GetProcAddress(systemDxgi, name);
