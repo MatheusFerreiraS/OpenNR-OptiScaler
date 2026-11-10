@@ -1125,8 +1125,8 @@ class Config
     CustomOptional<std::string> OpenNrRrNrImage { "denoised" };
     // denoised: how fast the NR's delta follows where the camera moves, 0.01..1; 0.3 is the behaviour before 0.05
     CustomOptional<float> OpenNrRrNrDeltaRate { 0.05f };
-    // new (the runtime's cheaper kernels, a small measured loss of precision) or legacy, flipped live from the menu.
-    // Anything but legacy is new: an old Mode=faithful in an ini means nothing now
+    // new (the runtime's cheaper kernels, a small measured loss of precision), fast (the experimental level above it, a
+    // larger loss) or legacy, flipped live from the menu. Anything else is new: an old Mode=faithful means nothing now
     CustomOptional<std::string> OpenNrRrMode { "new" };
     // what runs the network: auto (D3D12 in the game's own command list when the runtime's check passes, otherwise
     // Vulkan), d3d12 or vulkan; read when the runtime is created

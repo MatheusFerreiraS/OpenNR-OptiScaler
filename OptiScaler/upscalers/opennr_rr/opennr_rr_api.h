@@ -346,7 +346,8 @@ __declspec(dllexport)
 int32_t OnrRrSetDeltaRate(void* context, float rate);
 // The user's "Fast mode": cheaper kernels with a small, measured loss (docs/FASE24-FASTMODE.md). Takes effect on the next
 // recorded frame, keeping every history; the kernels are built on the first frame that asks. Get: 0 off, 1 on, 2 building,
-// 3 not available. Before Record, on the render thread.
+// 3 not available. Before Record, on the render thread. on = 2 asks for the experimental level on top of it (faster, a
+// larger loss); a runtime without it, or a shader folder without its kernels, runs that as 1.
 #ifdef ONR_RR_BUILDING
 __declspec(dllexport)
 #endif

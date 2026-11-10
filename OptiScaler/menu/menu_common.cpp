@@ -3536,17 +3536,21 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                 const int fastState = OpenNrRr::FastModeState();
                 if (fastState < 0)
                     ImGui::BeginDisabled();
-                const char* modes[] = { "New", "Legacy" };
-                int mode = config->OpenNrRrMode.value_or_default() == "legacy" ? 1 : 0;
-                if (ImGui::Combo("Mode", &mode, modes, 2))
-                    config->OpenNrRrMode = mode == 1 ? "legacy" : "new";
+                const char* modes[] = { "New", "Fast (experimental)", "Legacy" };
+                const std::string modeNow = config->OpenNrRrMode.value_or_default();
+                int mode = modeNow == "legacy" ? 2 : modeNow == "fast" ? 1 : 0;
+                if (ImGui::Combo("Mode", &mode, modes, 3))
+                    config->OpenNrRrMode = mode == 2 ? "legacy" : mode == 1 ? "fast" : "new";
                 if (fastState < 0)
                     ImGui::EndDisabled();
                 ShowTooltip(fastState < 0 ? "This OpenRR runtime does not have the New mode."
-                                          : "New: cheaper kernels for a lower GPU time (about 8%), at a small, measured loss\n"
+                                          : "New: cheaper kernels for a lower GPU time (about 10%), at a small, measured loss\n"
                                             "of image precision. Legacy: the kernels from before, closest to NVIDIA's output.\n"
+                                            "Fast (experimental): New with more cut, and the deepest levels of the network\n"
+                                            "read from the previous frame: faster than New (about 6%), at a larger loss. Look at\n"
+                                            "very bright points and at stability in motion; a runtime without it runs New.\n"
                                             "Same network and histories, so it flips live and you can compare back and forth.\n"
-                                            "The first time, New's kernels are built in the background (up to a minute), and\n"
+                                            "The first time, the kernels are built in the background (up to a minute), and\n"
                                             "the image stays on Legacy until then.");
                 if (fastState >= 2)
                 {
