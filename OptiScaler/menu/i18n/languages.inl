@@ -2,31 +2,7 @@
 const Entry kptBR[] = {
 #include "pt-BR.inl"
 };
-const Entry kru[] = {
-#include "ru.inl"
-};
-const Entry kzhCN[] = {
-#include "zh-CN.inl"
-};
-const Entry kja[] = {
-#include "ja.inl"
-};
-const Entry kko[] = {
-#include "ko.inl"
-};
-const Entry kvi[] = {
-#include "vi.inl"
-};
-const Entry kth[] = {
-#include "th.inl"
-};
 const Language kLanguages[] = {
     { "en", nullptr, 0 },
     { "pt-BR", kptBR, std::size(kptBR) },
-    { "ru", kru, std::size(kru) },
-    { "zh-CN", kzhCN, std::size(kzhCN) },
-    { "ja", kja, std::size(kja) },
-    { "ko", kko, std::size(kko) },
-    { "vi", kvi, std::size(kvi) },
-    { "th", kth, std::size(kth) },
 };
