@@ -497,9 +497,10 @@ std::filesystem::path LibraryFolder()
 bool HostKeptOnHip(const std::string& backend) { return _stricmp(backend.c_str(), "HIP") == 0; }
 bool HostKeptOnHip() { return HostKeptOnHip(Config::Instance()->HostComputeBackend.value_or_default()); }
 bool NeuralHubFgInstalled(const std::filesystem::path& library, const std::string& backend, bool dlssgOutput,
-                          bool danielNr)
+                          bool otherFgOutput, bool danielNr)
 {
-    if (HostKeptOnHip(backend))
+    // Another FG picked as the output (XeFG, FSR FG): NeuralHub's DLSS-FG would take the game's frames from it
+    if (HostKeptOnHip(backend) || otherFgOutput)
         return false;
     // With danielblnc's NR the game's own nvngx_dlssg.dll does not count: the FG would take its NR away.
     if (danielNr && !dlssgOutput && _stricmp(backend.c_str(), "D3D12") != 0)
@@ -507,7 +508,9 @@ bool NeuralHubFgInstalled(const std::filesystem::path& library, const std::strin
     std::error_code ec;
     const auto dir = Directory();
     const auto host = dir / L"dlssnr_amd_host";
-    return std::filesystem::exists(host / L"neuralhub_host.dll", ec) &&
+    // dlssnr_amd_host\ is made when the host first loads: before that, danielblnc 0.8.0 beside OptiScaler is the host
+    const char* build = std::filesystem::exists(host / L"neuralhub_host.dll", ec) ? "0.8.0" : RuntimeName();
+    return build && std::strcmp(build, "0.8.0") == 0 &&
            (std::filesystem::exists(host / L"nvngx_dlssg.dll", ec) ||
             std::filesystem::exists(library / L"nvngx_dlssg.dll", ec) ||
             std::filesystem::exists(dir / L"nvngx_dlssg.dll", ec));
@@ -524,10 +527,11 @@ bool HostD3d12Supported(const LUID* luid)
 bool NeuralHubFgInstalled()
 {
     // The INI's own FGOutput, read once: a volatile override or a menu change mid-game does not move the host.
-    static const bool dlssgOutput =
-        Config::Instance()->FGOutput.value_for_config_ignore_default() == FGOutput::DLSSG;
+    static const auto output = Config::Instance()->FGOutput.value_for_config_ignore_default();
+    static const bool dlssgOutput = output == FGOutput::DLSSG;
+    static const bool otherFgOutput = output.has_value() && *output != FGOutput::DLSSG && *output != FGOutput::NoFG;
     return NeuralHubFgInstalled(LibraryFolder(), Config::Instance()->HostComputeBackend.value_or_default(),
-                                dlssgOutput,
+                                dlssgOutput, otherFgOutput,
                                 DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel) &&
            HostD3d12Supported();
 }

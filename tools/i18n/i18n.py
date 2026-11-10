@@ -31,7 +31,7 @@ SKIP_CALLS = re.compile(
     r"(LOG_[A-Z_]+|strcmp|_stricmp|stricmp|strstr|wcscmp|GetProcAddress|GetModuleHandle[AW]?|LoadLibrary[AW]?"
     r"|IM_ASSERT|assert|ShellExecute[AW]?|ImGui::PushID|ImGui::GetID|ImGui::BeginChild|ImGui::BeginTable|ScopedCard::Shows"
     r"|ImGui::OpenPopup|ImGui::BeginPopup|ImHashStr|readBool|readString|readInt|readFloat|readUInt|readWString"
-    r"|SetValue|GetValue|find|contains|ends_with|starts_with|Screenshot::\w+)$")
+    r"|SetValue|GetValue|find|contains|ends_with|starts_with|Screenshot::\w+|CheckShortcut)$")
 
 
 def tokens(src):
@@ -243,6 +243,12 @@ def cmd_keys():
     KEYS_FILE.write_text("".join(lines), encoding="utf-8", newline="\n")
     print(f"{len(found)} keys, {sum(len(k) for k in found)} bytes, {sum(len(k.split()) for k in found)} words; "
           f"{len(set(found) - old)} new, {len(old - set(found))} gone")
+    for lang in LANGUAGES:
+        table = read_table(lang)
+        stale = set(table) - set(found)
+        if stale:
+            write_table(lang, {k: v for k, v in table.items() if k in found})
+            print(f"{lang}: {len(stale)} stale entries dropped")
     return 0
 
 

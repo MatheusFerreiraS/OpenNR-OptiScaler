@@ -1405,6 +1405,11 @@ layout(set = 0, binding = 3, std430) readonly buffer WgtF32  { float   wgt_f32[]
 #endif
 // NR_SWI4_MASKQ: the int4 x/y packing and the expansion's dequantisation skip the tiles whose MMAs the
 // edge masks already skip (their results are never used).
+// NR_SWI4_ROT: 8 = the int4 expansion's input rotated by an 8-point Walsh-Hadamard block in each lane before its
+// quantiser, as the ViT int4 sites are (the host builds the weights in the same basis: int4 settings.txt NR_SWI4_ROT).
+#ifndef NR_SWI4_ROT
+#define NR_SWI4_ROT 0
+#endif
 #ifndef NR_SWI4_MASKQ
 #define NR_SWI4_MASKQ 0
 #endif

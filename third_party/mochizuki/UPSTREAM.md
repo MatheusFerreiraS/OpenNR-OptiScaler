@@ -4,12 +4,12 @@ The Vulkan network behind `MochizukiNrRuntime.dll` (`NrBackend=mochizuki`).
 
 - Source: https://gitlab.com/mochizuki0323/DLSSNR-AMD (moved from GitHub on 2026-10-30 with its history; the
   commits named here are the same on GitLab)
-- Pinned commit: `c53878b` (2026-11-02, tag v0.0.8.2; v0.0.8.1 is `339938c`): `windows/src/core/`,
-  `windows/shaders/` (rdna4, passes, renodx, renodx-prep, renodx-fast), `windows/build/` and `windows/data/aco/`
-  (records, int4) as upstream has them, apart from the local patches below, and the Linux network ACO is made from
-  (`linux/build/build_network.py`, `linux/shaders/rdna4`, `linux/shaders/passes`) from the same tag. See Sync to
-  v0.0.8.2
-- Before it: `cc27501` (v0.0.7, 2026-10-19), and before that `8a70f7f4` (v0.0.5-win-preview) with the hotfix
+- Pinned commit: `931c50f` (2026-11-08, tag v0.0.8.3): `windows/src/core/`, `windows/shaders/` (rdna4, passes,
+  renodx, renodx-prep, renodx-fast), `windows/build/` and `windows/data/aco/` (records, int4) as upstream has them,
+  apart from the local patches below, and the Linux network ACO is made from (`linux/build/build_network.py`,
+  `linux/shaders/rdna4`, `linux/shaders/passes`) and `linux/data/` (int4, int4-ultra, optimized, experimental) from
+  the same tag. See Sync to v0.0.8.3. Upstream's unreleased `dev/0.0.8.4` is not taken
+- Before it: `c53878b` (v0.0.8.2, 2026-11-02; v0.0.8.1 is `339938c`), `cc27501` (v0.0.7, 2026-10-19), and before that `8a70f7f4` (v0.0.5-win-preview) with the hotfix
   `f35f00f` and `windows/src/core/` from `ab00d2b` (v0.0.6-win-preview-alpha)
 - `linux/package/model-tools/` is still from `791b046` (v0.0.1); the model it makes has not changed
 - Licence: MIT, `LICENSE` beside this file
@@ -97,6 +97,53 @@ MochizukiNrRuntime.cpp` hosts the runtime instead, on a Vulkan device of its own
     fills it (upstream fills it only through its runtime's lazy path; the host here never takes the shared build).
 
 The new passes are in both `build_network.py` `RUNTIME` lists.
+
+34. (0.0.8.3 sync) `nr_runtime.cpp`/`.hpp`: CC_SILVER_AARDWOLD_OPTIMIZED (`RuntimeConfig::network = 3`,
+    `RuntimeConfig::layers`, `Runtime::optimized()`, `int4()`, `layers()`) as upstream has it, except the places, as
+    patch 33 does for the experimental network: its shaders in `dlssnr-amd/aco/optimized/shaders`, its weights and
+    pipeline cache `aco-cache/dlssnr-optimized.nrb` and `pipeline-optimized.nrb`, its int4 weights
+    `aco-cache/dlssnr-optimized-int4.nrb` (upstream: `CC_SILVER_AARDWOLD_OPTIMIZED.bin`,
+    `CC_SILVER_AARDWOLD_OPTIMIZED_INT4.bin` beside the models, made by its installer; the model files keep their names
+    here, `dlssnr.bin` and `dlssnr-small.bin`); RDNA4 only. And `nr::make_int4_weights` (`windows/src/tools/
+    nr_int4_weights.cpp`'s run, under the build lock), so that the host makes the int4 weights at first use.
+
+### Sync to v0.0.8.3 (2026-11-09)
+
+One upstream commit (`931c50f`). Merged three ways (base `c53878b`, ours, theirs) over the vendored paths; every
+local patch kept, none made unnecessary. Taken as upstream has it:
+- CC_SILVER_AARDWOLD_OPTIMIZED in place of CC_SILVER_AARDWOLD_INT4_MIXED: the 310.8 model with ReLU in the Swin MLPs,
+  fixed attention on decoder layers 66, 67 and 70, merged V/O projections, the constant C=512 heads skipped
+  (`const-heads.txt`, `NR_CONSTH`, the `0x7FC00001` scale mark in `nr_graph.cpp`), decoder layers on pipelines of
+  their own (`block-routes.txt`), weights = the model XOR `linux/data/optimized/dlssnr-optimized.delta` (7.4 MB, none
+  of NVIDIA's weights; entries the model does not have, `performance/<name>`, are added) checked by SHA-256. Optimized
+  layers: Quality (no int4), Balanced (`int4/`, `pipelines-int4.json`, new tables, `NR_SWI4_ROT=8`), Performance
+  (`pipelines-performance.json`, Balanced's tables, the pack's `performance/` entries via `--model-pack-variant`),
+  Ultra Performance (`pipelines-ultra.json`, `linux/data/int4-ultra/`, the default). The int4 weights are made from
+  the optimized pack, not the model (new hash); the int4 records are upstream's new ones (44 removed, 62 added);
+  `nr_ini_int4.hpp`/`nr_ini_network.hpp` read `[Network] OptimizedLayers` and take the old name as the new network;
+- 5 new default ACO records (the optimized network's `fswin32d`/`v`, `attn` with `NR_CONSTH`) and aliases; the default
+  network's SPIR-V and records are unchanged;
+- the RenoDX stage: `NRSdrBlackRestore` and `NRDisplayPedestal` renumbered (0 Off, the new default; 3 Auto). The host
+  maps OptiScaler's keys (0 Auto, as before; 3 now Off) and its own defaults to the old Auto, so the picture is the
+  same unless Off is chosen;
+- `nr_vram_tag.hpp` `BuildScope`, `nr_control_shared.hpp` version 17 (not used here).
+
+Not taken: upstream's host (`windows/src/pe/`: Memory Guard off by default, the frame generation fixes, the menus,
+diagnostics), packaging and installers. Issue #5 (ACO refused with VK_EXT_vertex_input_dynamic_state or graphics
+pipeline libraries, `splice` assuming push constants at user-data entry 1) needs no patch here: the core only ever
+runs on the host's own VkDevice (`MochizukiNrRuntime.cpp` `Vulkan::Create`), which enables neither; Vulkan, D3D11 and
+D3D9 games reach it through D3D12 resources it imports.
+
+Harness (RX 9070 XT, AMD Software 26.10.1, 40 frames, pan 8 px a frame, the sync worktree's `out/tests.ps1`), against the
+dc7566a11 build: small and 310.8 model, 720p and 1080p, driver compiler and ACO, byte-identical (the first run of small
+1080p with the driver compiler differed once at 54.9 dB; four more runs of both builds, one from a cold pipeline cache,
+gave the same bytes); CC_SMALL_FP8_EXPERIMENTAL and forced RDNA3 (720p) byte-identical. Every network SPIR-V the
+build makes (shaders, shaders-rdna3, shaders-rdna2, aco, aco/experimental) is byte-identical to the build before, and
+every SPIR-V of the new networks has its upstream record (optimized 66, int4 78, performance 80, ultra 80; only the
+two temporal motion shaders, as before). CC_SILVER_AARDWOLD_OPTIMIZED, ACO, network GPU time, CC_SILVER_AARDWOLD /
+Quality / Balanced / Performance / Ultra Performance: 720p 5.6 / 4.0 / 4.1 / 4.0 / 4.0 ms, 1080p 10.5 / 6.7 / 6.5 / 6.2
+/ 6.3 ms; 39.4-41.0 dB from CC_SILVER_AARDWOLD's picture (0.7-1.8% darker), deterministic over two runs. Weights made
+at first use: the FP8 pack 0.5 s, the int4 weights 4.8 s, both with upstream's SHA-256.
 
 ### Sync to v0.0.8.2 (2026-11-03)
 
@@ -276,8 +323,9 @@ Measured with the harness (RX 9070 XT, AMD Software 26.9.2, pan 8 px a frame), t
 compiler / ACO: 1080p 13.9 / 10.5 ms, 2 passes 27.4 / 20.2, 1707x961 11.4 / 8.9, 1280x720 7.6 / 6.0, 3840x2160
 50.9 / 38.5. Picture 54-57 dB from the driver-compiled one. First start 22.5 s (the imports), then 1.5 s.
 
-## int4 mixed (OptiScaler's `MochizukiInt4`)
+## int4 mixed (OptiScaler's `MochizukiInt4`, until 0.0.8.3)
 
+Since v0.0.8.3 `MochizukiInt4` runs CC_SILVER_AARDWOLD_OPTIMIZED (below); this section is how int4 mixed was.
 Upstream's second network, part of it in 4-bit integers, built only as ACO's machine code. Vendored for it:
 `linux/data/int4/rdna4/` (the quantisation tables `vit/` and `swin/`, `settings.txt`, the weights' hash),
 `linux/shaders/rdna4/pipelines-int4.json`, `windows/data/aco/int4/` (75 records and their aliases) and
@@ -323,6 +371,23 @@ Harness (RX 9070 XT, AMD Software 26.10.1, ACO, 60 frames, 4 rounds, the runtime
 (pan of 8 px a frame at 1080p: 47.0 dB). All default paths byte-identical to the build before: RDNA4 small and 310.8
 model, 720p and 1080p, driver and ACO, pan, int4 mixed; forced RDNA3 and RDNA2. The flag on the forced networks or without
 ACO: byte-identical to it being off.
+
+## CC_SILVER_AARDWOLD_OPTIMIZED (OptiScaler's `MochizukiInt4` + `MochizukiOptimizedLayers`)
+
+Upstream's network of v0.0.8.3, int4 mixed's successor (see Sync to v0.0.8.3), ACO's machine code only, RX 9000.
+The build (`tools/build-mochizuki-runtime.cmd`) writes `dlssnr-amd/aco/optimized/` (`shaders/` from `--optimized`,
+`dlssnr-optimized.delta`, `dlssnr-optimized.sha256`, and `dlssnr-optimized-int4.sha256` = upstream's
+`linux/data/int4/rdna4/dlssnr-int4.sha256`), `int4/` (Balanced: `--int4`, its tables and settings), `int4-performance/`
+(`--performance`, Balanced's tables) and `int4-ultra/` (`--ultra`, Balanced's tables with int4-ultra's and its
+settings); the int4 records (all three levels) in `aco/int4/records`.
+
+The host asks for it with `LMXXF_NR_FRAME_FLAG_INT4` (OptiScaler's `MochizukiInt4`, so an old `MochizukiInt4=true`
+gets it) at `MochizukiNrControls::optimized_layers` (OptiScaler's `MochizukiOptimizedLayers`, 0 Quality to 3 Ultra
+Performance, default 3 as upstream's), both part of the network key. On the builder thread, before the build, it makes
+`aco-cache/dlssnr-optimized.nrb` from `dlssnr.bin` and the difference (`MakeWeights`, the experimental network's code
+with upstream's added entries) and, for a level with int4 layers, `aco-cache/dlssnr-optimized-int4.nrb` with
+`nr::make_int4_weights` and `int4-ultra/`, kept when its SHA-256 is upstream's. Anything missing: the core runs
+CC_SILVER_AARDWOLD, or the network at Quality, and logs why. `MochizukiNrInfo::optimized` is 1 + the level running.
 
 ## NR's place (OptiScaler's `MochizukiPlacement`)
 

@@ -39,11 +39,16 @@ PresentChain presentChain = nullptr;
 Reset9 reset9 = nullptr;
 Reset9Ex reset9Ex = nullptr;
 
+// No CRT here: Windows compatibility shims (AcGenral) call the forwarded exports while the process starts, before
+// this DLL's CRT is up; a std::wstring there recursed until the stack ran out (Tomb Raider 2013)
 BOOL CALLBACK LoadSystem(PINIT_ONCE, PVOID, PVOID*)
 {
-    wchar_t folder[MAX_PATH] {};
-    GetSystemDirectoryW(folder, MAX_PATH);
-    system9 = LoadLibraryW((std::wstring(folder) + L"\\d3d9.dll").c_str());
+    wchar_t path[MAX_PATH + 16] {};
+    const UINT n = GetSystemDirectoryW(path, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH)
+        return TRUE;
+    lstrcatW(path, L"\\d3d9.dll");
+    system9 = LoadLibraryW(path);
     return TRUE;
 }
 template <class T> T System(const char* name)

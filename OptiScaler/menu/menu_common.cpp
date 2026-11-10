@@ -9417,7 +9417,8 @@ void MenuCommon::RenderOutputScalingSettings(RenderMenuContext& ctx)
             for (auto& opt : ds_options)
             {
                 if (isUpsampleRatio && opt.value > Scaler::Bicubic)
-                    opt.set_disabled(true, opt.tooltip + "\n\n" + disabledReason);
+                    opt.set_disabled(true, std::string(MenuLocale::Text(opt.tooltip.c_str())) + "\n\n" +
+                                               MenuLocale::Text(disabledReason.c_str()));
             }
 
             if (isUpsampleRatio && _ssDownsampler > Scaler::Bicubic)

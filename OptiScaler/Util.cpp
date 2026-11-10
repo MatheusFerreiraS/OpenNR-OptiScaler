@@ -11,6 +11,7 @@
 #include <queue>
 
 #include <hooks/Gdi32_Hooks.h>
+#include <magic_enum.hpp>
 
 typedef LONG(WINAPI* RtlGetVersionPtr)(PRTL_OSVERSIONINFOW);
 typedef decltype(&GetFileVersionInfoSizeW) PFN_GetFileVersionInfoSizeW;
@@ -847,6 +848,73 @@ void Util::GetDeviceRemovedReason(ID3D12Device* pDevice)
     default:
         LOG_ERROR("Device removed reason: Unknown ({:X})", (UINT) reason);
     }
+
+    LogDred(pDevice);
+}
+
+// What DRED recorded when the device went (on only when OptiScaler.dred turned it on at device creation): the lists the
+// GPU had not finished, the operation it stopped at, and the allocations around a page fault. Once per process.
+void Util::LogDred(ID3D12Device* pDevice)
+{
+    static std::atomic<bool> logged { false };
+    if (logged.exchange(true))
+        return;
+
+    ID3D12DeviceRemovedExtendedData1* dred = nullptr;
+    if (FAILED(pDevice->QueryInterface(IID_PPV_ARGS(&dred))))
+    {
+        LOG_ERROR("DRED: not available on this device");
+        return;
+    }
+
+    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 crumbs {};
+    if (auto hr = dred->GetAutoBreadcrumbsOutput1(&crumbs); FAILED(hr))
+        LOG_ERROR("DRED breadcrumbs: none ({:X}), was OptiScaler.dred there when the game started?", (UINT) hr);
+
+    int lists = 0;
+    for (auto node = crumbs.pHeadAutoBreadcrumbNode; node != nullptr && lists < 32; node = node->pNext)
+    {
+        const UINT done = node->pLastBreadcrumbValue != nullptr ? *node->pLastBreadcrumbValue : 0;
+        if (done >= node->BreadcrumbCount)
+            continue;
+
+        ++lists;
+        LOG_ERROR("DRED list {} '{}' on queue '{}': {} of {} operations done", (void*) node->pCommandList,
+                  node->pCommandListDebugNameW ? wstring_to_string(node->pCommandListDebugNameW) : "",
+                  node->pCommandQueueDebugNameW ? wstring_to_string(node->pCommandQueueDebugNameW) : "", done,
+                  node->BreadcrumbCount);
+
+        const UINT first = done > 4 ? done - 4 : 0;
+        for (UINT i = first; i < node->BreadcrumbCount && i <= done + 4; ++i)
+        {
+            std::string context;
+            for (UINT c = 0; c < node->BreadcrumbContextsCount; ++c)
+                if (node->pBreadcrumbContexts[c].BreadcrumbIndex == i && node->pBreadcrumbContexts[c].pContextString)
+                    context = " " + wstring_to_string(node->pBreadcrumbContexts[c].pContextString);
+
+            LOG_ERROR("DRED   {} {} {}{}", i == done ? ">" : " ", i, magic_enum::enum_name(node->pCommandHistory[i]), context);
+        }
+    }
+
+    D3D12_DRED_PAGE_FAULT_OUTPUT1 fault {};
+    if (SUCCEEDED(dred->GetPageFaultAllocationOutput1(&fault)) && fault.PageFaultVA != 0)
+    {
+        LOG_ERROR("DRED page fault at {:X}", fault.PageFaultVA);
+        int n = 0;
+        for (auto a = fault.pHeadExistingAllocationNode; a != nullptr && n < 16; a = a->pNext, ++n)
+            LOG_ERROR("DRED   live there: '{}' {}", a->ObjectNameW ? wstring_to_string(a->ObjectNameW) : "",
+                      magic_enum::enum_name(a->AllocationType));
+        n = 0;
+        for (auto a = fault.pHeadRecentFreedAllocationNode; a != nullptr && n < 16; a = a->pNext, ++n)
+            LOG_ERROR("DRED   freed there: '{}' {}", a->ObjectNameW ? wstring_to_string(a->ObjectNameW) : "",
+                      magic_enum::enum_name(a->AllocationType));
+    }
+    else
+    {
+        LOG_ERROR("DRED page fault: none reported");
+    }
+
+    dred->Release();
 }
 
 void Util::LoadProxyLibrary(const std::wstring& name, const std::wstring& optiPath, const std::wstring& overridePath,

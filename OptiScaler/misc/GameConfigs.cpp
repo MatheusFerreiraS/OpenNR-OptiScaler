@@ -562,10 +562,10 @@ const std::vector<GameConfig> gameConfigs = {
     },
 
     // Crimson Desert
-    // Spoofing disabled due to "unsupported GPU" error
+    // Spoofing used to be off here for an "unsupported GPU" error. The Enhanced build (1.0.0.3576) opens with it,
+    // and without it the game hides DLSS and Ray Reconstruction, so OpenRR had nothing to replace
     {
         .exes = { "crimsondesert.exe" },
-        .defaults = { DxgiSpoofing = false },
         // Answered by our XeSS inputs, its XeSS 3.0 entry has no name and selecting it crashes; FSR 4.1 is the input
         // NR uses. mochizuki's pre-process on: without it NR barely shows on its finished look
         .quirks = { DisableXeSSInputs, MochizukiPreprocessOn },

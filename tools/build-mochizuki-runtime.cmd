@@ -69,19 +69,32 @@ if not exist "%OUT%\dlssnr-amd\aco\records" mkdir "%OUT%\dlssnr-amd\aco\records"
 copy /y "%UP%\windows\data\aco\records\*.nrp" "%OUT%\dlssnr-amd\aco\records\" >nul || goto fail
 copy /y "%UP%\windows\data\aco\shell-aliases.txt" "%OUT%\dlssnr-amd\aco\" >nul || goto fail
 
-rem int4 mixed (LMXXF_NR_FRAME_FLAG_INT4), which runs as ACO's machine code only: the Linux int4 network and its
-rem records in aco\int4\, its aliases merged into aco\shell-aliases.txt (read once, at the ACO setup), and in int4\
-rem the same SPIR-V with the quantisation tables and settings.
+rem CC_SILVER_AARDWOLD_OPTIMIZED (LMXXF_NR_FRAME_FLAG_INT4 since upstream 0.0.8.3, int4 mixed's successor), ACO's machine
+rem code only: at Quality the Linux network built with its changes in aco\optimized\shaders (its records are in
+rem aco\records) beside the difference file its weights are made from and the hashes of those and of its int4 weights;
+rem with int4 layers, each Optimized layers level's network in int4\ (Balanced), int4-performance\ and int4-ultra\, with
+rem the quantisation tables and settings (Ultra Performance's tables cover the others', and its folder makes the int4
+rem weights), their records in aco\int4\ and the aliases merged into aco\shell-aliases.txt (read once, at the ACO setup).
+rem MochizukiNrRuntime.dll makes both weights at first use, in aco-cache.
+python "%UP%\linux\build\build_network.py" rdna4 --optimized --out "%OUT%\dlssnr-amd\aco\optimized\shaders" || goto fail
+copy /y "%UP%\linux\data\optimized\dlssnr-optimized.delta" "%OUT%\dlssnr-amd\aco\optimized\" >nul || goto fail
+copy /y "%UP%\linux\data\optimized\dlssnr-optimized.sha256" "%OUT%\dlssnr-amd\aco\optimized\" >nul || goto fail
+copy /y "%UP%\linux\data\int4\rdna4\dlssnr-int4.sha256" "%OUT%\dlssnr-amd\aco\optimized\dlssnr-optimized-int4.sha256" >nul || goto fail
 python "%UP%\linux\build\build_network.py" rdna4 --int4 --out "%OUT%\dlssnr-amd\aco\int4\shaders" || goto fail
 if not exist "%OUT%\dlssnr-amd\aco\int4\records" mkdir "%OUT%\dlssnr-amd\aco\int4\records"
 copy /y "%UP%\windows\data\aco\int4\records\*.nrp" "%OUT%\dlssnr-amd\aco\int4\records\" >nul || goto fail
 copy /y "%UP%\windows\data\aco\int4\shell-aliases.txt" "%OUT%\dlssnr-amd\aco\int4\" >nul || goto fail
 python -c "import sys,pathlib;a={};[a.setdefault(n,s)==s or sys.exit('conflicting ACO alias '+n) for f in sys.argv[1:] for n,s in (l.split() for l in pathlib.Path(f).read_text().splitlines() if l.strip())];pathlib.Path(sys.argv[1]).write_text(''.join(k+' '+v+chr(10) for k,v in sorted(a.items())))" "%OUT%\dlssnr-amd\aco\shell-aliases.txt" "%OUT%\dlssnr-amd\aco\int4\shell-aliases.txt" || goto fail
-if exist "%OUT%\dlssnr-amd\int4" rmdir /s /q "%OUT%\dlssnr-amd\int4"
-xcopy /e /i /q /y "%UP%\linux\data\int4\rdna4\vit" "%OUT%\dlssnr-amd\int4\vit" >nul || goto fail
-xcopy /e /i /q /y "%UP%\linux\data\int4\rdna4\swin" "%OUT%\dlssnr-amd\int4\swin" >nul || goto fail
-copy /y "%UP%\linux\data\int4\rdna4\settings.txt" "%OUT%\dlssnr-amd\int4\" >nul || goto fail
+for %%l in (int4 int4-performance int4-ultra) do (
+  if exist "%OUT%\dlssnr-amd\%%l" rmdir /s /q "%OUT%\dlssnr-amd\%%l"
+  xcopy /e /i /q /y "%UP%\linux\data\int4\rdna4\vit" "%OUT%\dlssnr-amd\%%l\vit" >nul || goto fail
+  xcopy /e /i /q /y "%UP%\linux\data\int4\rdna4\swin" "%OUT%\dlssnr-amd\%%l\swin" >nul || goto fail
+  copy /y "%UP%\linux\data\int4\rdna4\settings.txt" "%OUT%\dlssnr-amd\%%l\" >nul || goto fail
+)
+xcopy /e /i /q /y "%UP%\linux\data\int4-ultra\rdna4" "%OUT%\dlssnr-amd\int4-ultra" >nul || goto fail
 xcopy /e /i /q /y "%OUT%\dlssnr-amd\aco\int4\shaders" "%OUT%\dlssnr-amd\int4\shaders" >nul || goto fail
+python "%UP%\linux\build\build_network.py" rdna4 --performance --out "%OUT%\dlssnr-amd\int4-performance\shaders" || goto fail
+python "%UP%\linux\build\build_network.py" rdna4 --ultra --out "%OUT%\dlssnr-amd\int4-ultra\shaders" || goto fail
 
 rem CC_SMALL_FP8_EXPERIMENTAL (LMXXF_NR_FRAME_FLAG_EXPERIMENTAL), ACO's machine code only: the Linux network built with
 rem its changes (its records are in aco\records, by the SPIR-V's hash) and the difference file its weights are made from,
@@ -90,15 +103,10 @@ python "%UP%\linux\build\build_network.py" rdna4 --experimental --out "%OUT%\dls
 copy /y "%UP%\linux\data\experimental\dlssnr-small-experimental.delta" "%OUT%\dlssnr-amd\aco\experimental\" >nul || goto fail
 copy /y "%UP%\linux\data\experimental\dlssnr-small-experimental.sha256" "%OUT%\dlssnr-amd\aco\experimental\" >nul || goto fail
 
-rem The int4 weights are made from the model (never in this tree): dlssnr-int4-weights.exe runs the graph builder's
-rem own decoder on dlssnr.bin and the tables above. With MZ_MODEL set to a dlssnr.bin, this writes
-rem dlssnr-amd\dlssnr-int4.bin and checks it against upstream's hash.
+rem Upstream's install-time int4 weights generator, for tests: dlssnr-int4-weights.exe <dlssnr-optimized.nrb> <int4-ultra>
+rem <out> writes what the DLL makes in aco-cache\dlssnr-optimized-int4.nrb.
 cl %CFLAGS% %NR_DEFINES% %INCLUDES% /c "%UP%\windows\src\tools\nr_int4_weights.cpp" /Fo"%OBJ%\nr_int4_weights.obj" || goto fail
 link /nologo /OUT:"%OBJ%\dlssnr-int4-weights.exe" "%OBJ%\nr_int4_weights.obj" "%OBJ%\nr_native_plan.obj" "%VULKAN_SDK%\Lib\vulkan-1.lib" || goto fail
-if defined MZ_MODEL (
-  "%OBJ%\dlssnr-int4-weights.exe" "%MZ_MODEL%" "%OUT%\dlssnr-amd\int4" "%OUT%\dlssnr-amd\dlssnr-int4.bin" || goto fail
-  python -c "import hashlib,sys;h=hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest();w=open(sys.argv[2]).read().split()[0];sys.exit(0 if h==w else 'dlssnr-int4.bin is '+h+', upstream '+w)" "%OUT%\dlssnr-amd\dlssnr-int4.bin" "%UP%\linux\data\int4\rdna4\dlssnr-int4.sha256" || goto fail
-)
 
 echo BUILD_OK %OUT%\MochizukiNrRuntime.dll
 exit /b 0

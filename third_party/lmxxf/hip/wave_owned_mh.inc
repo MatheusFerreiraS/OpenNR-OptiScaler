@@ -349,7 +349,7 @@ DEV void swin_wave2_body(const float*in,const float*fw,const float*aw,void*out_a
    hp[ci][j]=(lo&0xffffu)|(hi<<16);}
   float uw[2][8];
   _Pragma("unroll") for(uint ci=0;ci<2;ci++)_Pragma("unroll") for(uint e=0;e<8;e++)uw[ci][e]=upw[IC*C+head*32+ci*16+gr*8+e];
-  _Pragma("unroll") for(uint qt=0;qt<4;qt++){
+  _Pragma("clang loop unroll(disable)") for(uint qt=0;qt<4;qt++){
    const uint tok=qt*16+rc,low=(tok/16)*4+(tok%8)/2;const int x=x0+int(tok%8),y=y0+int(tok/8);
    const bool ok=x>=0&&y>=0&&x<int(width)&&y<int(height);const uint base=ok?(uint(y)*width+uint(x))*C:0u;
    _Pragma("unroll") for(uint ci=0;ci<2;ci++){
@@ -424,6 +424,8 @@ W2_REP_BEGIN(1)
  _Pragma("clang loop unroll(disable)") for(uint qb=0;qb<4;qb+=B){
   f8 contract[B][2]{};
   _Pragma("clang loop unroll(disable)") for(uint ht=0;ht<8;ht+=T){
+   uint ffn_head=head,ffn_rc=rc,ffn_gr=gr;
+   if constexpr(C==64){uint ffn_tid=__builtin_amdgcn_workitem_id_x();__asm__ volatile("":"+v"(ffn_tid));ffn_head=ffn_tid/32;ffn_rc=ffn_tid&15u;ffn_gr=(ffn_tid&31u)>>4;}
    f8 expanded[B][T]{};
    if constexpr(W16){
     for(uint kt=0;kt<C/16;kt+=2){
@@ -440,7 +442,7 @@ W2_REP_BEGIN(1)
     i2 inputs[B];
     _Pragma("unroll") for(uint qi=0;qi<B;qi++)inputs[qi]=w2_load<C>(plane0,qb+qi,kt);
     _Pragma("unroll") for(uint tile=0;tile<T;tile++){
-     i2 b=w2_weight(fw,head*128+(ht+tile)*16+rc,C,kt*16);
+     i2 b=w2_weight(fw,ffn_head*128+(ht+tile)*16+ffn_rc,C,kt*16,ffn_gr);
      _Pragma("unroll") for(uint qi=0;qi<B;qi++)expanded[qi][tile]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(b,inputs[qi],expanded[qi][tile]);
     }
    }
@@ -465,7 +467,7 @@ W2_REP_BEGIN(1)
      for(uint e=0;e<8;e++){float a=expanded[qi][tile][e],g=clampf(a,-4.f,4.f),q=__builtin_fmaf(absf(g),-.055908203125f,.447265625f),poly=__builtin_fmaf(g,q,.89453125f);W2_Q8_SETF(packed,e,a,poly);}W2_Q8_END(packed);hidden[qi]=packed;
     }
     for(uint ci=0;ci<2;ci++){
-     i2 b=w2_weight(fw+4*C*C,head*32+ci*16+rc,4*C,head*128+(ht+tile)*16);
+     i2 b=w2_weight(fw+4*C*C,ffn_head*32+ci*16+ffn_rc,4*C,ffn_head*128+(ht+tile)*16,ffn_gr);
      _Pragma("unroll") for(uint qi=0;qi<B;qi++)contract[qi][ci]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(b,hidden[qi],contract[qi][ci]);
     }
    }
@@ -673,21 +675,23 @@ W2_REP_BEGIN(8)
     qkv[0][qt][ci],
 #endif
     scores);
-   h8 ex{};
-   for(uint e=0;e<8;e++){
-    uint row=qt*16+rc,k=key*16+gr*8+e;
-    float score=scores[e]+aw[4*C*C+head*4096+row*64+k],affine=clampf(score*.044921875f+1.30078125f,1.03125f,1.5693359375f);
-    uint ah=(bits(affine)>>13)-0x1c000u;unsigned short hb=static_cast<unsigned short>(((ah<<5)+0x8000u)&65535u);ex[e]=__builtin_bit_cast(_Float16,hb);
+   uint pk[4];
+   _Pragma("unroll") for(uint e=0;e<4;e++){
+    uint row=qt*16+rc,k=key*16+gr*8+2*e;
+    float s0=scores[2*e]+aw[4*C*C+head*4096+row*64+k],s1=scores[2*e+1]+aw[4*C*C+head*4096+row*64+k+1];
+    float af0=clampf(s0*.044921875f+1.30078125f,1.03125f,1.5693359375f),af1=clampf(s1*.044921875f+1.30078125f,1.03125f,1.5693359375f);
+    pk[e]=__builtin_amdgcn_perm(bits(af1),bits(af0),0x06050201u)&0x7fe07fe0u;
    }
-   exponent[key]=ex;
+   exponent[key]=__builtin_bit_cast(h8,pk);
   }
   h8 ones{};for(uint e=0;e<8;e++)ones[e]=(_Float16)1.f;
   f8 sums[2]{};
   _Pragma("unroll 2") for(uint side=0;side<2;side++){
    _Pragma("unroll 2") for(uint half=0;half<2;half++)sums[side]=__builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(ones,exponent[side+2*half],sums[side]);
   }
+  const float inv=w2_inverse(sums[0][0]+sums[1][0]);
   i2 prob[4];
-  _Pragma("unroll 4") for(uint key=0;key<4;key++){W2_Q8_DECL(a);for(uint e=0;e<8;e++){float inv=w2_inverse(sums[0][e]+sums[1][e]);W2_Q8_SETF(a,e,float(exponent[key][e]),inv);}W2_Q8_END(a);prob[key]=a;}
+  _Pragma("unroll 4") for(uint key=0;key<4;key++){W2_Q8_DECL(a);for(uint e=0;e<8;e++){W2_Q8_SETF(a,e,float(exponent[key][e]),inv);}W2_Q8_END(a);prob[key]=a;}
   for(uint ci=0;ci<2;ci++){
    f8 av{};
    _Pragma("unroll 4") for(uint key=0;key<4;key++)av=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(qkv[2][key][ci],prob[key],av);

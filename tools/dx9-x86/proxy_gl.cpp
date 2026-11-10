@@ -21,11 +21,16 @@ namespace
 HMODULE systemGl = nullptr;
 INIT_ONCE systemOnce = INIT_ONCE_STATIC_INIT;
 
+// No CRT here: Windows compatibility shims (AcGenral) call the forwarded exports while the process starts, before
+// this DLL's CRT is up; a std::wstring there recursed until the stack ran out (Tomb Raider 2013)
 BOOL CALLBACK LoadSystem(PINIT_ONCE, PVOID, PVOID*)
 {
-    wchar_t folder[MAX_PATH] {};
-    GetSystemDirectoryW(folder, MAX_PATH);
-    systemGl = LoadLibraryW((std::wstring(folder) + L"\\opengl32.dll").c_str());
+    wchar_t path[MAX_PATH + 16] {};
+    const UINT n = GetSystemDirectoryW(path, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH)
+        return TRUE;
+    lstrcatW(path, L"\\opengl32.dll");
+    systemGl = LoadLibraryW(path);
     return TRUE;
 }
 FARPROC SystemProc(const char* name)

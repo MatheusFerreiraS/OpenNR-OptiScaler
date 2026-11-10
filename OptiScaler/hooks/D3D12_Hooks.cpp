@@ -2131,6 +2131,26 @@ static HRESULT hkD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Minimum
 
     DlssNr::Submission::Hooks::NoteDeviceCaller(_ReturnAddress());
 
+    // A file named OptiScaler.dred beside OptiScaler turns DRED on for the game's devices: when one is removed, the log
+    // says which operation the GPU stopped at (Util::LogDred).
+    static const bool dred = std::filesystem::exists(Util::DllPath().parent_path() / L"OptiScaler.dred");
+    if (dred)
+    {
+        ID3D12DeviceRemovedExtendedDataSettings1* settings = nullptr;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&settings))))
+        {
+            settings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            settings->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            settings->Release();
+            LOG_INFO("DRED on for this device (OptiScaler.dred)");
+        }
+        else
+        {
+            LOG_WARN("DRED: the settings interface is not available");
+        }
+    }
+
 #ifdef ENABLE_DEBUG_LAYER_DX12
     LOG_WARN("Debug layers active!");
     if (debugController == nullptr && D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)) == S_OK)

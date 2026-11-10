@@ -19,19 +19,46 @@ constexpr wchar_t LogName[] = L"dxgi-x86.log", Section[] = L"DxgiX86", SurfaceNa
 namespace
 {
 HMODULE systemDxgi = nullptr;
-INIT_ONCE systemOnce = INIT_ONCE_STATIC_INIT;
+SRWLOCK systemLock = SRWLOCK_INIT;
+DWORD loadingThread = 0;
 
-BOOL CALLBACK LoadSystem(PINIT_ONCE, PVOID, PVOID*)
+// No CRT here: Windows compatibility shims (AcGenral) call the forwarded exports while the process starts, before
+// this DLL's CRT is up; a std::wstring there recursed until the stack ran out (Tomb Raider 2013). Loading the system
+// DLL makes the shim call this DLL's SetAppCompatStringPointer again on the same thread (it finds the exports by the
+// name dxgi.dll): that call sees the load in progress and gets nothing, where INIT_ONCE waited for itself for good.
+// A load that fails is tried again on a later call.
+HMODULE LoadSystem()
 {
-    wchar_t folder[MAX_PATH] {};
-    GetSystemDirectoryW(folder, MAX_PATH);
-    systemDxgi = LoadLibraryW((std::wstring(folder) + L"\\dxgi.dll").c_str());
-    return TRUE;
+    if (const auto loaded = reinterpret_cast<HMODULE>(InterlockedCompareExchangePointer(
+            reinterpret_cast<void**>(&systemDxgi), nullptr, nullptr)))
+        return loaded;
+    if (InterlockedCompareExchange(&loadingThread, 0, 0) == GetCurrentThreadId())
+        return nullptr;
+    AcquireSRWLockExclusive(&systemLock);
+    if (!systemDxgi)
+    {
+        wchar_t path[MAX_PATH + 16] {};
+        const UINT n = GetSystemDirectoryW(path, MAX_PATH);
+        if (n != 0 && n < MAX_PATH)
+        {
+            lstrcatW(path, L"\\dxgi.dll");
+            InterlockedExchange(&loadingThread, GetCurrentThreadId());
+            const HMODULE loaded = LoadLibraryW(path);
+            InterlockedExchange(&loadingThread, 0);
+            InterlockedExchangePointer(reinterpret_cast<void**>(&systemDxgi), loaded);
+        }
+    }
+    const HMODULE loaded = systemDxgi;
+    ReleaseSRWLockExclusive(&systemLock);
+    return loaded;
 }
+void ReplayCompat();
 FARPROC SystemProc(const char* name)
 {
-    InitOnceExecuteOnce(&systemOnce, LoadSystem, nullptr, nullptr);
-    return systemDxgi ? GetProcAddress(systemDxgi, name) : nullptr;
+    if (!LoadSystem())
+        return nullptr;
+    ReplayCompat();
+    return GetProcAddress(systemDxgi, name);
 }
 
 using CreateSwapChain = HRESULT(STDMETHODCALLTYPE*)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
@@ -569,9 +596,44 @@ extern "C" FARPROC __stdcall ForwardTarget(unsigned index)
 }
 #define FORWARD(index, name)                                                                                           \
     extern "C" __declspec(naked) void Forward_##name() { __asm push index __asm call ForwardTarget __asm jmp eax }
-FORWARD(0, ApplyCompatResolutionQuirking)
-FORWARD(1, CompatString)
-FORWARD(2, CompatValue)
+// The compatibility exports the shims call early: without the system DLL yet they return 0 and pop their arguments
+// (as many bytes as Windows' own 32-bit dxgi.dll pops) instead of jumping to address 0
+#define FORWARD_OR_ZERO(index, name, bytes)                                                                            \
+    extern "C" __declspec(naked) void Forward_##name()                                                                 \
+    {                                                                                                                  \
+        __asm push index __asm call ForwardTarget __asm test eax, eax __asm jz none __asm jmp eax __asm none:          \
+        __asm ret bytes                                                                                                \
+    }
+namespace
+{
+// SetAppCompatStringPointer(id, string) from a shim before the system DLL could load: handed over once it does
+SIZE_T compatId = 0;
+const char* compatString = nullptr;
+LONG compatPending = 0;
+void ReplayCompat()
+{
+    if (InterlockedExchange(&compatPending, 0) == 0)
+        return;
+    using Set = void(__stdcall*)(SIZE_T, const char*);
+    if (const auto set = reinterpret_cast<Set>(GetProcAddress(systemDxgi, "SetAppCompatStringPointer")))
+        set(compatId, compatString);
+}
+} // namespace
+extern "C" void __stdcall Forward_SetAppCompatStringPointer(SIZE_T id, const char* string)
+{
+    using Set = void(__stdcall*)(SIZE_T, const char*);
+    if (const auto set = reinterpret_cast<Set>(ForwardTarget(15)))
+    {
+        set(id, string);
+        return;
+    }
+    compatId = id;
+    compatString = string;
+    InterlockedExchange(&compatPending, 1);
+}
+FORWARD_OR_ZERO(0, ApplyCompatResolutionQuirking, 8)
+FORWARD_OR_ZERO(1, CompatString, 16)
+FORWARD_OR_ZERO(2, CompatValue, 8)
 FORWARD(3, DXGID3D10CreateDevice)
 FORWARD(4, DXGID3D10CreateLayeredDevice)
 FORWARD(5, DXGID3D10GetLayeredDeviceSize)
@@ -584,5 +646,4 @@ FORWARD(11, DXGIReportAdapterConfiguration)
 FORWARD(12, PIXBeginCapture)
 FORWARD(13, PIXEndCapture)
 FORWARD(14, PIXGetCaptureState)
-FORWARD(15, SetAppCompatStringPointer)
 FORWARD(16, UpdateHMDEmulationStatus)

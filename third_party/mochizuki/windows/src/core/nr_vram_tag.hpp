@@ -18,6 +18,7 @@ enum Kind : uint8_t {
 struct Tag {
     Kind kind = kUnset;
     int owner = -1;   // the network (nr::NetworkChoice), -1 none
+    uint32_t build = 0;   // the network build that made it (BuildScope), 0 none: Memory Guard's measurement
 };
 inline thread_local Tag t_tag;
 struct Scope {
@@ -27,5 +28,13 @@ struct Scope {
     ~Scope() { t_tag = previous; }
     Scope(const Scope&) = delete;
     Scope& operator=(const Scope&) = delete;
+};
+// Everything allocated on this thread inside it belongs to network build `id` (nr_vram_ledger.hpp build_totals).
+struct BuildScope {
+    uint32_t previous;
+    explicit BuildScope(uint32_t id) : previous(t_tag.build) { t_tag.build = id; }
+    ~BuildScope() { t_tag.build = previous; }
+    BuildScope(const BuildScope&) = delete;
+    BuildScope& operator=(const BuildScope&) = delete;
 };
 }  // namespace nr::vram

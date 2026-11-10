@@ -324,8 +324,8 @@ static bool RenoChoice(std::string_view key, const char* label, int* v, int lo, 
         { "MochizukiRenoDetailStability", "Auto\0Off\0Always\0" },
         { "MochizukiRenoLookUpsample", "Auto\0Edge-aware\0Classic\0Area input\0" },
         { "MochizukiRenoLookStabilize", "Off\0Static\0Motion\0" },
-        { "MochizukiRenoSdrBlackRestore", "Auto\0Every block\0Smooth\0" },
-        { "MochizukiRenoDisplayPedestal", "Auto\0Always\0Smooth\0" },
+        { "MochizukiRenoSdrBlackRestore", "Auto\0Every block\0Smooth\0Off\0" },
+        { "MochizukiRenoDisplayPedestal", "Auto\0Always\0Smooth\0Off\0" },
         { "MochizukiRenoCodecMode", "Classic\0Anchored\0Auto\0Display\0" },
         { "MochizukiRenoSourceEncoding", "From the format\0SDR\0Linear\0PQ\0" },
         { "MochizukiRenoFeedMode", "Auto\0Content meter\0Game exposure\0" },
@@ -473,11 +473,88 @@ static uint32_t MochizukiNetwork(std::string& off, const char*& offCard)
                : 0;
 }
 
+// mochizuki's network, chosen the way its own NR Control does: one list of the networks by the names in NVIDIA's DLL,
+// with the optimized one's level under it. They map onto MochizukiOriginalModel, MochizukiExperimental and
+// MochizukiInt4, so older INIs keep their choice. A network this card or install can't run is greyed out with why.
+static void MochizukiNetworkControls(Config* config)
+{
+    std::string fp16Off;
+    const char* offCard = "RX 7000";
+    const uint32_t running = MochizukiNetwork(fp16Off, offCard);
+    const bool fp16Net = running != 0 || !fp16Off.empty();
+    const bool aco = config->MochizukiAco.value_or_default();
+    std::error_code ec;
+    const auto data = Util::DllPath().parent_path() / L"dlssnr-amd";
+    const bool smallModel = std::filesystem::exists(data / L"dlssnr-small.bin", ec);
+    const bool experimentalFiles =
+        smallModel && std::filesystem::exists(data / L"aco" / L"experimental" / L"shaders" / L"fixed-attention.txt", ec);
+    const bool optimizedFiles = std::filesystem::exists(data / L"aco" / L"optimized" / L"dlssnr-optimized.delta", ec);
+
+    const bool int4 = config->MochizukiInt4.value_or_default();
+    const bool original = config->MochizukiOriginalModel.value_or_default();
+    const bool experimental = config->MochizukiExperimental.value_or_default();
+    int current = int4 ? 3 : original ? 2 : experimental ? 1 : 0;
+
+    struct Choice
+    {
+        const char* name;
+        const char* why; // null: it can run here
+    };
+    const Choice choices[] = {
+        { "CC_SMALL_FP8", smallModel ? nullptr : "Needs dlssnr-amd\\dlssnr-small.bin, the model of NVIDIA's 310.9.16 DLL." },
+        { "CC_SMALL_FP8_EXPERIMENTAL", fp16Net             ? "Runs FP8 matrices, which only an RX 9000 has."
+                                       : !aco              ? "Needs ACO machine code (Performance and advanced)."
+                                       : !experimentalFiles ? "Needs dlssnr-amd\\aco\\experimental and the 310.9.16 model."
+                                                            : nullptr },
+        { "CC_SILVER_AARDWOLD", nullptr },
+        { "CC_SILVER_AARDWOLD_OPTIMIZED", fp16Net         ? "Made for the RX 9000 only."
+                                          : !aco          ? "Needs ACO machine code (Performance and advanced)."
+                                          : !optimizedFiles ? "Needs dlssnr-amd\\aco\\optimized (update the game in the installer)."
+                                                            : nullptr },
+    };
+    if (choices[current].why)
+        current = 2; // what actually runs when the chosen one can't
+    if (ImGui::BeginCombo("Network", choices[current].name))
+    {
+        for (int i = 0; i < 4; ++i)
+        {
+            if (ImGui::Selectable(choices[i].name, i == current,
+                                  choices[i].why ? ImGuiSelectableFlags_Disabled : ImGuiSelectableFlags_None))
+            {
+                config->MochizukiInt4 = i == 3;
+                config->MochizukiOriginalModel = i >= 2;
+                config->MochizukiExperimental = i == 1;
+            }
+            if (choices[i].why && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s", choices[i].why);
+        }
+        ImGui::EndCombo();
+    }
+    HelpMarker("The network NR runs, by its name in NVIDIA's DLL, as mochizuki's NR Control lists them."
+               "\nCC_SMALL_FP8: the model of 310.9.16, the default and fastest."
+               "\nCC_SMALL_FP8_EXPERIMENTAL: that model made faster by mochizuki; its picture differs somewhat."
+               "\nCC_SILVER_AARDWOLD: the model of 310.8."
+               "\nCC_SILVER_AARDWOLD_OPTIMIZED: the 310.8 model made faster by mochizuki, its picture very close."
+               "\nThe two faster ones need ACO on an RX 9000; their weights are made from the installed model the"
+               "\nfirst time. Switching builds the other network in a few seconds while the current one keeps"
+               "\nrunning; no restart.");
+    if (current == 3)
+    {
+        int layers = int(std::min(config->MochizukiOptimizedLayers.value_or_default(), 3u));
+        if (ImGui::Combo("Optimized layers", &layers, "Quality\0Balanced\0Performance\0Ultra Performance\0"))
+            config->MochizukiOptimizedLayers = uint32_t(layers);
+        HelpMarker("How far CC_SILVER_AARDWOLD_OPTIMIZED goes; every level stays close to CC_SILVER_AARDWOLD's"
+                   "\npicture. Quality: no int4 layers. Balanced: int4 on some encoder, attention and feed-forward"
+                   "\nlayers. Performance: also fixed attention on the first full-resolution layers. Ultra"
+                   "\nPerformance (default, the fastest): also more int4 layers. A change rebuilds the network.");
+    }
+}
+
 static void ResetMochizuki(Config* c)
 {
     // The keys the page no longer shows (no effect in the RenoDX stage) go back to their defaults too.
     Unset(c->MochizukiHistoryStrength, c->MochizukiStabilizerStrength, c->MochizukiStabilizerThreshold,
-          c->MochizukiInt4, c->MochizukiOriginalModel, c->MochizukiExperimental, c->MochizukiCascadeDetail,
+          c->MochizukiInt4, c->MochizukiOptimizedLayers, c->MochizukiOriginalModel, c->MochizukiExperimental, c->MochizukiCascadeDetail,
           c->MochizukiAntiHalo,
           c->MochizukiJitterHistory, c->MochizukiAntiHaloStrength, c->MochizukiPassEstimate, c->MochizukiApplyModel,
           c->MochizukiUseDepth, c->MochizukiDynamicResolution, c->MochizukiPreprocess, c->MochizukiPreprocessExposure,
@@ -600,17 +677,7 @@ void RenderMenu(Config* config, float menuResScale)
                 "\nmotion vector options for frame generation; turn it off for this game.");
         // Up here beside the switches people try first, not under the mochizuki page's model controls.
         if (DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Mochizuki)
-        {
-            const bool int4On = config->MochizukiInt4.value_or_default();
-            bool original = config->MochizukiOriginalModel.value_or_default() || int4On;
-            ImGui::BeginDisabled(int4On);
-            if (ImGui::Checkbox("Old model", &original))
-                config->MochizukiOriginalModel = original;
-            ImGui::EndDisabled();
-            HelpMarker("Off: the new model of NVIDIA's 310.9.16 DLL, faster, when dlssnr-amd\\dlssnr-small.bin"
-                       "\nis installed (without it the old one runs anyway)."
-                       "\nOn: the model of 310.8, which int4 mixed needs. Switching rebuilds the network.");
-        }
+            MochizukiNetworkControls(config);
 
         bool badge = config->DlssNrBadge.value_or_default();
         if (ImGui::Checkbox("NR ON badge", &badge))
@@ -1116,50 +1183,15 @@ void RenderMenu(Config* config, float menuResScale)
                 const std::string acoOff = MenuLocale::Printf(
                     "Not on the %s: ACO's machine code is made for the RX 9000 only, so the\ndriver compiles "
                     "the %s network.", card, card);
-                const std::string int4Off =
-                    MenuLocale::Printf("Not on the %s: there is no int4 mixed network for it.", card);
                 HelpMarker(rx6000 ? "On the RX 6000: runs ACO's gfx10.3 machine code when dlssnr-amd\\aco-gfx103x is"
                                     "\ninstalled (experimental); without it, or with this off, the driver compiles the"
                                     "\nnetwork. Save Settings and start the game again to apply it."
                            : fp16Net ? acoOff.c_str()
                                  : "Runs the network as machine code made in advance by ACO, the Linux driver's compiler,"
                                    "\ninstead of compiling it with AMD's Windows one: about a fifth faster, the same picture."
-                                   "\nTested by its author on AMD Software 26.9.2 only; if the game crashes or the picture is"
-                                   "\nwrong, turn it off. Save Settings and start the game again to apply it.");
-                ImGui::BeginDisabled(!aco || fp16Net);
-                bool int4 = config->MochizukiInt4.value_or_default();
-                if (ImGui::Checkbox("int4 mixed network (old model only)", &int4))
-                    config->MochizukiInt4 = int4;
-                ImGui::EndDisabled();
-                HelpMarker(fp16Net ? int4Off.c_str()
-                                 : "Runs part of the network in 4-bit integers: about a tenth faster than ACO alone, the"
-                                   "\npicture close to the default network's but not the same. Needs ACO. Switching builds"
-                                   "\nthe other network in a few seconds while the current one keeps running; no restart."
-                                   "\nMade from the old model only, so it runs that one while it is on.");
-                // Upstream's CC_SMALL_FP8_EXPERIMENTAL: its files come with the runtime, its weights from the new model.
-                std::error_code fp8Error;
-                const auto fp8Data = Util::DllPath().parent_path() / L"dlssnr-amd";
-                const bool fp8Files =
-                    std::filesystem::exists(fp8Data / L"aco" / L"experimental" / L"shaders" / L"fixed-attention.txt",
-                                            fp8Error) &&
-                    std::filesystem::exists(fp8Data / L"dlssnr-small.bin", fp8Error);
-                const bool oldModel = config->MochizukiOriginalModel.value_or_default() || int4;
-                ImGui::BeginDisabled(!aco || fp16Net || !fp8Files || oldModel);
-                bool fp8Experimental = config->MochizukiExperimental.value_or_default();
-                if (ImGui::Checkbox("FP8 experimental network (new model only)", &fp8Experimental))
-                    config->MochizukiExperimental = fp8Experimental;
-                ImGui::EndDisabled();
-                const std::string fp8Off = MenuLocale::Printf("Not on the %s: it runs FP8 matrices as ACO's machine code,"
-                                                              "\nwhich only an RX 9000 has.", card);
-                HelpMarker(fp16Net     ? fp8Off.c_str()
-                           : !fp8Files ? "Needs dlssnr-amd\\aco\\experimental and the new model, dlssnr-amd\\dlssnr-small.bin."
-                           : !aco      ? "Needs ACO machine code, which is off."
-                           : oldModel  ? "Made from the new model: off with Old model or int4 mixed."
-                                       : "Upstream's CC_SMALL_FP8_EXPERIMENTAL: the new model made faster (simpler activation,"
-                                         "\nfixed attention on three decoder layers, those weights refitted), so its picture"
-                                         "\ndiffers somewhat. Its weights are made from the new model at its first use. Switching"
-                                         "\nbuilds the other network in a few seconds while the current one keeps running; no"
-                                         "\nrestart.");
+                                   "\nCC_SMALL_FP8_EXPERIMENTAL and CC_SILVER_AARDWOLD_OPTIMIZED need it. Tested by its"
+                                   "\nauthor on AMD Software 26.9.2 only; if the game crashes or the picture is wrong, turn"
+                                   "\nit off. Save Settings and start the game again to apply it.");
                 // MochizukiDynamicResolution: exact, auto or always; anything else is auto, as the host sends it.
                 const std::string dynamicResolution = config->MochizukiDynamicResolution.value_or_default();
                 int drs = dynamicResolution == "exact" ? 1 : dynamicResolution == "always" ? 2 : 0;
@@ -1194,6 +1226,13 @@ void RenderMenu(Config* config, float menuResScale)
                     if (info.struct_size >= offsetof(MochizukiNrInfo, experimental) + sizeof info.experimental &&
                         info.experimental)
                         ImGui::TextUnformatted("Running the FP8 experimental network");
+                    if (info.struct_size >= offsetof(MochizukiNrInfo, optimized) + sizeof info.optimized &&
+                        info.optimized)
+                        ImGui::Text("Running the optimized network, Optimized layers: %s",
+                                    MenuLocale::Text(info.optimized == 1   ? "Quality"
+                                                     : info.optimized == 2 ? "Balanced"
+                                                     : info.optimized == 3 ? "Performance"
+                                                                           : "Ultra Performance"));
                     if (info.gpu_ms_median > 0)
                         ImGui::Text("Network GPU time %.2f ms median, %.2f ms p95", info.gpu_ms_median,
                                     info.gpu_ms_p95);
@@ -1951,9 +1990,8 @@ void RenderMenu(Config* config, float menuResScale)
                         config->DlssNrPasses = DlssNr::kDefaultMaxPasses;
                 }
 
-                const std::string liftTip =
-                    "Raises the slider above to " + std::to_string(DlssNr::kMaxPasses) +
-                    ", which is far past what this pass"
+                const std::string liftTip = MenuLocale::Printf(
+                    "Raises the slider above to %d, which is far past what this pass"
                     "\nwas built for. Expect the frame time to scale with it and the game to stop being"
                     "\nplayable well before the top."
                     "\n\nCost is exactly linear and the model is nearly all of it, so ten passes is ten"
@@ -1961,7 +1999,8 @@ void RenderMenu(Config* config, float menuResScale)
                     "\nsized by the driver, and they are built one at a time with a settle between --"
                     "\nreaching a large count takes a while and the frames spent building show nothing."
                     "\n\nThe ratio guard under Colour has to rise with the count or the extra passes"
-                    "\nspend their contribution against the clamp.";
+                    "\nspend their contribution against the clamp.",
+                    DlssNr::kMaxPasses);
 
                 HelpMarker(liftTip.c_str());
 

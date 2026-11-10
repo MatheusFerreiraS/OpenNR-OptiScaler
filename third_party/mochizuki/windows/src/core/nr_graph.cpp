@@ -245,7 +245,12 @@ static bool tchain_pair(const std::string& p, const std::string& q) {
 // after their push block as this file declares it (gemm1x1 pipelines therefore
 // all build NR_GEMM_REMAP_PC=1, so their block ends with `remap` like PushGemm).
 static bool tchain_kern(const std::string& k00) {
-    if (k00 == "fswin32nhd") return tchain_kern("fswin32nh");   // the decoder's copy (CC_SMALL_FP8_EXPERIMENTAL)
+    // the decoder's copies (block-routes.txt, CC_SMALL_FP8_EXPERIMENTAL's fswin32nhd) chain like their base kernels
+    if (k00 == "fswin32d" || k00 == "fswin32v") return tchain_kern("fswin32");
+    if (k00 == "fswin32nhd" || k00 == "fswin32nhv") return tchain_kern("fswin32nh");
+    // Optimized layers Performance: encoder block 2 keeps its real attention on these copies (route "e")
+    if (k00 == "fswin32e") return tchain_kern("fswin32");
+    if (k00 == "fswin32nhe") return tchain_kern("fswin32nh");
 #if NR_INT4
     {   // the int4 pipelines and the hard-swish route's "<kern>p" (NR_HS_ROUTE) chain like their base kernels
         std::string k = i4base(k00);
@@ -352,8 +357,10 @@ bool slot_reading_diagnostic(int c, char** v) {
 // (linux/package/model-tools/pack_model.py). Paths under `root` are looked up by their
 // relative name instead of opened; entries are read on demand, so peak memory
 // is what it was with loose files.
+// A pack may hold a variant's own copies of some entries as "<variant>/<name>" (CC_SILVER_AARDWOLD_OPTIMIZED's
+// Performance levels: "performance/"); with --model-pack-variant those are read in place of <name>.
 struct ModelPack {
-    std::string root, file;
+    std::string root, file, variant;
     std::map<std::string, std::pair<uint64_t, uint64_t>> index;   // name -> offset, size
 };
 ModelPack g_pack;
@@ -385,7 +392,8 @@ std::vector<uint8_t> slurp(const std::string& p) {
         (p[g_pack.root.size()] == '/' || p[g_pack.root.size()] == '\\')) {
         std::string name = p.substr(g_pack.root.size() + 1);
         for (char& c : name) if (c == '\\') c = '/';
-        const auto it = g_pack.index.find(name);
+        auto it = g_pack.variant.empty() ? g_pack.index.end() : g_pack.index.find(g_pack.variant + "/" + name);
+        if (it == g_pack.index.end()) it = g_pack.index.find(name);
         if (it == g_pack.index.end()) return {};
         std::ifstream f(nr::u8::path(g_pack.file), std::ios::binary);
         std::vector<uint8_t> v(size_t(it->second.second));
@@ -416,7 +424,7 @@ static float i4_e4m3(uint8_t c) {   // the solver's table: both NaN codes read a
     return (c & 0x80) ? -v : v;
 }
 struct I4Mat { std::vector<uint8_t> q; std::vector<uint8_t> sc; };   // q: int8 [N][K4]; sc: f32 [2][N] (s, c)
-// dlssnr-int4.bin: "NRI4WGT1", u32 entry count, u64 FNV-1a of everything after this header; per entry u32 name length,
+// CC_SILVER_AARDWOLD_OPTIMIZED_INT4.bin: "NRI4WGT1", u32 entry count, u64 FNV-1a of everything after this header; per entry u32 name length,
 // name, u32 N, u32 K4, u64 key, q [N*K4/2] (two -8..7 values a byte, low nibble first), sc [2N] f32. Written by the install-time generator (--int4-weights-out).
 struct I4Entry { std::string name; uint32_t N, K4; uint64_t key; std::vector<uint8_t> q, sc;
                  uint64_t at = 0; };   // the store: where the entry's q (packed) and sc start in the file; q, sc empty
@@ -507,7 +515,7 @@ static const I4Store* i4_store() {
     g_i4_store = std::move(st);
     return g_i4_store.get();
 }
-// Whether a matrix has int4 weights: its recovery tables, or (installed) an entry in dlssnr-int4.bin.
+// Whether a matrix has int4 weights: its recovery tables, or (installed) an entry in CC_SILVER_AARDWOLD_OPTIMIZED_INT4.bin.
 static bool i4_have(const std::string& prefix) {
     if (std::filesystem::exists(prefix + ".fix.bin")) return true;
     const I4Store* st = i4_store();
@@ -517,14 +525,14 @@ static I4Mat i4_obtain(const std::string& prefix, const std::vector<uint8_t>& ws
                        const std::vector<uint8_t>& aqb) {
     I4Mat r;
     if (wsel.size() != N * K4 || aqb.size() != K4 * 8 || (B > 1 && K4 % size_t(B))) throw std::runtime_error("int4 table: shapes " + prefix);
-    // Installed int4_mixed: the weights come from dlssnr-amd/dlssnr-int4.bin, which the installer made with this
+    // Installed int4_mixed: the weights come from dlssnr-amd/CC_SILVER_AARDWOLD_OPTIMIZED_INT4.bin, which the installer made with this
     // same decoder (NR_I4_WEIGHTS; the recovery tables are not installed). An entry holds the weights and the key of
     // what they were made from - this model's weights and these input quantisers - so a different model never
     // matches and the build stops (exact runs).
     if (const I4Store* st = i4_store()) {
         const auto it = st->entries.find(std::filesystem::path(prefix).filename().string());
         if (it == st->entries.end() || it->second.N != N || it->second.K4 != K4 || it->second.key != i4_key(wsel, aqb, N, K4, B))
-            throw std::runtime_error("int4 weights: " + std::filesystem::path(prefix).filename().string() + " is not in dlssnr-int4.bin or was made from another model");
+            throw std::runtime_error("int4 weights: " + std::filesystem::path(prefix).filename().string() + " is not in CC_SILVER_AARDWOLD_OPTIMIZED_INT4.bin or was made from another model");
         std::vector<uint8_t> nib(size_t(N) * K4 / 2);
         r.sc.resize(size_t(N) * 8);
         std::ifstream f(nr::u8::path(st->path), std::ios::binary);
@@ -1683,6 +1691,13 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
         std::string why;
         if (!open_model_pack(pack, unp, &why)) { std::fprintf(stderr, "%s\n", why.c_str()); return 1; }
         std::printf("model pack: %s (%zu entries)\n", pack, g_pack.index.size());
+        if (const char* v = arg(argc, argv, "--model-pack-variant")) {
+            g_pack.variant = v;
+            size_t n = 0;
+            for (const auto& e : g_pack.index) n += e.first.compare(0, g_pack.variant.size() + 1, g_pack.variant + "/") == 0;
+            if (!n) { std::fprintf(stderr, "the model pack has no %s entries (run the installer again)\n", v); return 1; }
+            std::printf("model pack variant %s: %zu entries\n", v, n);
+        }
     }
     const std::string accumulation=arg(argc,argv,"--accumulation","fp32");
     if (accumulation!="fp32" && accumulation!="round-fp16") {
@@ -2404,7 +2419,13 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
                     const auto wex = slurp(std::string(base) + ".mlp_expand.bin");
                     if (wex.size() < H4 * K4) throw std::runtime_error("NR_SWI4_DIR: expand weights");
                     const std::vector<uint8_t> wsel(wex.begin(), wex.begin() + std::ptrdiff_t(H4 * K4));
-                    const I4Mat imx = i4_obtain(std::string(nb) + ".ex", wsel, H4, K4, 1, aqb);
+                    // the expansion input's rotation (fswin_t NR_SWI4_ROT, int4 settings.txt): the weights made in the
+                    // rotated basis (i4_obtain's normalised block Hadamard; its tables carry the same size), the
+                    // quantisers' 1/step divided by sqrt(B) for the kernel's unnormalised butterfly (below)
+                    int swrot = 1;
+                    if (const char* r = nr::build_cfg("NR_SWI4_ROT")) swrot = std::atoi(r) > 1 ? std::atoi(r) : 1;
+                    if (swrot != 1 && swrot != 8) throw std::runtime_error("NR_SWI4_ROT: 8 or nothing");
+                    const I4Mat imx = i4_obtain(std::string(nb) + ".ex", wsel, H4, K4, swrot, aqb);
                     const auto& q = imx.q; const auto& scb = imx.sc;
                     if (aqb.size() != K4 * 8 || q.size() != H4 * K4 || scb.size() != H4 * 8 || C % 64)
                         throw std::runtime_error("NR_SWI4_DIR: file sizes");
@@ -2441,7 +2462,13 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
                     };
                     const uint32_t w4 = pairrec(q, H4, K4);
                     const uint32_t si = f16pairs(scb, H4);
-                    const uint32_t qi = quantiser(aqb);
+                    std::vector<uint8_t> aqs = aqb;
+                    if (swrot > 1) {
+                        std::vector<float> a(aqs.size() / 4); std::memcpy(a.data(), aqs.data(), aqs.size());
+                        for (size_t c = 0; c < a.size() / 2; ++c) a[2 * c] = float(double(a[2 * c]) / std::sqrt(double(swrot)));
+                        std::memcpy(aqs.data(), a.data(), aqs.size());
+                    }
+                    const uint32_t qi = quantiser(aqs);
                     uint32_t rv[17] = {0x34495753u, qi, w4, si, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
                     if (std::filesystem::exists(std::string(nb) + ".y.aq.bin")) {
                         rv[10] = quantiser(slurp(std::string(nb) + ".y.aq.bin"));
@@ -3593,6 +3620,7 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
                 return 1;
             }
             p.w_off = uint32_t(put(tin::tile_blocked(qkv.data(), 1536, 512), 256));
+            std::vector<float> attn_bias;   // for the constant-head certificate below
             {
                 const std::vector<float> raw = load_f16(std::string(base) + ".attn_pos_bias.bin");
                 std::vector<float> bias(16u * 4096u);
@@ -3603,12 +3631,27 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
                     std::copy(dz.begin(), dz.end(), bias.begin() + size_t(h) * 4096);
                 }
                 p.b_off = uint32_t(put_f32(bias) / 4);
+                attn_bias = bias;
             }
             {
                 const std::vector<uint8_t> tail = slurp(std::string(base) + ".tail.bin");
                 std::vector<float> sc(16, 1.0f);
                 for (size_t h = 0; h < 16 && 4 * h + 4 <= tail.size(); ++h)
                     std::memcpy(&sc[h], &tail[4 * h], 4);
+                // CC_SILVER_AARDWOLD_OPTIMIZED (marker <spv-dir>/const-heads.txt): heads whose P is 1/64 for
+                // every input (all bias entries + 1.2|s| + 0.05 <= -6.25: every exponential at the lower clamp)
+                // carry 0x7FC00001 in their scale slot; attn.comp then skips their Q/K projection and softmax.
+                if (std::filesystem::exists(spv_dir + "/const-heads.txt") && attn_bias.size() == 16u * 4096u) {
+                    int nconst = 0;
+                    for (int h = 0; h < 16; ++h) {
+                        const double L = 1.2 * std::fabs(double(sc[size_t(h)])) + 0.05;
+                        bool all = true;
+                        for (int i = 0; i < 4096 && all; ++i)
+                            all = double(attn_bias[size_t(h) * 4096 + size_t(i)]) + L <= -6.25;
+                        if (all) { const uint32_t m = 0x7FC00001u; std::memcpy(&sc[size_t(h)], &m, 4); ++nconst; }
+                    }
+                    std::printf("const heads attn b%dl%d: %d of 16\n", s.block, s.layer, nconst);
+                }
                 p.s_off = uint32_t(put_f32(sc) / 4);
             }
             p.x_off = uint32_t(voff[x_src(s)]);
@@ -5417,9 +5460,29 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
             }
         if (n) std::printf("exp upper clamp dead (weights): %d C=32 dispatches\n", n);
     }
-    // CC_SMALL_FP8_EXPERIMENTAL: the decoder's plain C=32 layers (after the ViT) on their own pipeline when the network
-    // has it, so they can differ from the encoder's layers of the same kernel (fixed attention on the decoder's only).
-    {
+    // Decoder layers on pipelines of their own, so they can differ from the encoder's layers of the same kernel.
+    // CC_SILVER_AARDWOLD_OPTIMIZED: block-routes.txt (build_network.py, the overlay's "routes"), lines
+    // "<suffix> <kernel>... : <block>...": a dispatch of one of those blocks on one of those kernels runs on
+    // "<kernel><suffix>". Without it, CC_SMALL_FP8_EXPERIMENTAL's rule: the plain C=32 layers after the ViT on
+    // fswin32nhd when the network has it (fixed attention on the decoder's only).
+    if (const std::string rf = spv_dir + "/block-routes.txt"; std::filesystem::exists(rf)) {
+        std::ifstream f(nr::u8::path(rf));
+        std::string line;
+        while (std::getline(f, line)) {
+            std::istringstream w(line);
+            std::string suffix, k;
+            std::set<std::string> kernels;
+            std::set<int> blocks;
+            if (!(w >> suffix)) continue;
+            while (w >> k && k != ":") kernels.insert(k);
+            for (int b; w >> b; ) blocks.insert(b);
+            int n = 0;
+            for (Disp& d : disp)
+                if (d.s && blocks.count(d.s->block) && kernels.count(d.kern) &&
+                    std::filesystem::exists(spv_dir + "/g_" + d.kern + suffix + ".spv")) { d.kern += suffix; ++n; }
+            std::printf("block route %s: %d dispatches\n", line.c_str(), n);
+        }
+    } else {
         int n = 0;
         for (Disp& d : disp)
             if (d.s && d.s->block >= 22 && d.kern == "fswin32nh" && std::filesystem::exists(spv_dir + "/g_fswin32nhd.spv")) {

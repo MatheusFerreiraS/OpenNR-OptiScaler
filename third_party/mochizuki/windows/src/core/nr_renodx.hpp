@@ -79,8 +79,8 @@ struct Settings {
     float chroma_clamp_stops = 1.0f;    // NRChromaClamp
     uint32_t transfer_mode = 0;         // NRTransferMode
     float style_highlight_guard = 0.0f; // NRStyleHighlightGuard
-    uint32_t display_pedestal = 0;      // NRDisplayPedestal
-    uint32_t sdr_black_restore = 0;     // NRSdrBlackRestore: 0 auto, 1 every block, 2 smooth
+    uint32_t display_pedestal = 0;      // NRDisplayPedestal: 0 off (default), 1 always, 2 smooth, 3 auto
+    uint32_t sdr_black_restore = 0;     // NRSdrBlackRestore: 0 off (default), 1 every block, 2 smooth, 3 auto
     bool neural_floor_guard = true;     // NRNeuralFloorGuard
     uint32_t feed_mode = 0;             // NRFeedMode: 0 auto, 1 the content meter, 2 the game's exposure
     uint32_t norm_governor = 2;         // NRNormGovernor

@@ -1,21 +1,28 @@
 #!/usr/bin/env python3
 """Build the Linux network for one GPU architecture from linux/shaders/<arch>/pipelines.json.
 
-    build_network.py <arch> [--int4 | --experimental] [--out DIR] [--check DIR]
+    build_network.py <arch> [--int4 | --performance | --ultra | --optimized | --experimental] [--out DIR] [--check DIR]
 
-Writes (default build/linux/<arch>/network, with --int4 build/linux/<arch>/network-int4, with --experimental
-build/linux/<arch>/network-experimental):
+Writes (default build/linux/<arch>/network, with --int4 build/linux/<arch>/network-int4, with --performance
+build/linux/<arch>/network-performance, with --optimized
+build/linux/<arch>/network-optimized, with --experimental build/linux/<arch>/network-experimental):
     g_<name>.spv + the four marker files   the network, what --spv-dir points at
     runtime/                                 the arch-neutral passes (linux/shaders/passes)
     g_<name>_grade.spv                      style_grade: the post block with the Natural/Cinematic grade
     temporal/                                the temporal variants (+ their _grade twins) and the motion estimator
 
 The host must be compiled with the same constants: linux/build/arch/<arch>.sh.
---int4: the int4 mixed network (pipelines.json with pipelines-int4.json applied; the host built with NR_INT4=1):
-the network and temporal/ (the runtime passes are the default network's), the host's g_<name>.spv.iu4 markers and
-hs-pipelines.txt (the pipelines built with the hard-swish, for the host's guard).
---experimental: CC_SMALL_FP8_EXPERIMENTAL (pipelines.json with pipelines-experimental.json applied; the same host):
-the network and temporal/, and fixed-attention.txt (the pipelines whose fixed probability tables the host writes).
+--optimized: CC_SILVER_AARDWOLD_OPTIMIZED (pipelines.json with pipelines-optimized.json applied; the same host).
+--int4: CC_SILVER_AARDWOLD_OPTIMIZED with its int4 layers (pipelines.json with pipelines-int4.json applied; the host
+built with NR_INT4=1); also the host's g_<name>.spv.iu4 markers and hs-pipelines.txt (the pipelines built with the
+hard-swish, for the host's guard).
+--performance / --ultra: CC_SILVER_AARDWOLD_OPTIMIZED at Optimized layers Performance / Ultra Performance
+(pipelines-performance.json / pipelines-ultra.json; as --int4; out network-performance / network-ultra).
+--experimental: CC_SMALL_FP8_EXPERIMENTAL (pipelines.json with pipelines-experimental.json applied; the same host).
+Each of the three: the network and temporal/ (the runtime passes are the default network's), fixed-attention.txt (the
+pipelines whose fixed probability tables the host writes), and when the overlay says so const-heads.txt (the host
+proves and marks the constant C=512 attention heads, NR_CONSTH) and block-routes.txt (blocks whose layers run on a
+pipeline of their own: "<suffix> <kernel>... : <block>...", from the overlay's "routes").
 --check DIR compares every network SPV and marker with DIR byte for byte and
 lists the differences (exit 1 if any).
 """
@@ -47,14 +54,18 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('arch')
     ap.add_argument('--int4', action='store_true')
+    ap.add_argument('--performance', action='store_true')
+    ap.add_argument('--ultra', action='store_true')
+    ap.add_argument('--optimized', action='store_true')
     ap.add_argument('--experimental', action='store_true')
     ap.add_argument('--out', type=Path)
     ap.add_argument('--check', type=Path)
     a = ap.parse_args()
     table = json.loads((R / 'linux/shaders' / a.arch / 'pipelines.json').read_text())
-    if a.int4 and a.experimental:
-        sys.exit('--int4 or --experimental, not both')
-    overlay = 'int4' if a.int4 else 'experimental' if a.experimental else ''
+    if a.int4 + a.performance + a.ultra + a.optimized + a.experimental > 1:
+        sys.exit('one of --int4, --performance, --ultra, --optimized, --experimental')
+    overlay = ('int4' if a.int4 else 'performance' if a.performance else 'ultra' if a.ultra else 'optimized' if a.optimized
+               else 'experimental' if a.experimental else '')
     if overlay:
         i4 = json.loads((R / 'linux/shaders' / a.arch / f'pipelines-{overlay}.json').read_text())
         default = table['pipelines']
@@ -94,15 +105,23 @@ def main():
     for k in MOTION:
         glslang(a.arch, R / 'linux/shaders/passes' / f'{k}.comp', [], out / 'temporal' / f'{k}.spv')
     shutil.copy2(out / 'shader-constants.txt', out / 'temporal' / 'shader-constants.txt')
-    if a.int4:
+    if a.int4 or a.performance or a.ultra:
         for name in i4['iu4']:
             (out / f'g_{name}.spv.iu4').write_text('0\n')
         hs = sorted(k for k, e in pipelines.items() if 'NR_ACT_HS=2' in e['defines'])
         (out / 'hs-pipelines.txt').write_text('\n'.join(hs) + '\n')
-        (out / 'runtime').rmdir()
-    elif a.experimental:
+    if overlay:
         fixp = sorted(k for k, e in pipelines.items() if 'NR_FIXP=1' in e['defines'])
         (out / 'fixed-attention.txt').write_text('\n'.join(fixp) + '\n')
+        consth = sorted(k for k, e in pipelines.items() if 'NR_CONSTH=1' in e['defines'])
+        if consth:
+            (out / 'const-heads.txt').write_text('\n'.join(consth) + '\n')
+        if i4.get('routes'):
+            lines = []
+            for r in i4['routes']:
+                assert all(f'{k}{r["suffix"]}' in pipelines for k in r['kernels']), r
+                lines.append(' '.join([r['suffix']] + r['kernels'] + [':'] + [str(b) for b in r['blocks']]))
+            (out / 'block-routes.txt').write_text('\n'.join(lines) + '\n')
         (out / 'runtime').rmdir()
     else:
         for k in RUNTIME:
