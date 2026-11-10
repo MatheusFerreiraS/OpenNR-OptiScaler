@@ -628,8 +628,11 @@ void ClearInfoContext(void* context)
 
 void ApplyFastMode(void* context)
 {
-    if (s_setFastMode != nullptr && context != nullptr)
-        s_setFastMode(context, Config::Instance()->OpenNrRrMode.value_or_default() == "legacy" ? 0 : 1);
+    if (s_setFastMode == nullptr || context == nullptr)
+        return;
+    // 2 is the runtime's experimental level; one without it takes any non-zero value as New
+    const std::string mode = Config::Instance()->OpenNrRrMode.value_or_default();
+    s_setFastMode(context, mode == "legacy" ? 0 : mode == "fast" ? 2 : 1);
 }
 
 int FastModeState()

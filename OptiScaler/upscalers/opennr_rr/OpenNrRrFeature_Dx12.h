@@ -34,7 +34,8 @@ void SetInfoContext(void* context);
 void ClearInfoContext(void* context);
 // [OpenNR-RR] Mode sent to the runtime, every frame (a runtime without it just does not have the mode).
 void ApplyFastMode(void* context);
-// The running context's fast mode: -1 not offered by this runtime, 0 off, 1 on, 2 building, 3 not available.
+// The running context's fast mode: -1 not offered by this runtime, 0 off, 1 on, 2 building, 3 not available,
+// 4 on at the experimental level.
 int FastModeState();
 // The DLSS-D texture and scalar keys the inputs inventory in the log reads.
 std::vector<const char*> NgxTextureKeys();
