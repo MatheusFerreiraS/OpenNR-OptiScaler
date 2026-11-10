@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 #include "LmxxfNrApi.h"
@@ -36,6 +37,83 @@ static void Barrier(ID3D12GraphicsCommandList* c, ID3D12Resource* r, D3D12_RESOU
     x.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     x.Transition = { r, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, a, b };
     c->ResourceBarrier(1, &x);
+}
+
+// E2E_DEVICE_EXTENSIONS=<name>[=<sType>][,...]: the runtime's vkCreateDevice gets these extensions as well, as a hook
+// or a layer in a game's process may add them, each with its one-flag feature structure when the sType is given
+// (VK_EXT_vertex_input_dynamic_state=1000352000 moves the push constants in AMD's user data, which the PAL adapter's
+// splice checks). The runtime's import of vkCreateDevice is pointed at the wrapper. Run it from a copy of this exe
+// under another name and in a data folder of its own: with the driver's per-application shader cache filled on a plain
+// device, the driver-compiled network lost the device (RX 9070 XT, 26.10.1), and a renamed copy ran.
+struct DeviceCreateInfo // VkDeviceCreateInfo
+{
+    int sType;
+    const void* pNext;
+    unsigned flags, queueCount;
+    const void* queues;
+    unsigned layerCount;
+    const char* const* layers;
+    unsigned extensionCount;
+    const char* const* extensions;
+    const void* features;
+};
+static int (*g_createDevice)(void*, const DeviceCreateInfo*, const void*, void**);
+static std::vector<std::string> g_deviceExtensions;
+struct DeviceFeature // a feature structure of one VkBool32
+{
+    int sType;
+    const void* pNext;
+    unsigned on;
+};
+static std::vector<DeviceFeature> g_deviceFeatures;
+static int CreateDeviceWithExtensions(void* physical, const DeviceCreateInfo* info, const void* allocator, void** device)
+{
+    DeviceCreateInfo with = *info;
+    std::vector<const char*> names(info->extensions, info->extensions + info->extensionCount);
+    for (const auto& e : g_deviceExtensions)
+        names.push_back(e.c_str());
+    with.extensionCount = unsigned(names.size());
+    with.extensions = names.data();
+    for (auto& f : g_deviceFeatures)
+    {
+        f.pNext = with.pNext;
+        with.pNext = &f;
+    }
+    const int r = g_createDevice(physical, &with, allocator, device);
+    std::printf("vkCreateDevice with %zu more extensions, %zu features: %d\n", g_deviceExtensions.size(),
+                g_deviceFeatures.size(), r);
+    return r;
+}
+static void AddDeviceExtensions(HMODULE runtime, const char* list)
+{
+    for (const char* p = list; *p;)
+    {
+        const char* e = std::strchr(p, ',');
+        std::string name(p, e ? size_t(e - p) : std::strlen(p));
+        if (const size_t eq = name.find('='); eq != std::string::npos)
+        {
+            g_deviceFeatures.push_back({ std::atoi(name.c_str() + eq + 1), nullptr, 1 });
+            name.resize(eq);
+        }
+        g_deviceExtensions.push_back(name);
+        p = e ? e + 1 : p + std::strlen(p);
+    }
+    g_createDevice = reinterpret_cast<decltype(g_createDevice)>(GetProcAddress(GetModuleHandleW(L"vulkan-1.dll"), "vkCreateDevice"));
+    Require(g_createDevice, "vulkan-1.dll's vkCreateDevice");
+    auto* base = reinterpret_cast<BYTE*>(runtime);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + reinterpret_cast<const IMAGE_DOS_HEADER*>(base)->e_lfanew);
+    bool hooked = false;
+    for (auto* imp = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress); imp->Name; ++imp)
+        for (auto* thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(base + imp->FirstThunk); thunk->u1.Function; ++thunk)
+            if (thunk->u1.Function == reinterpret_cast<ULONG_PTR>(g_createDevice))
+            {
+                DWORD old = 0;
+                Require(VirtualProtect(&thunk->u1.Function, sizeof(ULONG_PTR), PAGE_READWRITE, &old), "unprotect the import");
+                thunk->u1.Function = reinterpret_cast<ULONG_PTR>(&CreateDeviceWithExtensions);
+                VirtualProtect(&thunk->u1.Function, sizeof(ULONG_PTR), old, &old);
+                hooked = true;
+            }
+    Require(hooked, "the runtime's import of vkCreateDevice");
 }
 
 int main(int argc, char** argv)
@@ -73,7 +151,10 @@ int main(int argc, char** argv)
     std::printf("image %ux%u\n", w, h);
 
     HMODULE dll = LoadLibraryW(W(argv[1]).c_str());
-    if (!dll) { std::fprintf(stderr, "FAIL: load runtime: error %lu\n", GetLastError()); return 1; }   // 4551: App Control
+    if (!dll) { std::fprintf(stderr, "FAIL: load runtime: error %lu
+", GetLastError()); return 1; }   // 4551: App Control
+    if (const char* more = std::getenv("E2E_DEVICE_EXTENSIONS"); more && *more)
+        AddDeviceExtensions(dll, more);
     auto getApi = reinterpret_cast<int32_t (*)(uint32_t, LmxxfNrApi*)>(GetProcAddress(dll, "LmxxfNrGetApi"));
     LmxxfNrApi api {};
     api.struct_size = sizeof(api);
