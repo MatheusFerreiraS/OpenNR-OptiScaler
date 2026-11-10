@@ -72,7 +72,8 @@ bool XeSSFeature_Dx11::InitInternal(ID3D11DeviceContext* InContext, NVSDK_NGX_Pa
         {
             auto str = ResultToString(ret);
             ImGui::InsertNotification(
-                { ImGuiToastType::Error, 10000, std::format("Couldn't create XeSS context\n{}", str).c_str() });
+                { ImGuiToastType::Error, 10000, std::vformat(MenuLocale::Text("Couldn't create XeSS context\n{}"), std::make_format_args(str))
+                      .c_str() });
             LOG_ERROR("xessD3D11CreateContext error: {0}", str);
             return false;
         }

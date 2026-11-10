@@ -109,18 +109,22 @@ IFGNvngx* Nvngx_FG::getProvider()
             LOG_WARN("Nvngx FG provider {} is not available, falling back to {}", formatProvider(selectedProvider),
                      formatProvider(fallback));
 
+            const auto from = formatProvider(selectedProvider);
+            const auto to = formatProvider(fallback);
             ImGui::InsertNotification({ ImGuiToastType::Warning, 20000,
-                                        std::format("{} is not available.\nFalling back to {}.",
-                                                    formatProvider(selectedProvider), formatProvider(fallback))
+                                        std::vformat(MenuLocale::Text("{} is not available.\nFalling back to {}."),
+                                                     std::make_format_args(from, to))
                                             .c_str() });
 
             return _provider.get();
         }
 
         LOG_ERROR("Nvngx FG provider {} is not available and can't fallback", formatProvider(selectedProvider));
-        ImGui::InsertNotification(
-            { ImGuiToastType::Error, 20000,
-              std::format("{} is not available and can't fallback", formatProvider(selectedProvider)).c_str() });
+        const auto missing = formatProvider(selectedProvider);
+        ImGui::InsertNotification({ ImGuiToastType::Error, 20000,
+                                    std::vformat(MenuLocale::Text("{} is not available and can't fallback"),
+                                                 std::make_format_args(missing))
+                                        .c_str() });
 
         Config::Instance()->FGNvngxReplacement.set_volatile_value(FGNvngxReplacement::None);
         State::Instance().activeFgNvngx = FGNvngxReplacement::None;
