@@ -2642,8 +2642,9 @@ void RenderMenu(Config* config, float menuResScale)
                             config->DlssNrScanTrim.value_or_default());
 
                         ImGui::TextColored(ImVec4(0.45f, 0.8f, 0.45f, 1.0f),
-                                           "Scan %.5f  ->  white point %.2f   (%u point%s)", liveScan, w,
-                                           (unsigned) anchors.size(), anchors.size() == 1 ? "" : "s");
+                                           anchors.size() == 1 ? "Scan %.5f  ->  white point %.2f   (%u point)"
+                                                               : "Scan %.5f  ->  white point %.2f   (%u points)",
+                                           liveScan, w, (unsigned) anchors.size());
                     }
                 }
 
