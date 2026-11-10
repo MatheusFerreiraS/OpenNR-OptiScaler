@@ -26,6 +26,24 @@ const Entry kpl[] = {
 const Entry ktr[] = {
 #include "tr.inl"
 };
+const Entry kja[] = {
+#include "ja.inl"
+};
+const Entry kko[] = {
+#include "ko.inl"
+};
+const Entry kuk[] = {
+#include "uk.inl"
+};
+const Entry kzhTW[] = {
+#include "zh-TW.inl"
+};
+const Entry kcs[] = {
+#include "cs.inl"
+};
+const Entry kro[] = {
+#include "ro.inl"
+};
 const Language kLanguages[] = {
     { "en", nullptr, 0 },
     { "pt-BR", kptBR, std::size(kptBR) },
@@ -37,4 +55,10 @@ const Language kLanguages[] = {
     { "it", kit, std::size(kit) },
     { "pl", kpl, std::size(kpl) },
     { "tr", ktr, std::size(ktr) },
+    { "ja", kja, std::size(kja) },
+    { "ko", kko, std::size(kko) },
+    { "uk", kuk, std::size(kuk) },
+    { "zh-TW", kzhTW, std::size(kzhTW) },
+    { "cs", kcs, std::size(kcs) },
+    { "ro", kro, std::size(kro) },
 };
