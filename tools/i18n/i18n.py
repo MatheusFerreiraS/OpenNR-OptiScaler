@@ -111,7 +111,10 @@ def literals(src):
 
 # Literals that match on status text or that the code draws unchanged.
 NOT_KEYS = {"ON {}x", "OpenNR v", "RDNA3 network off: ", "RDNA2 network off: ", " (NO NR)", " (Game DLSS-FG x{})", "Not on the ",
-            "Pass ", "NR ", ", ACO", "es", "aco", "dlssnr-amd", "libxess", "daniel", "danielblnc", "lmxxf", "mochizuki"}
+            "Pass ", "NR ", ", ACO", "es", "aco", "dlssnr-amd", "libxess", "daniel", "danielblnc", "lmxxf", "mochizuki",
+            # INI values, folders and ID suffixes
+            "accent", "bg", "auto", "denoised", "display", "exact", "experimental", "legacy", "new", "optimized",
+            "output", "present", "shaders", "vulkan"}
 
 
 def looks_technical(key):

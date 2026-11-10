@@ -3693,11 +3693,12 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                                         : info.state == ONR_RR_STATE_BUILDING ? "building"
                                                                               : "failed";
                 const int fastLine = OpenNrRr::FastModeState();
-                ImGui::Text("State: %s, GPU %.2f ms (average), mode %s", stateName, info.gpu_ms_average,
-                            fastLine == 1 ? "New" : fastLine == 2 ? "New, building" : fastLine == 3 ? "New not available" : "Legacy");
-                ImGui::Text("Running on: %s", info.backend == ONR_RR_BACKEND_D3D12         ? "D3D12 (the game's command list)"
-                                              : info.backend == ONR_RR_BACKEND_VULKAN_HOST ? "Vulkan (the game's command buffer)"
-                                                                                           : "Vulkan");
+                ImGui::Text("State: %s, GPU %.2f ms (average), mode %s", MenuLocale::Text(stateName), info.gpu_ms_average,
+                            MenuLocale::Text(fastLine == 1 ? "New" : fastLine == 2 ? "New, building" : fastLine == 3 ? "New not available" : "Legacy"));
+                ImGui::Text("Running on: %s",
+                            MenuLocale::Text(info.backend == ONR_RR_BACKEND_D3D12         ? "D3D12 (the game's command list)"
+                                             : info.backend == ONR_RR_BACKEND_VULKAN_HOST ? "Vulkan (the game's command buffer)"
+                                                                                          : "Vulkan"));
                 if (info.backend == ONR_RR_BACKEND_VULKAN && info.backend_message[0] != 0)
                     ImGui::TextWrapped("D3D12 not used: %s", info.backend_message);
 

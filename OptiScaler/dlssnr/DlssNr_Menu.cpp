@@ -963,17 +963,18 @@ void RenderMenu(Config* config, float menuResScale)
                     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
                                        "Building the network: NR shows when it is ready. The first build in a"
                                        "\ngame can take a minute; the next ones a few seconds.");
-                char label[48];
+                char label[128];
                 if (stage == 4 && info.build_total)
-                    std::snprintf(label, sizeof label, "pipelines %u / %u", info.build_done, info.build_total);
+                    std::snprintf(label, sizeof label, MenuLocale::Text("pipelines %u / %u"), info.build_done,
+                                  info.build_total);
                 else
                     std::snprintf(label, sizeof label, "%s",
-                                  stage == 2   ? "reading the weights"
-                                  : stage == 3 ? "uploading the weights"
-                                  : stage == 5 ? "finishing"
-                                  : stage == 6 ? (network == 3 ? "checking the RX 6000 pipelines"
-                                                               : "checking the RX 7000 pipelines")
-                                               : "planning");
+                                  MenuLocale::Text(stage == 2   ? "reading the weights"
+                                                   : stage == 3 ? "uploading the weights"
+                                                   : stage == 5 ? "finishing"
+                                                   : stage == 6 ? (network == 3 ? "checking the RX 6000 pipelines"
+                                                                                : "checking the RX 7000 pipelines")
+                                                                : "planning"));
                 ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f), label);
             }
 
@@ -1221,8 +1222,9 @@ void RenderMenu(Config* config, float menuResScale)
                     if (info.building)
                         ImGui::TextDisabled("Building the network; frames pass through until it is ready.");
                     if (info.model_w)
-                        ImGui::Text("Network %ux%u for a %ux%u frame, %u pass%s", info.model_w, info.model_h,
-                                    info.frame_w, info.frame_h, info.max_passes, info.max_passes == 1 ? "" : "es");
+                        ImGui::Text(info.max_passes == 1 ? "Network %ux%u for a %ux%u frame, %u pass"
+                                                         : "Network %ux%u for a %ux%u frame, %u passes",
+                                    info.model_w, info.model_h, info.frame_w, info.frame_h, info.max_passes);
                     if (info.struct_size >= offsetof(MochizukiNrInfo, experimental) + sizeof info.experimental &&
                         info.experimental)
                         ImGui::TextUnformatted("Running the FP8 experimental network");
