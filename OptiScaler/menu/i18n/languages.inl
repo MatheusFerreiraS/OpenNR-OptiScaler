@@ -41,8 +41,17 @@ const Entry kzhTW[] = {
 const Entry kcs[] = {
 #include "cs.inl"
 };
+const Entry knl[] = {
+#include "nl.inl"
+};
+const Entry khu[] = {
+#include "hu.inl"
+};
 const Entry kro[] = {
 #include "ro.inl"
+};
+const Entry khr[] = {
+#include "hr.inl"
 };
 const Language kLanguages[] = {
     { "en", nullptr, 0 },
@@ -60,5 +69,8 @@ const Language kLanguages[] = {
     { "uk", kuk, std::size(kuk) },
     { "zh-TW", kzhTW, std::size(kzhTW) },
     { "cs", kcs, std::size(kcs) },
+    { "nl", knl, std::size(knl) },
+    { "hu", khu, std::size(khu) },
     { "ro", kro, std::size(kro) },
+    { "hr", khr, std::size(khr) },
 };
