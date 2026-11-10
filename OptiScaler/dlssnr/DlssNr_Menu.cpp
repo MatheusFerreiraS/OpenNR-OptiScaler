@@ -2659,9 +2659,10 @@ void RenderMenu(Config* config, float menuResScale)
                     float pw =
                         editingRow ? anchors[selectedAnchor].white : config->DlssNrWhitePointScale.value_or_default();
 
-                    char lbl[48];
+                    char lbl[160];
                     if (editingRow)
-                        snprintf(lbl, sizeof(lbl), "Paper white (editing point %d)", selectedAnchor + 1);
+                        snprintf(lbl, sizeof(lbl), MenuLocale::Text("Paper white (editing point %d)"),
+                                 selectedAnchor + 1);
                     else
                         snprintf(lbl, sizeof(lbl), "Paper white");
 
@@ -2937,10 +2938,10 @@ void RenderMenu(Config* config, float menuResScale)
                             ImGui::SameLine();
 
                             const bool sel = (int) i == selectedAnchor;
-                            char row[96];
-                            snprintf(row, sizeof(row), "%s scan %.4f  ->  white %.2f%s",
+                            char row[192];
+                            snprintf(row, sizeof(row), MenuLocale::Text("%s scan %.4f  ->  white %.2f%s"),
                                      ((int) i == active && isSource) ? ">" : "  ", anchors[i].scan, anchors[i].white,
-                                     sel ? "   [editing]" : "");
+                                     sel ? MenuLocale::Text("   [editing]") : "");
 
                             // Click selects the row (slider edits it); click again deselects (slider
                             // returns to the live unanchored point).

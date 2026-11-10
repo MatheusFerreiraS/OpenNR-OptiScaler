@@ -7218,9 +7218,9 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
         const int live = AmdPresentExperimental::childFgInterpolated.load();
         const bool autoMode = !config->FGXeFGInterpolationCount.has_value();
         const int chosen = config->FGXeFGInterpolationCount.value_or(2);
-        char label[32];
+        char label[64];
         if (autoMode)
-            std::snprintf(label, sizeof(label), "Auto (%dX)", (live > 0 ? live : 2) + 1);
+            std::snprintf(label, sizeof(label), MenuLocale::Text("Auto (%dX)"), (live > 0 ? live : 2) + 1);
         else
             std::snprintf(label, sizeof(label), "%dX", chosen + 1);
         ImGui::SameLine(0.0f, 16.0f);
