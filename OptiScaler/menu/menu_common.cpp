@@ -3552,7 +3552,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                                             "Same network and histories, so it flips live and you can compare back and forth.\n"
                                             "The first time, the kernels are built in the background (up to a minute), and\n"
                                             "the image stays on Legacy until then.");
-                if (fastState >= 2)
+                if (fastState == 2 || fastState == 3)
                 {
                     ImGui::SameLine();
                     ImGui::TextDisabled(fastState == 2 ? "building..." : "not available");
@@ -3692,7 +3692,11 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                                                                               : "failed";
                 const int fastLine = OpenNrRr::FastModeState();
                 ImGui::Text("State: %s, GPU %.2f ms (average), mode %s", stateName, info.gpu_ms_average,
-                            fastLine == 1 ? "New" : fastLine == 2 ? "New, building" : fastLine == 3 ? "New not available" : "Legacy");
+                            fastLine == 1   ? "New"
+                            : fastLine == 4 ? "Fast (experimental)"
+                            : fastLine == 2 ? "New, building"
+                            : fastLine == 3 ? "New not available"
+                                            : "Legacy");
                 ImGui::Text("Running on: %s", info.backend == ONR_RR_BACKEND_D3D12         ? "D3D12 (the game's command list)"
                                               : info.backend == ONR_RR_BACKEND_VULKAN_HOST ? "Vulkan (the game's command buffer)"
                                                                                            : "Vulkan");
