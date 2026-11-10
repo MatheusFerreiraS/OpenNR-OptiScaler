@@ -97,7 +97,7 @@ std::vector<FontFile> ScriptFonts(Script script)
 // Conversions as vsnprintf would read them; %% is not one. With spaced, "% d" counts too, which in a translation
 // would read an argument that is not there, and "% s" would crash.
 template <typename Out>
-void ScanFormat(std::string_view text, bool spaced, Out&& out)
+void ScanFormat(std::string_view text, bool spaced, Out&& out, size_t* escaped = nullptr, size_t* lone = nullptr)
 {
     for (size_t i = 0; i < text.size(); i++)
     {
@@ -107,6 +107,8 @@ void ScanFormat(std::string_view text, bool spaced, Out&& out)
         size_t j = i + 1;
         if (j < text.size() && text[j] == '%')
         {
+            if (escaped != nullptr)
+                ++*escaped;
             i = j;
             continue;
         }
@@ -127,6 +129,10 @@ void ScanFormat(std::string_view text, bool spaced, Out&& out)
         {
             out(text.substr(i, j - i + 1));
             i = j;
+        }
+        else if (lone != nullptr)
+        {
+            ++*lone;
         }
     }
 }
@@ -300,11 +306,15 @@ bool EqualsNoCase(std::string_view a, std::string_view b)
 bool TranslationIsSafe(const char* english, const char* translation)
 {
     std::vector<std::string_view> a, b, c;
-    ScanFormat(english, false, [&](std::string_view v) { a.push_back(v); });
-    ScanFormat(translation, false, [&](std::string_view v) { b.push_back(v); });
+    size_t escapedA = 0, escapedB = 0, loneA = 0, loneB = 0;
+    ScanFormat(english, false, [&](std::string_view v) { a.push_back(v); }, &escapedA, &loneA);
+    ScanFormat(translation, false, [&](std::string_view v) { b.push_back(v); }, &escapedB, &loneB);
     ScanFormat(translation, true, [&](std::string_view v) { c.push_back(v); });
 
-    return a == b && b == c && CountBraces(english) == CountBraces(translation) && strstr(translation, "##") == nullptr;
+    // A percent sign that starts no conversion is only fine where the English has one too: that text is drawn as
+    // it is. In a format it would be an invalid conversion.
+    return a == b && b == c && escapedA == escapedB && (loneB == 0 || loneA > 0) &&
+           CountBraces(english) == CountBraces(translation) && strstr(translation, "##") == nullptr;
 }
 
 int LanguageCount()

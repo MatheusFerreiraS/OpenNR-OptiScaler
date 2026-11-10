@@ -5394,7 +5394,8 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
                         ImGui::SliderFloat("Floor Envelope Bias", &v, 0, 1))
                         config->FfxDenoiserFloorEnvelopeBias = v;
                     if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("How far each a-trous pass returns a downward-biased estimate\n"
+                        ImGui::SetTooltip("%s",
+                                          "How far each a-trous pass returns a downward-biased estimate\n"
                                           "instead of the bilateral mean, which bounds the floor below the\n"
                                           "raw colour rather than letting it drift above it. Off by default:\n"
                                           "the crossing it removes measures about 0.1% of a typical frame,\n"

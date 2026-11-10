@@ -207,12 +207,21 @@ def specs(text, pattern):
     return pattern.findall(text.replace("%%", ""))
 
 
+def lone_percents(text):
+    # Percent signs of prose: fine in text drawn as it is, an invalid conversion in a format.
+    return NARROW.sub("", text.replace("%%", "")).count("%")
+
+
 def problems(key, text):
     out = []
     if specs(key, NARROW) != specs(text, NARROW):
         out.append(f"printf conversions differ: {specs(key, NARROW)} vs {specs(text, NARROW)}")
     if specs(text, SPACED) != specs(text, NARROW):
         out.append('a "% " followed by a letter reads as a printf conversion, write the % differently')
+    if key.count("%%") != text.count("%%"):
+        out.append("%% count differs")
+    if lone_percents(text) and not lone_percents(key):
+        out.append("a % that starts no conversion where the English has none: in a format it has to be %%")
     if key.count("{}") != text.count("{}"):
         out.append("{} count differs")
     if "##" in text:

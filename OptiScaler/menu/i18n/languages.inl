@@ -11,10 +11,30 @@ const Entry kru[] = {
 const Entry kzhCN[] = {
 #include "zh-CN.inl"
 };
+const Entry kde[] = {
+#include "de.inl"
+};
+const Entry kfr[] = {
+#include "fr.inl"
+};
+const Entry kit[] = {
+#include "it.inl"
+};
+const Entry kpl[] = {
+#include "pl.inl"
+};
+const Entry ktr[] = {
+#include "tr.inl"
+};
 const Language kLanguages[] = {
     { "en", nullptr, 0 },
     { "pt-BR", kptBR, std::size(kptBR) },
     { "es", kes, std::size(kes) },
     { "ru", kru, std::size(kru) },
     { "zh-CN", kzhCN, std::size(kzhCN) },
+    { "de", kde, std::size(kde) },
+    { "fr", kfr, std::size(kfr) },
+    { "it", kit, std::size(kit) },
+    { "pl", kpl, std::size(kpl) },
+    { "tr", ktr, std::size(ktr) },
 };

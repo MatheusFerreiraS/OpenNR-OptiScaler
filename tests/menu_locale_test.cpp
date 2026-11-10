@@ -73,6 +73,9 @@ static void testUnits()
     check(!TranslationIsSafe("100% sure", "100% seguro"), "stray conversion from a percent sign");
     check(TranslationIsSafe("50%% up", "50%% acima"), "escaped percent");
     check(TranslationIsSafe("about 8%)", "cerca de 8%)"), "percent in prose");
+    check(!TranslationIsSafe("half of it", "50%, a metade"), "percent in prose the English does not have");
+    check(!TranslationIsSafe("on %u%% of frames", "em %u% (dos quadros)"), "lost escape of a percent");
+    check(TranslationIsSafe("13% faster", "%13 daha"), "percent before the number");
     check(!TranslationIsSafe("x {}", "x"), "lost braces");
     check(!TranslationIsSafe("x", "y##z"), "id in a translation");
 

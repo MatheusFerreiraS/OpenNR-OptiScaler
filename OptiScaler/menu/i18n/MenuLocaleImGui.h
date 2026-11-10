@@ -17,12 +17,15 @@ namespace MenuLocaleImGui
 {
 using namespace ::ImGui;
 
-// Text("%s", name) is how lists show their names, so the argument gets translated too.
+// Text("%s", name) is how lists show their names, so the argument gets translated too. Text with no percent sign
+// is no format, and its translation is drawn as it is.
 #define MENU_LOCALE_FORMATTED(call_v, call_plain, ...)                                                                 \
     va_list args;                                                                                                      \
     va_start(args, fmt);                                                                                               \
     if (fmt[0] == '%' && fmt[1] == 's' && fmt[2] == 0)                                                                 \
         call_plain(__VA_ARGS__ "%s", MenuLocale::Text(va_arg(args, const char*)));                                     \
+    else if (strchr(fmt, '%') == nullptr)                                                                              \
+        call_plain(__VA_ARGS__ "%s", MenuLocale::Text(fmt));                                                           \
     else                                                                                                               \
         call_v(__VA_ARGS__ MenuLocale::Text(fmt), args);                                                               \
     va_end(args)
