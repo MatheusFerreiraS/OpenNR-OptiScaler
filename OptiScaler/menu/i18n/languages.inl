@@ -2,7 +2,11 @@
 const Entry kptBR[] = {
 #include "pt-BR.inl"
 };
+const Entry kru[] = {
+#include "ru.inl"
+};
 const Language kLanguages[] = {
     { "en", nullptr, 0 },
     { "pt-BR", kptBR, std::size(kptBR) },
+    { "ru", kru, std::size(kru) },
 };
