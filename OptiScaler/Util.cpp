@@ -579,15 +579,17 @@ std::optional<std::filesystem::path> Util::FindFilePath(const std::filesystem::p
         return candidate;
     }
 
-    // Helper lambda to perform a Breadth-First Search (shallowest files first)
-    auto SearchDirectoryBFS = [&](const std::filesystem::path& root) -> std::optional<std::filesystem::path>
+    // Helper lambda to perform a Breadth-First Search (shallowest files first). maxDepth bounds it below root:
+    // a game folder full of mods (Football Life's Data and download) took a minute to walk, the game waiting on it.
+    auto SearchDirectoryBFS = [&](const std::filesystem::path& root,
+                                  int maxDepth = INT_MAX) -> std::optional<std::filesystem::path>
     {
-        std::queue<std::filesystem::path> directoriesToSearch;
-        directoriesToSearch.push(root);
+        std::queue<std::pair<std::filesystem::path, int>> directoriesToSearch;
+        directoriesToSearch.push({ root, 0 });
 
         while (!directoriesToSearch.empty())
         {
-            std::filesystem::path currentDir = directoriesToSearch.front();
+            auto [currentDir, depth] = directoriesToSearch.front();
             directoriesToSearch.pop();
 
             std::error_code ec;
@@ -601,7 +603,8 @@ std::optional<std::filesystem::path> Util::FindFilePath(const std::filesystem::p
             {
                 if (entry.is_directory())
                 {
-                    directoriesToSearch.push(entry.path());
+                    if (depth < maxDepth && !entry.is_symlink())
+                        directoriesToSearch.push({ entry.path(), depth + 1 });
                 }
                 else if (entry.path().filename() == fileName)
                 {
@@ -616,8 +619,8 @@ std::optional<std::filesystem::path> Util::FindFilePath(const std::filesystem::p
         return std::nullopt;
     };
 
-    // 2) Breadth-First search under startDir
-    if (auto foundPath = SearchDirectoryBFS(startDir))
+    // 2) Breadth-First search under startDir, three levels down (streamline\ and OptiScaler\ sit one or two below)
+    if (auto foundPath = SearchDirectoryBFS(startDir, 3))
     {
         LOG_INFO(L"{} found at {}", fileName.wstring(), foundPath.value().wstring());
         return foundPath;
