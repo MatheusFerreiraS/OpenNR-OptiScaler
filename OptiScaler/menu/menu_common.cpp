@@ -10676,7 +10676,9 @@ void MenuCommon::RenderKeybindSettings(RenderMenuContext& ctx)
     }
 }
 
-static void RenderLanguageCombo(Config* config)
+static float LanguageComboWidth() { return ImGui::GetFontSize() * 9.0f; }
+
+static void RenderLanguageCombo(Config* config, bool showLabel)
 {
     // A name stays in English until the font for its script is in, the atlas would draw "?" otherwise.
     const auto drawable = [](const MenuLocale::LanguageInfo& language)
@@ -10699,7 +10701,7 @@ static void RenderLanguageCombo(Config* config)
         MenuLocale::Request(value);
     };
 
-    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14.0f);
+    ImGui::SetNextItemWidth(LanguageComboWidth());
 
     std::string preview = "Auto";
     for (int i = 0; i < MenuLocale::LanguageCount(); i++)
@@ -10708,7 +10710,7 @@ static void RenderLanguageCombo(Config* config)
             preview = drawable(MenuLocale::Language(i));
     }
 
-    if (ImGui::BeginCombo("Language", preview.c_str()))
+    if (ImGui::BeginCombo(showLabel ? "Language###language" : "###language", preview.c_str()))
     {
         if (ImGui::Selectable("Auto##language", setting == "auto"))
             choose("auto");
@@ -10723,50 +10725,6 @@ static void RenderLanguageCombo(Config* config)
 
         ImGui::EndCombo();
     }
-
-    if (MenuLocale::FontMissing())
-        ImGui::TextDisabled("No font for this language on this system, showing English");
-}
-
-void MenuCommon::RenderMenuScaleSettings(RenderMenuContext& ctx)
-{
-    auto config = ctx.config;
-    auto& menuResScale = ctx.menuResScale;
-
-    SectionTitle("Menu");
-
-    ImGui::PushItemWidth(100.0f * menuResScale);
-
-    auto autoText = config->MenuScale.has_value() ? "Auto" : StrFmt("Auto (%3.1f)", menuResScale);
-    // clang-format off
-    const char* uiScales[] = { autoText.c_str(), "0.5", "0.6", "0.7", "0.8", "0.9", "1.0", "1.1",
-                               "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8", "1.9", "2.0" };
-    // clang-format on
-
-    const char* selectedScaleName = uiScales[_selectedScale];
-
-    if (ImGui::BeginCombo("Menu Scale", selectedScaleName))
-    {
-        for (int n = 0; n < std::size(uiScales); n++)
-        {
-            if (ImGui::Selectable(uiScales[n], (_selectedScale == n)))
-            {
-                _selectedScale = n;
-
-                if (n == 0)
-                    config->MenuScale.reset();
-                else
-                    config->MenuScale = 0.4f + (float) n / 10.0f;
-            }
-        }
-
-        ImGui::EndCombo();
-    }
-
-    ImGui::PopItemWidth();
-
-    RenderLanguageCombo(config);
-    ShowTooltip("Auto follows the language of Windows. Translations are machine-made");
 }
 
 static const char* ApiName(API api)
@@ -11666,7 +11624,8 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
     ImGui::Separator();
     RenderMainMenuGraphs(ctx);
 
-    // What fits on the row, most needed last to go: Save Settings and Close, the scale, its label, the resolution.
+    // What fits on the row, most needed last to go: Save Settings and Close, the scale, the language, their labels,
+    // the resolution.
     const std::string resolution =
         currentFeature != nullptr && !currentFeature->IsFrozen()
             ? StrFmt("%dx%d -> %dx%d (%.1f) [%dx%d (%.1f)] %d", currentFeature->RenderWidth(),
@@ -11682,10 +11641,15 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
                            style.FramePadding.x * 4.0f + 6.0f;
     const float scaleW = 100.0f * menuResScale + 15.0f;
     const float labelW = style.ItemInnerSpacing.x + ImGui::CalcTextSize("Menu Scale").x;
+    const float languageW = LanguageComboWidth() + 15.0f;
+    const float languageLabelW = style.ItemInnerSpacing.x + ImGui::CalcTextSize("Language").x;
     const float resolutionW = resolution.empty() ? 0.0f : ImGui::CalcTextSize(resolution.c_str()).x + 10.0f;
     const bool showScale = scaleW + buttonsW <= avail;
-    const bool showLabel = scaleW + labelW + buttonsW <= avail;
-    const bool showResolution = !resolution.empty() && resolutionW + scaleW + labelW + buttonsW <= avail;
+    const bool showLanguage = showScale && scaleW + languageW + buttonsW <= avail;
+    const float combosW = scaleW + (showLanguage ? languageW : 0.0f);
+    const float labelsW = labelW + (showLanguage ? languageLabelW : 0.0f);
+    const bool showLabel = combosW + labelsW + buttonsW <= avail;
+    const bool showResolution = !resolution.empty() && resolutionW + combosW + labelsW + buttonsW <= avail;
 
     if (showResolution)
     {
@@ -11693,7 +11657,7 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
         ImGui::SameLine(0.0f, 10.0f);
     }
     // The scale and the buttons held to the right.
-    const float rightW = (showScale ? scaleW + (showLabel ? labelW : 0.0f) : 0.0f) + buttonsW;
+    const float rightW = (showScale ? combosW + (showLabel ? labelsW : 0.0f) : 0.0f) + buttonsW;
     ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), lineRight - rightW));
 
     if (showScale)
@@ -11729,6 +11693,15 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
     ImGui::PopItemWidth();
 
     ImGui::SameLine(0.0f, 15.0f);
+
+    if (showLanguage)
+    {
+        RenderLanguageCombo(config, showLabel);
+        ShowTooltip(MenuLocale::FontMissing()
+                        ? "No font for this language on this system, showing English"
+                        : "Auto follows the language of Windows. Translations are machine-made");
+        ImGui::SameLine(0.0f, 15.0f);
+    }
     }
 
     if (ImGui::Button("Save Settings"))

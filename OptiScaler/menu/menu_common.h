@@ -246,7 +246,6 @@ class MenuCommon
     static void RenderStatusInfo(RenderMenuContext& ctx);
     static void RenderDetectedInfo(RenderMenuContext& ctx);
     static void RenderDetectedCard(RenderMenuContext& ctx);
-    static void RenderMenuScaleSettings(RenderMenuContext& ctx);
     static void RenderActiveUpscalerSettings(RenderMenuContext& ctx);
     static void RenderFrameGenerationSelection(RenderMenuContext& ctx);
     static void RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx);
