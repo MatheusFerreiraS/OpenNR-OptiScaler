@@ -59,6 +59,9 @@ const Entry kvi[] = {
 const Entry kid[] = {
 #include "id.inl"
 };
+const Entry kth[] = {
+#include "th.inl"
+};
 const Language kLanguages[] = {
     { "en", nullptr, 0 },
     { "pt-BR", kptBR, std::size(kptBR) },
@@ -81,4 +84,5 @@ const Language kLanguages[] = {
     { "hr", khr, std::size(khr) },
     { "vi", kvi, std::size(kvi) },
     { "id", kid, std::size(kid) },
+    { "th", kth, std::size(kth) },
 };
