@@ -4,6 +4,7 @@
 #include "State.h"
 #include "Config.h"
 #include "Logger.h"
+#include "Util.h"
 
 // HOW TO ADD A GAME
 // -----------------
@@ -130,6 +131,13 @@ ConfigDefault WithXeFG(ConfigDefault setting)
                    state.activeFgInput != FGInput::NvngxFG;
         },
         std::move(setting));
+}
+
+bool WithPdUpscaler(const GameConfigContext&)
+{
+    std::error_code ec;
+    return std::filesystem::exists(Util::ExePath().parent_path() / L"reframework" / L"plugins" / L"PDPerfPlugin.dll",
+                                   ec);
 }
 
 using enum GameQuirk;
@@ -321,10 +329,12 @@ const std::vector<GameConfig> gameConfigs = {
     },
 
     // REF PDUpscaler branch
-    // Old menu needed to avoid the invisible overlay while upscaling is active
+    // Old menu needed to avoid the invisible overlay while upscaling is active. Only with the branch's
+    // UpscalerBasePlugin (PDPerfPlugin.dll): with the regular REFramework there is no upscaler, and the old menu
+    // never shows, nor does NR without upscaling run.
     {
         .exes = { "re2.exe", "re3.exe", "re4.exe", "re7.exe", "re8.exe", "devilmaycry5.exe", "streetfighter6.exe" },
-        .defaults = { DxgiSpoofing = false, OverlayMenu = false },
+        .defaults = { DxgiSpoofing = false, When(WithPdUpscaler, OverlayMenu = false) },
     },
 
     // Cyberpunk 2077
