@@ -53,6 +53,9 @@ const Entry kro[] = {
 const Entry khr[] = {
 #include "hr.inl"
 };
+const Entry klt[] = {
+#include "lt.inl"
+};
 const Entry kvi[] = {
 #include "vi.inl"
 };
@@ -82,6 +85,7 @@ const Language kLanguages[] = {
     { "hu", khu, std::size(khu) },
     { "ro", kro, std::size(kro) },
     { "hr", khr, std::size(khr) },
+    { "lt", klt, std::size(klt) },
     { "vi", kvi, std::size(kvi) },
     { "id", kid, std::size(kid) },
     { "th", kth, std::size(kth) },
