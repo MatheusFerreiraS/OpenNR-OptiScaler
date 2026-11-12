@@ -84,6 +84,7 @@ class IFeature
     bool _hasExposure = false;
     bool _hasOutput = false;
     bool _depthLinear = false;
+    bool _fgLinearDepth = false;
 
     unsigned int _renderWidth = 0;
     unsigned int _renderHeight = 0;
@@ -173,6 +174,8 @@ class IFeature
     virtual bool ModuleLoaded() { return _moduleLoaded; }
     virtual long FrameCount() { return _frameCount; }
     virtual bool DepthLinear() { return _depthLinear; }
+    // Linear view depth that OptiFG turns into reversed-Z device depth (OpenRR, FSR-RR)
+    bool FGLinearDepth() const { return _fgLinearDepth; }
 
     virtual bool AutoExposure() { return _initFlags.AutoExposure; }
     virtual bool DepthInverted() { return _initFlags.DepthInverted; }

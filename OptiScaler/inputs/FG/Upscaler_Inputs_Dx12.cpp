@@ -5,9 +5,24 @@
 #include <resource_tracking/ResTrack_dx12.h>
 #include "shaders/depth_scale/DS_Dx12.h"
 #include "MathUtils.h"
+#include <hooks/Streamline_Hooks.h>
 
 using namespace OptiMath;
 static DS_Dx12* DepthScale = nullptr;
+
+// The game's camera when it also feeds Streamline; the upscaler call carries none
+static bool GetStreamlineCamera(sl::Constants& out)
+{
+    if (!StreamlineHooks::isSetConstantsHooked())
+        return false;
+
+    const auto snapshot = StreamlineHooks::getSLConstantsSnapshot();
+    out = snapshot.constants;
+
+    return snapshot.frameIndex != UINT32_MAX && out.cameraNear != sl::INVALID_FLOAT &&
+           out.cameraFar != sl::INVALID_FLOAT && out.cameraFOV != sl::INVALID_FLOAT && out.cameraNear > 0.0f &&
+           out.cameraFar >= 0.0f && out.cameraFOV > 0.0f && std::isfinite(out.cameraNear + out.cameraFar + out.cameraFOV);
+}
 
 void UpscalerInputsDx12::Init(ID3D12Device* device)
 {
@@ -47,25 +62,70 @@ void UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* InCmdList, NVSD
 
     auto fgConstants = UpscalerInputs::GetFGConstants(feature);
 
-    fg->EvaluateState(_device, fgConstants);
-
-    // FG takes device depth. Linear view depth (DLSS-D or FSR-RR told so) becomes the device depth of a projection
-    // with the near/far FG gets below, so the two stay consistent.
+    // FG takes device depth. Linear view depth (OpenRR, FSR-RR) goes to it as the reversed-Z depth of the game's
+    // camera, with the camera and flags the Streamline input would give; without a Streamline camera, of the
+    // default planes. Device depth is untouched.
     const bool scaleDepth = Config::Instance()->FGEnableDepthScale.value_or_default();
+    bool linearDepth = !scaleDepth && feature->FGLinearDepth();
+    sl::Constants slCamera {};
+    const bool hasSlCamera = linearDepth && GetStreamlineCamera(slCamera);
+    bool infiniteDepth = false;
+
+    if (hasSlCamera)
+    {
+        camera.cameraNear = std::min(slCamera.cameraNear, slCamera.cameraFar);
+        camera.cameraFar = std::max(slCamera.cameraNear, slCamera.cameraFar);
+        camera.cameraVFov =
+            slCamera.cameraFOV < 4.0f ? slCamera.cameraFOV : GetRadiansFromDeg(slCamera.cameraFOV);
+
+        // Zero far is infinite; FSR-FG needs far above near even then, as on the Streamline input
+        infiniteDepth = camera.cameraNear == 0.0f;
+        if (infiniteDepth)
+        {
+            camera.cameraNear = camera.cameraFar;
+            camera.cameraFar = camera.cameraNear + 1.0f;
+        }
+    }
+    else if (linearDepth && camera.cameraNear < camera.cameraFar)
+    {
+        // GetCameraValues' order for reversed Z
+        std::swap(camera.cameraNear, camera.cameraFar);
+    }
+
     const float zNear = std::min(camera.cameraNear, camera.cameraFar);
     const float zFar = std::max(camera.cameraNear, camera.cameraFar);
-    const bool linearDepth =
-        !scaleDepth && feature->DepthLinear() && zNear > 0.0f && std::isfinite(zFar) && zFar > zNear;
+    linearDepth = linearDepth && zNear > 0.0f && std::isfinite(zFar) && zFar > zNear;
+
+    if (linearDepth)
+    {
+        fgConstants.flags |= FG_Flags::InvertedDepth;
+
+        if (infiniteDepth)
+            fgConstants.flags |= FG_Flags::InfiniteDepth;
+    }
+
+    // XeFG reads it when its swapchain is made, so a change shows the restart note in the menu. Set by
+    // IFeature::SetInitParameters, this only differs when the per-frame depth type disagrees with the one at creation.
+    if (const bool inverted = feature->DepthInverted() || linearDepth;
+        Config::Instance()->FGXeFGDepthInverted.value_or_default() != inverted)
+    {
+        Config::Instance()->FGXeFGDepthInverted = inverted;
+        Config::Instance()->SaveXeFG();
+    }
 
     if (static bool loggedLinear = false; linearDepth != loggedLinear)
     {
         loggedLinear = linearDepth;
         if (linearDepth)
-            LOG_INFO("FG: the upscaler's depth is linear, FG gets it as device depth (near {}, far {}, {})", zNear, zFar,
-                     fg->IsInvertedDepth() ? "reversed Z" : "standard Z");
+            LOG_INFO("FG: the upscaler's depth is linear, FG gets reversed-Z device depth (near {}, far {}, "
+                     "vertical FOV {}, camera from {})",
+                     zNear, infiniteDepth ? "infinite" : std::to_string(zFar), camera.cameraVFov,
+                     hasSlCamera ? "Streamline" : "the defaults");
         else
             LOG_INFO("FG: the upscaler's depth is device depth again");
     }
+
+    fg->EvaluateState(_device, fgConstants);
 
     // Not needed while FG or the option is off, its destructor defers the buffer release
     if (DepthScale != nullptr && (!Config::Instance()->IsFGEnabled() || (!scaleDepth && !linearDepth)))
@@ -86,6 +146,11 @@ void UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* InCmdList, NVSD
 
     auto aspectRatio = (float) feature->DisplayWidth() / (float) feature->DisplayHeight();
     fg->SetCameraValues(camera.cameraNear, camera.cameraFar, camera.cameraVFov, aspectRatio, camera.meterFactor);
+
+    if (hasSlCamera)
+        fg->SetCameraData(reinterpret_cast<float*>(&slCamera.cameraPos), reinterpret_cast<float*>(&slCamera.cameraUp),
+                          reinterpret_cast<float*>(&slCamera.cameraRight),
+                          reinterpret_cast<float*>(&slCamera.cameraFwd));
     fg->SetFrameTimeDelta(State::Instance().lastFGFrameTime);
     fg->SetMVScale(mvScaleX, mvScaleY);
     fg->SetJitter(jitterX, jitterY);
@@ -164,7 +229,8 @@ void UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* InCmdList, NVSD
 
                     const uint32_t mode = linearDepth ? (fg->IsInvertedDepth() ? 2 : 1) : 0;
 
-                    if (DepthScale->Dispatch(InCmdList, paramDepth, DepthScale->Buffer(), mode, zNear, zFar))
+                    if (DepthScale->Dispatch(InCmdList, paramDepth, DepthScale->Buffer(), mode, zNear,
+                                             infiniteDepth ? 0.0f : zFar))
                     {
                         Dx12Resource setResource {};
                         setResource.type = FG_ResourceType::Depth;

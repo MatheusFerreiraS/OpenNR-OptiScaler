@@ -728,17 +728,6 @@ bool OpenNrRrFeatureDx12::InitInternal(ID3D12GraphicsCommandList* InCommandList,
     if (!ModuleLoaded() || Device == nullptr)
         return false;
 
-    _initParameters = SetInitParameters(InParameters);
-
-    if (!_initParameters)
-        return false;
-
-    if (!OpenNrRr::Usable(Device->GetAdapterLuid()))
-    {
-        LOG_ERROR("OpenRR: not usable: {}", OpenNrRr::Reason());
-        return false;
-    }
-
     if (int value; InParameters->Get(NVSDK_NGX_Parameter_Use_HW_Depth, &value) == NVSDK_NGX_Result_Success)
     {
         _hasNGXDepthType = true;
@@ -750,6 +739,22 @@ bool OpenNrRrFeatureDx12::InitInternal(ID3D12GraphicsCommandList* InCommandList,
     {
         _hasNGXDepthType = true;
         _ngxHWDepth = s_ngxReportedHWDepth;
+    }
+
+    // Before SetInitParameters, which stores the depth direction XeFG starts with; each frame refines it
+    _fgLinearDepth = Config::Instance()->FfxDenoiserHardwareDepth.has_value()
+                         ? !Config::Instance()->FfxDenoiserHardwareDepth.value()
+                         : _hasNGXDepthType && !_ngxHWDepth;
+
+    _initParameters = SetInitParameters(InParameters);
+
+    if (!_initParameters)
+        return false;
+
+    if (!OpenNrRr::Usable(Device->GetAdapterLuid()))
+    {
+        LOG_ERROR("OpenRR: not usable: {}", OpenNrRr::Reason());
+        return false;
     }
 
     if (int value; InParameters->Get(NVSDK_NGX_Parameter_DLSS_Roughness_Mode, &value) == NVSDK_NGX_Result_Success)
@@ -1105,7 +1110,7 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
     else
         hardwareDepth = kind != DepthKind::GameWritten;
 
-    _depthLinear = !hardwareDepth;
+    _fgLinearDepth = !hardwareDepth;
 
     if (static_cast<int>(hardwareDepth) != _loggedHWDepth)
     {

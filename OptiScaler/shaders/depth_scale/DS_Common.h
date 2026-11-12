@@ -38,8 +38,10 @@ void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
         return;
     }
 
-    // Reversed device depth of a perspective projection with these planes, 0 (far) where nothing was written
-    float reversed = z > 0.0f ? saturate(Near * (Far - z) / (z * (Far - Near))) : 0.0f;
+    // Reversed device depth of a perspective projection with these planes (Far 0: infinite), 0 where nothing was
+    // written
+    float reversed = Far > Near ? Near * (Far - z) / (z * (Far - Near)) : Near / z;
+    reversed = z > 0.0f ? saturate(reversed) : 0.0f;
     DestinationTexture[pixelCoord] = Mode == 2 ? reversed : 1.0f - reversed;
 }
 )";

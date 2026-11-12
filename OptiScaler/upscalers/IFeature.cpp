@@ -118,7 +118,7 @@ bool IFeature::SetInitParameters(NVSDK_NGX_Parameter* InParameters)
 
         if (State::Instance().activeFgInput == FGInput::Upscaler)
         {
-            Config::Instance()->FGXeFGDepthInverted = _initFlags.DepthInverted;
+            Config::Instance()->FGXeFGDepthInverted = _initFlags.DepthInverted || _fgLinearDepth;
             Config::Instance()->FGXeFGJitteredMV = _initFlags.JitteredMV;
             Config::Instance()->FGXeFGHighResMV = !_initFlags.LowResMV;
             LOG_DEBUG("XeFG DepthInverted: {}", Config::Instance()->FGXeFGDepthInverted.value_or_default());

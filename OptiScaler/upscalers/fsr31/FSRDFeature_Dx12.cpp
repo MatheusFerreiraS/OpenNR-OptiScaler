@@ -3259,7 +3259,7 @@ void FSRDFeatureDx12::ApplyDepthInterpretation()
     }
 
     _isHWDepth = hardwareDepth;
-    _depthLinear = !hardwareDepth;
+    _fgLinearDepth = !hardwareDepth;
 
     if (!_isHWDepth)
         _convDesc.Flags |= (uint32_t) FSRDConvFlags::IsDepthLinear;
