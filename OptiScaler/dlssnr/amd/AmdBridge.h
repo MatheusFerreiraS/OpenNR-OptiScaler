@@ -27,6 +27,9 @@ bool NeuralHubFgInstalled(const std::filesystem::path& library, const std::strin
 // The host's D3D12 compute runtime has code for gfx11 and gfx12 only: an RX 6000 (gfx10.3) gets 0x887a0005 from the
 // driver and the game dies. The GPU behind luid, or the primary one; true when its generation is unknown.
 bool HostD3d12Supported(const LUID* luid = nullptr);
+// NeuralHubFgInstalled() without the GPU check, for DllMain: identifying the GPU makes a DXGI factory, which inside
+// DLL_PROCESS_ATTACH stopped Phantom Blade Zero from starting (0xc0000142).
+bool NeuralHubFgFilesInstalled();
 // The armed host found an nvngx_dlssg.dll, or NeuralHubFgInstalled(): DLSS-FG is offered on AMD.
 bool NeuralHubFgServed();
 // [DlssNr] HostComputeBackend=HIP: the 0.8.0 host stays on HIP for danielblnc's NR, and its DLSS-FG (D3D12 only) is off.

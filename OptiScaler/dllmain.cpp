@@ -1662,12 +1662,22 @@ void CheckMemoryForProxies()
     NVNGXProxy::InitNVNGX();
 }
 
+// The DLSSG replacement DllMain dropped for NeuralHub's DLSS-FG before the GPU was known
+static std::optional<FGNvngxReplacement> neuralHubFgReplacement;
+
 DWORD WINAPI getGpuInfo(LPVOID hModuleVoid)
 {
     // TODO: dxvk deadlocks when the game and identify gpu calls create at the same time
     // Sleep(1000);
 
     auto primaryGpu = IdentifyGpu::getPrimaryGpu();
+
+    if (neuralHubFgReplacement.has_value() && !DlssNr::AmdBridge::HostD3d12Supported() &&
+        State::Instance().activeFgNvngx == FGNvngxReplacement::None)
+    {
+        LOG_INFO("NeuralHub's DLSS-FG needs RDNA3 or newer, DLSSG replacement back on");
+        State::Instance().activeFgNvngx = neuralHubFgReplacement.value();
+    }
 
     if (primaryGpu.vendorId == VendorId::Intel && !Config::Instance()->FGXeFGExtraPacing.has_value())
         Config::Instance()->FGXeFGExtraPacing.set_volatile_value(false);
@@ -1931,11 +1941,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         if (State::Instance().activeFgInput != FGInput::NvngxFG && State::Instance().activeFgOutput != FGOutput::DLSSG)
             State::Instance().activeFgNvngx = FGNvngxReplacement::None;
 
-        // NeuralHub's host serves real DLSS-FG on AMD, as an Ada+ GeForce does: no replacement unless the INI names one
+        // NeuralHub's host serves real DLSS-FG on AMD, as an Ada+ GeForce does: no replacement unless the INI names one.
+        // Files only here; getGpuInfo puts the replacement back on a GPU the host can't serve.
         if (State::Instance().activeFgNvngx != FGNvngxReplacement::None &&
-            !Config::Instance()->FGNvngxReplacement.has_value() && DlssNr::AmdBridge::NeuralHubFgServed())
+            !Config::Instance()->FGNvngxReplacement.has_value() && DlssNr::AmdBridge::NeuralHubFgFilesInstalled())
         {
             spdlog::info("NeuralHub serves DLSS-FG, no DLSSG replacement");
+            neuralHubFgReplacement = State::Instance().activeFgNvngx;
             State::Instance().activeFgNvngx = FGNvngxReplacement::None;
         }
 

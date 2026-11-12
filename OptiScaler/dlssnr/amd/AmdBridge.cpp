@@ -524,7 +524,7 @@ bool HostD3d12Supported(const LUID* luid)
                 gen = gpu.amdHwGeneration;
     return gen == device_info::HwGeneration::kUndefinedGeneration || gen >= device_info::HwGeneration::kGfx11;
 }
-bool NeuralHubFgInstalled()
+bool NeuralHubFgFilesInstalled()
 {
     // The INI's own FGOutput, read once: a volatile override or a menu change mid-game does not move the host.
     static const auto output = Config::Instance()->FGOutput.value_for_config_ignore_default();
@@ -532,9 +532,9 @@ bool NeuralHubFgInstalled()
     static const bool otherFgOutput = output.has_value() && *output != FGOutput::DLSSG && *output != FGOutput::NoFG;
     return NeuralHubFgInstalled(LibraryFolder(), Config::Instance()->HostComputeBackend.value_or_default(),
                                 dlssgOutput, otherFgOutput,
-                                DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel) &&
-           HostD3d12Supported();
+                                DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel);
 }
+bool NeuralHubFgInstalled() { return NeuralHubFgFilesInstalled() && HostD3d12Supported(); }
 bool NeuralHubFgServed()
 {
     return (State::Instance().NeuralHubArmOk && State::Instance().NVNGX_DLSSG_Path.has_value() && !HostKeptOnHip()) ||
