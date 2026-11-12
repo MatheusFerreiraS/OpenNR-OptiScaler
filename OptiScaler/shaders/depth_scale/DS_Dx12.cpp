@@ -35,7 +35,8 @@ void DS_Dx12::SetBufferState(ID3D12GraphicsCommandList* InCommandList, D3D12_RES
     return Shader_Dx12::SetBufferState(InCommandList, InState, _buffer, &_bufferState);
 }
 
-bool DS_Dx12::Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InResource, ID3D12Resource* OutResource)
+bool DS_Dx12::Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InResource, ID3D12Resource* OutResource,
+                       uint32_t InMode, float InNear, float InFar)
 {
     if (!_init || _device == nullptr || InCmdList == nullptr || InResource == nullptr || OutResource == nullptr)
         return false;
@@ -53,6 +54,9 @@ bool DS_Dx12::Dispatch(ID3D12GraphicsCommandList* InCmdList, ID3D12Resource* InR
 
     DSConstants constants {};
     constants.DepthScale = Config::Instance()->FGDepthScaleMax.value_or_default();
+    constants.Near = InNear;
+    constants.Far = InFar;
+    constants.Mode = InMode;
 
     if (!CreateConstantsBuffer(_device, _constantBuffer, constants, currentHeap.GetCbvCPU(0)))
     {

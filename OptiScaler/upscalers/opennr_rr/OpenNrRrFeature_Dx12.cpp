@@ -1105,6 +1105,8 @@ bool OpenNrRrFeatureDx12::FillFrame(const NVSDK_NGX_Parameter& params, OnrRrFram
     else
         hardwareDepth = kind != DepthKind::GameWritten;
 
+    _depthLinear = !hardwareDepth;
+
     if (static_cast<int>(hardwareDepth) != _loggedHWDepth)
     {
         _loggedHWDepth = hardwareDepth;

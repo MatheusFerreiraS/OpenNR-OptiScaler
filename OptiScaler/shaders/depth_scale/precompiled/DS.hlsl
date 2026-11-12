@@ -1,6 +1,9 @@
 cbuffer Params : register(b0)
 {
     float DepthScale;
+    float Near;
+    float Far;
+    uint Mode; // 0: linear / DepthScale, 1: linear view depth to device depth, 2: same, reversed Z
 };
 
 // Input texture
@@ -13,13 +16,16 @@ RWTexture2D<float> DestinationTexture : register(u0);
 [numthreads(16, 16, 1)]
 void CSMain(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    // The dispatchThreadID.xy are the pixel coordinates
     uint2 pixelCoord = dispatchThreadID.xy;
+    float z = SourceTexture.Load(int3(pixelCoord, 0));
 
-    // Load the pixel value from the source texture
-    float srcColor = SourceTexture.Load(int3(pixelCoord, 0));
-    float normalizedColor = srcColor / DepthScale;
+    if (Mode == 0)
+    {
+        DestinationTexture[pixelCoord] = saturate(z / DepthScale);
+        return;
+    }
 
-    // Write the pixel value to the destination texture
-    DestinationTexture[pixelCoord] = saturate(normalizedColor);
+    // Reversed device depth of a perspective projection with these planes, 0 (far) where nothing was written
+    float reversed = z > 0.0f ? saturate(Near * (Far - z) / (z * (Far - Near))) : 0.0f;
+    DestinationTexture[pixelCoord] = Mode == 2 ? reversed : 1.0f - reversed;
 }

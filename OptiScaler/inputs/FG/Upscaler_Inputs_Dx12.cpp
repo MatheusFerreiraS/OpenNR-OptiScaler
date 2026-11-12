@@ -49,9 +49,26 @@ void UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* InCmdList, NVSD
 
     fg->EvaluateState(_device, fgConstants);
 
+    // FG takes device depth. Linear view depth (DLSS-D or FSR-RR told so) becomes the device depth of a projection
+    // with the near/far FG gets below, so the two stay consistent.
+    const bool scaleDepth = Config::Instance()->FGEnableDepthScale.value_or_default();
+    const float zNear = std::min(camera.cameraNear, camera.cameraFar);
+    const float zFar = std::max(camera.cameraNear, camera.cameraFar);
+    const bool linearDepth =
+        !scaleDepth && feature->DepthLinear() && zNear > 0.0f && std::isfinite(zFar) && zFar > zNear;
+
+    if (static bool loggedLinear = false; linearDepth != loggedLinear)
+    {
+        loggedLinear = linearDepth;
+        if (linearDepth)
+            LOG_INFO("FG: the upscaler's depth is linear, FG gets it as device depth (near {}, far {}, {})", zNear, zFar,
+                     fg->IsInvertedDepth() ? "reversed Z" : "standard Z");
+        else
+            LOG_INFO("FG: the upscaler's depth is device depth again");
+    }
+
     // Not needed while FG or the option is off, its destructor defers the buffer release
-    if (DepthScale != nullptr &&
-        (!Config::Instance()->IsFGEnabled() || !Config::Instance()->FGEnableDepthScale.value_or_default()))
+    if (DepthScale != nullptr && (!Config::Instance()->IsFGEnabled() || (!scaleDepth && !linearDepth)))
     {
         delete DepthScale;
         DepthScale = nullptr;
@@ -134,7 +151,7 @@ void UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* InCmdList, NVSD
         {
             auto done = false;
 
-            if (Config::Instance()->FGEnableDepthScale.value_or_default())
+            if (scaleDepth || linearDepth)
             {
                 if (DepthScale == nullptr)
                     DepthScale = new DS_Dx12("Depth Scale", _device);
@@ -145,7 +162,9 @@ void UpscalerInputsDx12::UpscaleStart(ID3D12GraphicsCommandList* InCmdList, NVSD
                 {
                     DepthScale->SetBufferState(InCmdList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
-                    if (DepthScale->Dispatch(InCmdList, paramDepth, DepthScale->Buffer()))
+                    const uint32_t mode = linearDepth ? (fg->IsInvertedDepth() ? 2 : 1) : 0;
+
+                    if (DepthScale->Dispatch(InCmdList, paramDepth, DepthScale->Buffer(), mode, zNear, zFar))
                     {
                         Dx12Resource setResource {};
                         setResource.type = FG_ResourceType::Depth;
