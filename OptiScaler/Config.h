@@ -972,6 +972,8 @@ class Config
     // Order of the menu's side bar buttons, their short names comma-separated ("NR,UP,FG,IMG,UI,ADV"). Dragging a
     // button up or down sets it; a name left out goes after the ones given.
     CustomOptional<std::string> MenuSectionOrder { "" };
+    // The menu opens on the Basic page (true) or on the sections down the side (false).
+    CustomOptional<bool> MenuBasic { true };
     CustomOptional<bool, SoftDefault> OverlayMenu { true };
     CustomOptional<int> ShortcutKey { VK_INSERT };
     CustomOptional<bool> ExtendedLimits { false };

@@ -187,7 +187,8 @@ static void NeuralPassLine(Config* config, const char* help)
         return;
     ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Neural pass: %.1f ms per frame (%.0f fps on its own)", ms,
                        1000.f / ms);
-    HelpMarker(help);
+    if (help)
+        HelpMarker(help);
 }
 
 // Foveated NR ([DlssNr] Foveation): before the upscaler (mochizuki) and NR without upscaling.
@@ -627,6 +628,243 @@ template <class Reset> static void ResetAllButton(const char* runtime, Config* c
     }
 }
 
+// The network being built, with how far it got: a build takes from seconds to over a minute, and the frames go
+// without NR (or on the previous network) meanwhile, so say so where the cost will appear.
+static void MochizukiBuildProgress(Config* config, uint32_t network)
+{
+    if (MochizukiNrInfo info {}; config->DlssNrEnabled.value_or_default() &&
+                                 DlssNr::Backend::LmxxfBackend::MochizukiInfo(info) && info.building)
+    {
+        const bool fields =
+            info.struct_size >= offsetof(MochizukiNrInfo, build_total) + sizeof info.build_total;
+        const uint32_t stage = fields ? info.build_stage : 0;
+        // Planning and the weights are quick; the pipelines are most of a build.
+        float progress = stage <= 1 || stage == 6 ? 0.02f : stage == 2 ? 0.05f : stage == 3 ? 0.10f : 0.98f;
+        if (stage == 4)
+            progress = 0.12f + 0.85f * (info.build_total ? float(info.build_done) / info.build_total : 0.f);
+        if (stage == 6 && network == 3)
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
+                               "Checking the RX 6000 network: on a new driver every pipeline is compiled"
+                               "\nonce apart from the game first. Its pipelines are large: this can take"
+                               "\nhalf an hour or more; NR shows when it is ready.");
+        else if (stage == 6)
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
+                               "Checking the RX 7000 network: on a new driver every pipeline is compiled"
+                               "\nonce apart from the game first. This takes 1 to 2 minutes; NR shows"
+                               "\nwhen it is ready.");
+        else
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
+                               "Building the network: NR shows when it is ready. The first build in a"
+                               "\ngame can take a minute; the next ones a few seconds.");
+        char label[128];
+        if (stage == 4 && info.build_total)
+            std::snprintf(label, sizeof label, MenuLocale::Text("pipelines %u / %u"), info.build_done,
+                          info.build_total);
+        else
+            std::snprintf(label, sizeof label, "%s",
+                          MenuLocale::Text(stage == 2   ? "reading the weights"
+                                           : stage == 3 ? "uploading the weights"
+                                           : stage == 5 ? "finishing"
+                                           : stage == 6 ? (network == 3 ? "checking the RX 6000 pipelines"
+                                                                        : "checking the RX 7000 pipelines")
+                                                        : "planning"));
+        ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f), label);
+    }
+}
+
+// With more than one runtime installed, choose the one the next launch uses. This session keeps the one it started
+// with: each installs its own D3D12 hooks as the device is created.
+static void RuntimeCombo(Config* config)
+{
+    using DlssNr::Backend::Kind;
+    struct Runtime
+    {
+        Kind kind;
+        const char *key, *label;
+        const wchar_t* file;
+    };
+    static constexpr Runtime runtimes[] = {
+        { Kind::Daniel, "daniel", "danielblnc", L"dlssnr_amd_pass1.dll" },
+        { Kind::Lmxxf, "lmxxf", "lmxxf", L"LmxxfNrRuntime.dll" },
+        { Kind::Mochizuki, "mochizuki", "mochizuki", L"MochizukiNrRuntime.dll" },
+    };
+    std::error_code ec;
+    const auto dir = Util::DllPath().parent_path();
+    bool installed[std::size(runtimes)] {};
+    int count = 0;
+    for (size_t i = 0; i < std::size(runtimes); ++i)
+        count += installed[i] = std::filesystem::exists(dir / runtimes[i].file, ec);
+    if (count < 2)
+        return;
+    const Kind running = DlssNr::Backend::ActiveKindFromConfig();
+    const Kind picked = DlssNr::Backend::ParseKind(config->NrBackend.value_or_default());
+    const char* preview = runtimes[0].label;
+    for (const auto& r : runtimes)
+        if (r.kind == picked)
+            preview = r.label;
+    if (ImGui::BeginCombo("NR runtime", preview))
+    {
+        for (size_t i = 0; i < std::size(runtimes); ++i)
+            if (installed[i] && ImGui::Selectable(runtimes[i].label, runtimes[i].kind == picked))
+                config->NrBackend = std::string(runtimes[i].key);
+        ImGui::EndCombo();
+    }
+    if (picked != running)
+    {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.f, 0.8f, 0.f, 1.f), "(save and restart)");
+    }
+    HelpMarker("danielblnc: the DLSS-NR-on-AMD runtime, every control below."
+               "\nlmxxf: open-source HIP kernels in the game's own queue, before Super"
+               "\nResolution only. Detail, colour and debug view."
+               "\nmochizuki: open-source Vulkan network on its own device. Its own processing"
+               "\npoint, passes, resolution, strengths and model controls."
+               "\n\nThe choice is stored as NrBackend. Press Save Settings and restart the"
+               "\ngame to switch.");
+}
+
+// The Basic page: the few settings people change from game to game. Every one of them is also on the Neural page,
+// with the rest.
+void RenderBasicMenu(Config* config)
+{
+    using DlssNr::Backend::Kind;
+    bool enabled = config->DlssNrEnabled.value_or_default();
+    if (ImGui::Checkbox("Enable NR", &enabled))
+        config->DlssNrEnabled = enabled;
+    if (!enabled)
+        if (const auto note = DlssNr::AmdBridge::StandDownNote(); !note.empty())
+            ImGui::TextColored(ImVec4(1.f, .45f, .35f, 1.f), "%s", note.c_str());
+    bool present = config->DlssNrPresent.value_or_default();
+    if (ImGui::Checkbox("NR without upscaling (D3D9/D3D11/D3D12/Vulkan/OpenGL)", &present))
+        config->DlssNrPresent = present;
+    HelpMarker("Runs NR on the D3D9, D3D11, D3D12, Vulkan or OpenGL frame when the game has no upscaler."
+               "\nRequires the danielblnc AMD runtime. The HUD is included."
+               "\nFidelityFX estimates motion. D3D11 uses a bound shader-readable depth buffer when available."
+               "\nVulkan shares the image with D3D12 when the driver permits; otherwise host readback adds latency."
+               "\nA classic D3D9 device copies each frame through system memory; D3D9Ex shares it with D3D12."
+               "\nOpenGL needs OptiScaler installed as opengl32.dll and shares the back buffer with D3D12."
+               "\nScene cuts reset history; the runtime noise seed is fixed on supported versions.");
+
+    RuntimeCombo(config);
+    const Kind kind = DlssNr::Backend::ActiveKindFromConfig();
+    if (kind == Kind::Mochizuki)
+    {
+        MochizukiNetworkControls(config);
+        std::string off;
+        const char* card = "RX 7000";
+        MochizukiBuildProgress(config, MochizukiNetwork(off, card));
+    }
+
+    // How strong the effect is, each runtime's own control
+    if (kind == Kind::Mochizuki)
+        MochizukiRenoGroup(config, 1, "MochizukiRenoIntensity");
+    else if (kind == Kind::Lmxxf)
+    {
+        float transfer = config->DlssNrTransferStrength.value_or_default();
+        if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 2.0f, "%.2f"))
+            config->DlssNrTransferStrength = transfer;
+        HelpMarker("How much of the model's detail reaches the frame. Above 1 it is"
+                   "\nexaggerated, up to twice its size at 2.");
+    }
+    else if (kind == Kind::Daniel)
+    {
+        static float strength = 100.f;
+        static bool editing = false;
+        if (!editing)
+            strength = config->AmdEffectStrength.value_or_default() * 100.f;
+        ImGui::SliderFloat("Effect strength", &strength, 0, 200, "%.0f%%");
+        editing = ImGui::IsItemActive();
+        // Committed on release: each change restarts the model's history.
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            config->AmdEffectStrength = strength / 100.f;
+        HelpMarker("How much of the network's result reaches the frame. 100% is the"
+                   "\nruntime's own default; 0% leaves the frame as the game drew it.");
+    }
+
+    // Style: each runtime's own control, the same help as on the full page
+    if (kind == Kind::Mochizuki)
+        MochizukiRenoGroup(config, 1, "MochizukiRenoStyle");
+    else if (kind == Kind::Lmxxf)
+    {
+        int style = int(std::min(config->LmxxfStyle.value_or_default(), 2u));
+        if (ImGui::Combo("Style", &style, "Standard\0Natural\0Cinematic\0"))
+            config->LmxxfStyle = uint32_t(style);
+        HelpMarker("The model's own processing profiles. Standard is NVIDIA's default; Natural is"
+                   "\nthe one lmxxf's kernels had built in before. Changing it rebuilds the model,"
+                   "\na pause of a second or two.");
+    }
+    else if (kind == Kind::Daniel)
+    {
+        int style = std::clamp(config->AmdStyle.value_or_default(), 0, 2);
+        if (ImGui::Combo("Style", &style, "Standard\0Natural\0Cinematic\0"))
+            config->AmdStyle = style;
+        HelpMarker("danielblnc's Style: the look the network is asked for, as in his own overlay."
+                   "\nChanging it restarts the model's history."
+                   "\n\nNeeds the danielblnc runtime 0.4.0 or later.");
+    }
+
+    // Exposure: the game's own, or measured from the frame. Which looks right depends on the game.
+    if (kind != Kind::Off)
+    {
+        bool automatic = kind == Kind::Mochizuki ? config->MochizukiPreprocess.value_or_default() &&
+                                                       config->MochizukiPreprocessExposure.value_or_default() == 1u
+                         : kind == Kind::Lmxxf   ? config->LmxxfAutoExposure.value_or_default()
+                                                 : !config->AmdUseGameExposure.value_or_default();
+        int exposure = automatic ? 1 : 0;
+        if (ImGui::Combo("Exposure", &exposure, "Game\0Auto\0"))
+        {
+            if (kind == Kind::Mochizuki)
+            {
+                config->MochizukiPreprocess = exposure == 1;
+                if (exposure == 1)
+                    config->MochizukiPreprocessExposure = 1u;
+            }
+            else if (kind == Kind::Lmxxf)
+                config->LmxxfAutoExposure = exposure == 1;
+            else
+                config->AmdUseGameExposure = exposure == 0;
+        }
+        HelpMarker("The brightness the network sees the frame at. Game uses the exposure the game"
+                   "\nhands over; Auto measures it from the frame. If the picture turns green, grainy,"
+                   "\ntoo dark or too bright, try the other one.");
+    }
+
+    // Passes: Legacy runs the network once a pass, Fast once a frame with its change strengthened (Extrapolation
+    // here; the other methods are under Advanced). One count for both, so switching keeps the same strength.
+    if (kind == Kind::Mochizuki)
+    {
+        int mode = int(std::min(config->MochizukiRenoPassesMode.value_or_default(), 1u));
+        if (ImGui::Combo("Passes mode", &mode, "Legacy\0Fast\0"))
+        {
+            config->MochizukiRenoPassesMode = uint32_t(mode);
+            if (mode == 1)
+                config->MochizukiRenoFastMethod = 0u;
+        }
+        HelpMarker("Legacy: the network runs once for every pass, each on the last one's result."
+                   "\nFast: the network runs once a frame and its change is pushed as far as the passes"
+                   "\nwould take it (Extrapolation), for about the cost of one pass.");
+        static int shown = 1;
+        static bool editing = false;
+        if (!editing)
+            shown = mode == 1 ? int(config->MochizukiRenoFastExtrapolationPasses.value_or_default() + 0.5f)
+                              : int(config->MochizukiRenoPasses.value_or_default());
+        shown = std::clamp(shown, 1, 4);
+        ImGui::SliderInt("Passes", &shown, 1, 4);
+        editing = ImGui::IsItemActive();
+        // Committed on release: a Legacy pass count rebuilds the network.
+        if (ImGui::IsItemDeactivatedAfterEdit())
+        {
+            config->MochizukiRenoPasses = uint32_t(shown);
+            config->MochizukiRenoFastExtrapolationPasses = float(shown);
+        }
+        HelpMarker("How many times the network's change is applied. More passes, a stronger effect;"
+                   "\nin Legacy each one costs another run of the network.");
+    }
+    ImGui::Spacing();
+    NeuralPassLine(config, nullptr);
+    ImGui::TextDisabled("Everything else is under Advanced.");
+}
+
 void RenderMenu(Config* config, float menuResScale)
 {
 
@@ -699,56 +937,7 @@ void RenderMenu(Config* config, float menuResScale)
                 config->DlssNrBadgeScale = std::clamp(badgeScale, 0.5f, 3.0f);
         }
 
-        // With more than one runtime installed, choose the one the next launch uses. This session keeps the
-        // one it started with: each installs its own D3D12 hooks as the device is created.
-        {
-            using DlssNr::Backend::Kind;
-            struct Runtime
-            {
-                Kind kind;
-                const char *key, *label;
-                const wchar_t* file;
-            };
-            static constexpr Runtime runtimes[] = {
-                { Kind::Daniel, "daniel", "danielblnc", L"dlssnr_amd_pass1.dll" },
-                { Kind::Lmxxf, "lmxxf", "lmxxf", L"LmxxfNrRuntime.dll" },
-                { Kind::Mochizuki, "mochizuki", "mochizuki", L"MochizukiNrRuntime.dll" },
-            };
-            std::error_code ec;
-            const auto dir = Util::DllPath().parent_path();
-            bool installed[std::size(runtimes)] {};
-            int count = 0;
-            for (size_t i = 0; i < std::size(runtimes); ++i)
-                count += installed[i] = std::filesystem::exists(dir / runtimes[i].file, ec);
-            if (count > 1)
-            {
-                const Kind running = DlssNr::Backend::ActiveKindFromConfig();
-                const Kind picked = DlssNr::Backend::ParseKind(config->NrBackend.value_or_default());
-                const char* preview = runtimes[0].label;
-                for (const auto& r : runtimes)
-                    if (r.kind == picked)
-                        preview = r.label;
-                if (ImGui::BeginCombo("NR runtime", preview))
-                {
-                    for (size_t i = 0; i < std::size(runtimes); ++i)
-                        if (installed[i] && ImGui::Selectable(runtimes[i].label, runtimes[i].kind == picked))
-                            config->NrBackend = std::string(runtimes[i].key);
-                    ImGui::EndCombo();
-                }
-                if (picked != running)
-                {
-                    ImGui::SameLine();
-                    ImGui::TextColored(ImVec4(1.f, 0.8f, 0.f, 1.f), "(save and restart)");
-                }
-                HelpMarker("danielblnc: the DLSS-NR-on-AMD runtime, every control below."
-                           "\nlmxxf: open-source HIP kernels in the game's own queue, before Super"
-                           "\nResolution only. Detail, colour and debug view."
-                           "\nmochizuki: open-source Vulkan network on its own device. Its own processing"
-                           "\npoint, passes, resolution, strengths and model controls."
-                           "\n\nThe choice is stored as NrBackend. Press Save Settings and restart the"
-                           "\ngame to switch.");
-            }
-        }
+        RuntimeCombo(config);
 
         // lmxxf picks its own network tier from the input size and runs only before Super
         // Resolution, so none of the controls below reach it: resolution, slots, wait mode,
@@ -937,46 +1126,7 @@ void RenderMenu(Config* config, float menuResScale)
                            "\nmatrix layout and every pipeline were checked before the first build."
                            "\nExperimental: if the picture looks wrong, turn NR off and report it.");
             }
-            // A build takes from seconds to over a minute, and the frames go without NR (or on the previous network)
-            // meanwhile: say so where the cost will appear, so it does not look broken.
-            if (MochizukiNrInfo info {}; config->DlssNrEnabled.value_or_default() &&
-                                         DlssNr::Backend::LmxxfBackend::MochizukiInfo(info) && info.building)
-            {
-                const bool fields =
-                    info.struct_size >= offsetof(MochizukiNrInfo, build_total) + sizeof info.build_total;
-                const uint32_t stage = fields ? info.build_stage : 0;
-                // Planning and the weights are quick; the pipelines are most of a build.
-                float progress = stage <= 1 || stage == 6 ? 0.02f : stage == 2 ? 0.05f : stage == 3 ? 0.10f : 0.98f;
-                if (stage == 4)
-                    progress = 0.12f + 0.85f * (info.build_total ? float(info.build_done) / info.build_total : 0.f);
-                if (stage == 6 && network == 3)
-                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
-                                       "Checking the RX 6000 network: on a new driver every pipeline is compiled"
-                                       "\nonce apart from the game first. Its pipelines are large: this can take"
-                                       "\nhalf an hour or more; NR shows when it is ready.");
-                else if (stage == 6)
-                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
-                                       "Checking the RX 7000 network: on a new driver every pipeline is compiled"
-                                       "\nonce apart from the game first. This takes 1 to 2 minutes; NR shows"
-                                       "\nwhen it is ready.");
-                else
-                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
-                                       "Building the network: NR shows when it is ready. The first build in a"
-                                       "\ngame can take a minute; the next ones a few seconds.");
-                char label[128];
-                if (stage == 4 && info.build_total)
-                    std::snprintf(label, sizeof label, MenuLocale::Text("pipelines %u / %u"), info.build_done,
-                                  info.build_total);
-                else
-                    std::snprintf(label, sizeof label, "%s",
-                                  MenuLocale::Text(stage == 2   ? "reading the weights"
-                                                   : stage == 3 ? "uploading the weights"
-                                                   : stage == 5 ? "finishing"
-                                                   : stage == 6 ? (network == 3 ? "checking the RX 6000 pipelines"
-                                                                                : "checking the RX 7000 pipelines")
-                                                                : "planning"));
-                ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f), label);
-            }
+            MochizukiBuildProgress(config, network);
 
             const ImVec4 warning(0.95f, 0.70f, 0.20f, 1.0f);
             // Upstream's Placement. MochizukiPlacement alone places it, with an upscaler: without one NR without

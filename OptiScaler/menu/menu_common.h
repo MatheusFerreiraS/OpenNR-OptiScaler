@@ -231,6 +231,8 @@ class MenuCommon
     static void RenderMainMenuHeaderMessages(RenderMenuContext& ctx);
     static void RenderMainMenuSideBar(RenderMenuContext& ctx);
     static void RenderMainMenuTabs(RenderMenuContext& ctx);
+    static void RenderMainMenuModeSwitch(RenderMenuContext& ctx);
+    static void RenderBasicUpscaling(RenderMenuContext& ctx);
     static void RenderUpscalerStateMessage(RenderMenuContext& ctx);
     static void PlotLinesWithRange(const char* label, float (*values_getter)(void* data, int idx), void* data,
                                    int values_count, int values_offset, const char* overlay_text, ImVec2 graph_size,
@@ -247,6 +249,8 @@ class MenuCommon
     static void RenderDetectedInfo(RenderMenuContext& ctx);
     static void RenderDetectedCard(RenderMenuContext& ctx);
     static void RenderActiveUpscalerSettings(RenderMenuContext& ctx);
+    static void RenderUpscalerPicker(RenderMenuContext& ctx);
+    static void RenderOpenRrModeCombo(RenderMenuContext& ctx);
     static void RenderFrameGenerationSelection(RenderMenuContext& ctx);
     static void RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx);
     static void RenderFGModeSlider(RenderMenuContext& ctx, const char* label, int maxInterpolationCount,

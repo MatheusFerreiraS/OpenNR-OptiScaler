@@ -3320,7 +3320,7 @@ void MenuCommon::RenderUpscalerStateMessage(RenderMenuContext& ctx)
 static const char* ApiName(API api);
 
 
-void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
+void MenuCommon::RenderUpscalerPicker(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
     auto config = ctx.config;
@@ -3430,6 +3430,47 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
         ImGui::Spacing();
         ImGui::TextColored(StatusWarn(), "nvngx_dlss.dll not found, DLSS disabled!");
     }
+}
+
+// OpenRR's kernel set: New, Fast (experimental) or Legacy.
+void MenuCommon::RenderOpenRrModeCombo(RenderMenuContext& ctx)
+{
+    auto config = ctx.config;
+    const int fastState = OpenNrRr::FastModeState();
+    if (fastState < 0)
+        ImGui::BeginDisabled();
+    const char* modes[] = { "New", "Fast (experimental)", "Legacy" };
+    const std::string modeNow = config->OpenNrRrMode.value_or_default();
+    int mode = modeNow == "legacy" ? 2 : modeNow == "fast" ? 1 : 0;
+    if (ImGui::Combo("Mode", &mode, modes, 3))
+        config->OpenNrRrMode = mode == 2 ? "legacy" : mode == 1 ? "fast" : "new";
+    if (fastState < 0)
+        ImGui::EndDisabled();
+    ShowTooltip(fastState < 0 ? "This OpenRR runtime does not have the New mode."
+                              : "New: cheaper kernels for a lower GPU time (about 10%), at a small, measured loss\n"
+                                "of image precision. Legacy: the kernels from before, closest to NVIDIA's output.\n"
+                                "Fast (experimental): New with more cut, and the deepest levels of the network\n"
+                                "read from the previous frame: faster than New (about 6%), at a larger loss. Look at\n"
+                                "very bright points and at stability in motion; a runtime without it runs New.\n"
+                                "Same network and histories, so it flips live and you can compare back and forth.\n"
+                                "The first time, the kernels are built in the background (up to a minute), and\n"
+                                "the image stays on Legacy until then.");
+    if (fastState == 2 || fastState == 3)
+    {
+        ImGui::SameLine();
+        ImGui::TextDisabled(fastState == 2 ? "building..." : "not available");
+    }
+}
+
+void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
+{
+    auto& state = ctx.state;
+    auto config = ctx.config;
+    auto& currentFeature = ctx.currentFeature;
+    auto& menuResScale = ctx.menuResScale;
+
+    RenderUpscalerPicker(ctx);
+    const bool usesDlssd = currentFeature->GetUpscalerType() == Upscaler::DLSSD;
 
     // Dx11 with Dx12
     if (state.api == DX11 && currentFeature->IsWithDx12())
@@ -3538,32 +3579,7 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             ScopedIndent indent {};
             ImGui::Spacing();
 
-            {
-                const int fastState = OpenNrRr::FastModeState();
-                if (fastState < 0)
-                    ImGui::BeginDisabled();
-                const char* modes[] = { "New", "Fast (experimental)", "Legacy" };
-                const std::string modeNow = config->OpenNrRrMode.value_or_default();
-                int mode = modeNow == "legacy" ? 2 : modeNow == "fast" ? 1 : 0;
-                if (ImGui::Combo("Mode", &mode, modes, 3))
-                    config->OpenNrRrMode = mode == 2 ? "legacy" : mode == 1 ? "fast" : "new";
-                if (fastState < 0)
-                    ImGui::EndDisabled();
-                ShowTooltip(fastState < 0 ? "This OpenRR runtime does not have the New mode."
-                                          : "New: cheaper kernels for a lower GPU time (about 10%), at a small, measured loss\n"
-                                            "of image precision. Legacy: the kernels from before, closest to NVIDIA's output.\n"
-                                            "Fast (experimental): New with more cut, and the deepest levels of the network\n"
-                                            "read from the previous frame: faster than New (about 6%), at a larger loss. Look at\n"
-                                            "very bright points and at stability in motion; a runtime without it runs New.\n"
-                                            "Same network and histories, so it flips live and you can compare back and forth.\n"
-                                            "The first time, the kernels are built in the background (up to a minute), and\n"
-                                            "the image stays on Legacy until then.");
-                if (fastState == 2 || fastState == 3)
-                {
-                    ImGui::SameLine();
-                    ImGui::TextDisabled(fastState == 2 ? "building..." : "not available");
-                }
-            }
+            RenderOpenRrModeCombo(ctx);
 
             // the NR hop and the backend choice are D3D12's; a Vulkan game runs on its own device
             if (currentFeature->Api() != API::Vulkan)
@@ -11252,9 +11268,61 @@ void MenuCommon::RenderMainMenuSideBar(RenderMenuContext& ctx)
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
+// Basic | Advanced, two buttons side by side at the top of the page.
+void MenuCommon::RenderMainMenuModeSwitch(RenderMenuContext& ctx)
+{
+    auto config = ctx.config;
+    const bool basic = config->MenuBasic.value_or_default();
+    const auto& style = ImGui::GetStyle();
+    auto button = [&](const char* label, bool selected)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Button, style.Colors[selected ? ImGuiCol_TabSelected : ImGuiCol_Tab]);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, style.Colors[ImGuiCol_TabHovered]);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, style.Colors[ImGuiCol_TabSelected]);
+        const bool pressed = ImGui::Button(label);
+        ImGui::PopStyleColor(3);
+        return pressed && !selected;
+    };
+    if (button("Basic", basic))
+        config->MenuBasic = true;
+    ImGui::SameLine(0.0f, 2.0f);
+    if (button("Advanced", !basic))
+        config->MenuBasic = false;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Every setting of this section");
+    ImGui::Spacing();
+}
+
+// The Upscaling section in Basic: the upscaler and, with OpenRR, its mode. The rest is under Advanced.
+void MenuCommon::RenderBasicUpscaling(RenderMenuContext& ctx)
+{
+    if (!IsUpscalerActive(ctx.currentFeature))
+    {
+        RenderUpscalerStateMessage(ctx);
+        return;
+    }
+    RenderUpscalerPicker(ctx);
+    if (ctx.currentFeature->GetUpscalerType() == Upscaler::OpenNrRr)
+    {
+        ImGui::Spacing();
+        ImGui::PushItemWidth(150.0f * ctx.menuResScale);
+        RenderOpenRrModeCombo(ctx);
+        ImGui::PopItemWidth();
+    }
+    ImGui::Spacing();
+    if (!ctx.state.upscaleTimes.empty())
+        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Upscaler Time: %7.2f ms, Avg: %7.2f ms",
+                           ctx.state.upscaleTimes.back(), ctx.averageUpscalerFT);
+    ImGui::TextDisabled("Everything else is under Advanced.");
+}
+
 void MenuCommon::RenderMainMenuTabs(RenderMenuContext& ctx)
 {
     ImGui::SeparatorText(kTabName[selectedTab]);
+    // Basic or Advanced: how much of the Neural and Upscaling sections shows
+    const bool basic = selectedTab <= 1 && ctx.config->MenuBasic.value_or_default();
+    if (selectedTab <= 1)
+        RenderMainMenuModeSwitch(ctx);
 
     // Upstream's boxes draw only while an upscaler runs (GetMenuBoxes), the side bar keeps that rule
     const bool upscalerActive = IsUpscalerActive(ctx.currentFeature);
@@ -11262,10 +11330,18 @@ void MenuCommon::RenderMainMenuTabs(RenderMenuContext& ctx)
     switch (selectedTab)
     {
     case 0:
-        DlssNr::RenderMenu(ctx.config, ctx.menuResScale);
+        if (basic)
+            DlssNr::RenderBasicMenu(ctx.config);
+        else
+            DlssNr::RenderMenu(ctx.config, ctx.menuResScale);
         break;
 
     case 1:
+        if (basic)
+        {
+            RenderBasicUpscaling(ctx);
+            break;
+        }
         if (upscalerActive)
         {
             RenderActiveUpscalerSettings(ctx);

@@ -118,6 +118,7 @@ bool StageCarriesTheModel();
 
 // The settings panel, drawn inside OptiScaler's menu.
 void RenderMenu(::Config* config, float menuResScale);
+void RenderBasicMenu(::Config* config);
 
 // Clears the session failure latch, so a failure caused by transient thrash does not cost a restart.
 void RetryAfterFailure();

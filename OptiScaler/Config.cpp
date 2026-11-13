@@ -899,6 +899,7 @@ bool Config::Reload(std::filesystem::path iniPath)
                 MenuAnchor.set_from_config(std::clamp(setting.value(), 0, 6));
 
             MenuSectionOrder.set_from_config(readString("Menu", "SectionOrder", true));
+            MenuBasic.set_from_config(readBool("Menu", "Basic"));
 
             // Don't enable again if set false because of Linux issue
             OverlayMenu.set_from_config(readBool("Menu", "OverlayMenu"));
@@ -2228,6 +2229,7 @@ bool Config::SaveIni()
         ini.SetValue("Menu", "Height", GetFloatValue(Instance()->MenuHeight).c_str());
         ini.SetValue("Menu", "Anchor", GetIntValue(Instance()->MenuAnchor.value_for_config()).c_str());
         ini.SetValue("Menu", "SectionOrder", Instance()->MenuSectionOrder.value_for_config_or("auto").c_str());
+        ini.SetValue("Menu", "Basic", GetBoolValue(Instance()->MenuBasic.value_for_config()).c_str());
         ini.SetValue("Menu", "OverlayMenu", GetBoolValue(Instance()->OverlayMenu.value_for_config()).c_str());
 
         auto setting = Instance()->ShortcutKey.value_for_config();
