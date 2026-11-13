@@ -11,6 +11,7 @@
 #include <framegen/nvngx/Nvngx_FG.h>
 #include <dlssnr/amd/AmdBridge.h>
 #include <upscalers/opennr_rr/OpenNrRrFeature_Vk.h>
+#include <upscalers/opennr_rr/OpenNrRrFeature_Dx12.h>
 #include <dlssnr/amd/AmdPreSr.h>
 
 /// @brief Calculates the resolution scaling ratio override based on the provided quality level and current
@@ -863,6 +864,16 @@ void InitNGXParameters(NVSDK_NGX_Parameter* InParams, API api)
                 LOG_DEBUG("Setting DLSSD flags for FSR Ray Regeneration");
             else if (rrApi != FfxDenoiserApiGeneration::NotLoaded)
                 LOG_DEBUG("FSR Ray Regeneration provider is not compatible with the RR 1.2 dispatch backend");
+        }
+
+        // D3D12 without FSR Ray Regeneration (RX 7000): OpenRR alone offers it, as NVNGX_DLSS_Dx12 then creates it
+        if (!ssDenoiseAvailable && api == API::DX12 && State::Instance().currentD3D12Device != nullptr &&
+            IdentifyGpu::getPrimaryGpu().vendorId != VendorId::Nvidia &&
+            Config::Instance()->OpenNrRrEnabled.value_or_default() && OpenNrRr::SplitReady() &&
+            OpenNrRr::Usable(State::Instance().currentD3D12Device->GetAdapterLuid()))
+        {
+            ssDenoiseAvailable = true;
+            LOG_DEBUG("Setting DLSSD flags for OpenRR on D3D12");
         }
 
         // Vulkan: OpenRR on the game's device when it was made for the runtime
