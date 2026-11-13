@@ -2182,7 +2182,13 @@ static HRESULT hkD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Minimum
             auto primaryGpu = IdentifyGpu::getPrimaryGpu();
             if (!IsEqualLUID(desc.AdapterLuid, primaryGpu.luid))
             {
-                LOG_WARN("D3D12Device created with non-primary GPU");
+                // Games and mods probe WARP (Microsoft Basic Render Driver) beside the real GPU; that device is
+                // never captured, so it is not worth a warning.
+                if (desc.VendorId == VendorId::Microsoft)
+                    LOG_INFO("Software adapter, its device is left alone");
+                else
+                    LOG_WARN("D3D12Device created with non-primary GPU, not captured");
+
                 nonPrimaryGpu = true;
             }
         }
@@ -2332,6 +2338,7 @@ DlssNr::Submission::Hooks::NoteDeviceCaller(_ReturnAddress());
 
     DXGI_ADAPTER_DESC desc {};
     std::wstring szName;
+    bool softwareAdapter = false;
     if (pAdapter != nullptr && MinimumFeatureLevel != D3D_FEATURE_LEVEL_1_0_CORE)
     {
         ScopedSkipSpoofingGlobal skipSpoofingGlobal {};
@@ -2341,8 +2348,12 @@ DlssNr::Submission::Hooks::NoteDeviceCaller(_ReturnAddress());
             szName = desc.Description;
             LOG_INFO("Adapter Desc: {}", wstring_to_string(szName));
 
+            // A WARP probe is not the game's device; hkD3D12CreateDevice leaves it alone too.
+            softwareAdapter = desc.VendorId == VendorId::Microsoft;
             auto primaryGpu = IdentifyGpu::getPrimaryGpu();
-            if (!IsEqualLUID(desc.AdapterLuid, primaryGpu.luid))
+            if (softwareAdapter)
+                LOG_INFO("Software adapter, its device is left alone");
+            else if (!IsEqualLUID(desc.AdapterLuid, primaryGpu.luid))
                 LOG_WARN("D3D12Device created with non-primary GPU");
         }
     }
@@ -2376,7 +2387,7 @@ DlssNr::Submission::Hooks::NoteDeviceCaller(_ReturnAddress());
 
     LOG_DEBUG("o_D3D12CreateDevice result: {:X}", (UINT) result);
 
-    if (result == S_OK && ppDevice != nullptr && MinimumFeatureLevel != D3D_FEATURE_LEVEL_1_0_CORE)
+    if (result == S_OK && ppDevice != nullptr && MinimumFeatureLevel != D3D_FEATURE_LEVEL_1_0_CORE && !softwareAdapter)
     {
         LOG_DEBUG("Device captured: {0:X}", (size_t) *ppDevice);
         State::Instance().currentD3D12Device = (ID3D12Device*) *ppDevice;

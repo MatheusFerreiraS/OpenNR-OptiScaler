@@ -19,6 +19,7 @@
 #include <Config.h>
 #include <State.h>
 #include <Util.h>
+#include <misc/IdentifyGpu.h>
 
 #include <proxies/NVNGX_Proxy.h>
 #include <hooks/D3D12_Hooks.h>
@@ -2193,6 +2194,11 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     {
         g_nr.failed = true;
         LOG_ERROR("DLSS-NR unavailable: {}", g_nr.reason);
+        // Off NVIDIA this path is only reached because the chosen AMD runtime's DLL is not beside OptiScaler.
+        if (IdentifyGpu::getPrimaryGpu().vendorId != VendorId::Nvidia)
+            LOG_ERROR("DLSS-NR: the AMD runtime for NrBackend is missing beside OptiScaler ({}): MochizukiNrRuntime.dll, "
+                      "LmxxfNrRuntime.dll or dlssnr_amd_pass1.dll; reinstall OptiScaler with the installer",
+                      wstring_to_string(Util::DllPath().parent_path().wstring()));
         Barrier(cmdList, target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, outputArrival);
         device->Release();
         return;
