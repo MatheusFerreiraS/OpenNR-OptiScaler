@@ -256,6 +256,10 @@ extern "C"
      * it. 0, or a value that is not finite and positive, goes back to white_point alone. Call it before PrepareFrame
      * on the thread that calls it; it never fails the session. */
     typedef int32_t (*PFN_MochizukiNrSetExposure)(void* context, float exposure);
+    /* Process exit, before the loader shuts down, with no other thread inside the session: ends it like Destroy, with
+     * a game queue given 2 s to drain instead of 30. During a network build it does nothing and returns
+     * LMXXF_NR_UNAVAILABLE. */
+    typedef int32_t (*PFN_MochizukiNrDestroyAtExit)(void* context);
 
 #ifdef _WIN32
 #ifdef MOCHIZUKI_NR_RUNTIME_EXPORTS

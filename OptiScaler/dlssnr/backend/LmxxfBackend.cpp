@@ -24,6 +24,7 @@ struct LmxxfBackend::Api
     PFN_MochizukiNrGetInfo getInfo = nullptr;
     PFN_MochizukiNrGetControlDefaults getControlDefaults = nullptr;
     PFN_MochizukiNrSetExposure setExposure = nullptr;
+    PFN_MochizukiNrDestroyAtExit destroyAtExit = nullptr;
     // The game's exposure texture, copied on each frame's list into one slot of a readback ring and read
     // kExposureSlots - 1 frames later, long after the GPU wrote it. Render thread only.
     static constexpr uint32_t kExposureSlots = 8;
@@ -378,6 +379,8 @@ bool LmxxfBackend::EnsureRuntime()
         api->setControls = reinterpret_cast<PFN_MochizukiNrSetControls>(GetProcAddress(dll, "MochizukiNrSetControls"));
         api->getInfo = reinterpret_cast<PFN_MochizukiNrGetInfo>(GetProcAddress(dll, "MochizukiNrGetInfo"));
         api->setExposure = reinterpret_cast<PFN_MochizukiNrSetExposure>(GetProcAddress(dll, "MochizukiNrSetExposure"));
+        api->destroyAtExit =
+            reinterpret_cast<PFN_MochizukiNrDestroyAtExit>(GetProcAddress(dll, "MochizukiNrDestroyAtExit"));
         api->getControlDefaults =
             reinterpret_cast<PFN_MochizukiNrGetControlDefaults>(GetProcAddress(dll, "MochizukiNrGetControlDefaults"));
         const uint32_t features = api->getFeatures ? api->getFeatures() : 0u;
@@ -1774,10 +1777,13 @@ bool LmxxfBackend::Shutdown()
     return true;
 }
 
-// The exit hook runs while the render and submit threads may still be inside the runtime. mochizuki is left to the
-// OS: Destroy would wait out a network build (up to a minute) and free what those threads use, and FreeLibrary
-// would unmap the code they run. lmxxf is destroyed only if its recording and submission locks come free within
-// 2 s and no job is being cancelled. Neither DLL is unloaded.
+// The exit hook runs while the render and submit threads may still be inside the runtime. The session is destroyed
+// only if its recording, submission and job locks come free within 2 s and no job is being cancelled; otherwise it is
+// left to the OS. mochizuki ends through MochizukiNrDestroyAtExit, which does not wait out a network build (Destroy
+// would, up to a minute) and gives a game queue 2 s to drain: a Vulkan device, its implicit layers and the runtime's
+// threads left alive into the DLLs' detach are the suspects in Cyberpunk 2077 2.5's access violation box on every
+// exit. A runtime without that export is left to the OS as before. Neither DLL is unloaded: FreeLibrary would unmap
+// code a thread still running may be in.
 void LmxxfBackend::OnProcessExit()
 {
     UnregisterListRecycled();
@@ -1788,7 +1794,9 @@ void LmxxfBackend::OnProcessExit()
         pendingList.store(nullptr, std::memory_order_release);
         exiting.store(true, std::memory_order_release);
     }
-    if (!Lmxxf())
+    if (!session)
+        return;
+    if (!Lmxxf() && !(api && api->destroyAtExit))
     {
         SetStatus("lmxxf: process exit (session left to the OS)");
         return;
@@ -1804,28 +1812,37 @@ void LmxxfBackend::OnProcessExit()
         }
         return true;
     };
+    // SubmitOwnLists holds jobMutex while it executes (which takes g_executeMu): jobMutex is only tried, never waited.
     std::unique_lock recordLock(recordMutex, std::defer_lock);
     std::unique_lock executeLock(DlssNr::Submission::Hooks::g_executeMu, std::defer_lock);
-    if (!acquire(recordLock) || !acquire(executeLock))
+    std::unique_lock jobLock(jobMutex, std::defer_lock);
+    if (!acquire(recordLock) || !acquire(executeLock) || !acquire(jobLock))
     {
         LOG_WARN("lmxxf: process exit while the runtime is in use; session left to the OS");
         return;
     }
+    if (!session)
+        return;
+    // ListRecycled starts no cancel once exiting is set; one already started may still be inside the session.
+    if (cancelling)
     {
-        // ListRecycled starts no cancel once exiting is set; one already started may still be inside the session.
-        std::lock_guard lock(jobMutex);
-        if (cancelling)
+        LOG_WARN("lmxxf: process exit while a job is being cancelled; session left to the OS");
+        return;
+    }
+    if (!Lmxxf())
+    {
+        if (api->destroyAtExit(session) != LMXXF_NR_OK)
         {
-            LOG_WARN("lmxxf: process exit while a job is being cancelled; session left to the OS");
+            SetStatus("lmxxf: process exit during a network build (session left to the OS)");
             return;
         }
     }
-    if (session && api && api->table.Destroy)
+    else if (api && api->table.Destroy)
         api->table.Destroy(session);
     session = nullptr;
     sessionReady = false;
     ClearRuntimeStatus();
-    SetStatus("lmxxf: shutdown");
+    SetStatus("lmxxf: process exit (session ended)");
 }
 
 void LmxxfBackend::InvalidateHistory()

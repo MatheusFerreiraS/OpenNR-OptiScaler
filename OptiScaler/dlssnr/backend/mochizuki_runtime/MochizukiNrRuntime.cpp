@@ -2342,6 +2342,7 @@ struct Session
     // session, so it can always be freed.
     std::atomic<bool> gpuUsed { false };
     bool aco = false;                // Create's LMXXF_NR_CREATE_FLAG_ACO (ConfigureAco)
+    bool atExit = false;             // MochizukiNrDestroyAtExit: a game queue gets kDrainWaitMs to drain, not 30 s
     bool zeroOutputFallback = false; // Create's LMXXF_NR_CREATE_FLAG_ZERO_OUTPUT_FALLBACK: frames pass through
     TestHooks hooks;
     std::atomic<uint32_t> errors { 0 }; // failed calls and passed-through frames, for the log's rate limit
@@ -2503,7 +2504,8 @@ struct Session
     std::atomic<bool> resetPending { true };
     std::atomic<uint64_t> frames { 0 };
 
-    // A game queue idle within 30 s: S_OK, HRESULT_FROM_WIN32(ERROR_TIMEOUT) or what failed.
+    // A game queue idle within 30 s (kDrainWaitMs at process exit): S_OK, HRESULT_FROM_WIN32(ERROR_TIMEOUT) or what
+    // failed.
     HRESULT DrainD3D12(ID3D12CommandQueue* q)
     {
         ID3D12Fence* f = nullptr;
@@ -2519,7 +2521,7 @@ struct Session
         hr = q->Signal(f, 1);
         if (SUCCEEDED(hr))
             hr = f->SetEventOnCompletion(1, ev);
-        if (SUCCEEDED(hr) && WaitForSingleObject(ev, 30000) != WAIT_OBJECT_0)
+        if (SUCCEEDED(hr) && WaitForSingleObject(ev, atExit ? kDrainWaitMs : 30000) != WAIT_OBJECT_0)
             hr = HRESULT_FROM_WIN32(ERROR_TIMEOUT);
         CloseHandle(ev);
         f->Release();
@@ -5786,6 +5788,27 @@ extern "C" __declspec(dllexport) int32_t MochizukiNrSetExposure(void* context, f
         else
             nr::logf("[mochizuki] the game's exposure is gone: the white point is the setting alone");
     }
+    return LMXXF_NR_OK;
+}
+
+// Process exit, from the host's exit hook while the loader is not yet shutting down: the session ends here, so no
+// Vulkan device or instance (nor the implicit layers loaded into it) and no worker thread is left for the DLLs' detach,
+// whose order nobody here controls (Cyberpunk 2077 2.5: an access violation box on every exit). A game queue gets
+// kDrainWaitMs to drain; one that does not, or a lost device, leaks the Vulkan side as ~Session does. A network build
+// is not waited for: UNAVAILABLE, and the session stays to the OS as before.
+extern "C" __declspec(dllexport) int32_t MochizukiNrDestroyAtExit(void* context)
+{
+    auto* s = static_cast<Session*>(context);
+    if (!s)
+        return LMXXF_NR_OK;
+    {
+        std::lock_guard lock(s->buildMutex);
+        if (s->building && !s->buildDone)
+            return Fail(LMXXF_NR_UNAVAILABLE, "DestroyAtExit: a network build is running");
+    }
+    s->atExit = true;
+    delete s;
+    nr::logf("[mochizuki] process exit: session ended");
     return LMXXF_NR_OK;
 }
 
