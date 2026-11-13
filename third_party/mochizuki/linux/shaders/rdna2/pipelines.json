@@ -87,7 +87,7 @@
    "defines": ["NR_COHERENT_ACT=0", "NR_C=1024", "NR_HEADS=32", "NR_VWAVES=1", "NR_KC=64", "NR_QT=32", "NR_VTRANS=1", "NR_VPRENORMALIZED=1", "NR_VPACKED_DEN=1", "NR_VSPLIT_TAIL=1", "NR_VQCLAMP=1", "NR_VADDR=1", "NR_VKMAN=1", "NR_VOUT_VEC=1", "NR_VKPERM=1", "NR_VOUT_PAIR=1", "NR_TCHAIN=1", "NR_NATIVE=1"]}
  },
  "int8": {"about": "build_network.py --int8: the INT8 network (include/i8.glsl). marker = the weight roles the host writes as int8 (nr_graph.cpp kI8*); add = extra defines a pipeline (its temporal and grade variants take its base's)",
-  "marker": 259070,
+  "marker": 127486,
   "add": {
    "fswin32": ["NV_I8=14"],
    "fswin32nh": ["NV_I8=14"],
@@ -109,10 +109,7 @@
    "fswinfusedup256": ["NV_I8=47", "NV_I8_RNE=1"],
    "attn": ["NV_I8=1", "NV_I8_RNE=1"],
    "ffwd3": ["NV_I8=7", "NV_I8_RNE=1"],
-   "ffwd3w": ["NV_I8=7", "NV_I8_RNE=1"],
-   "gemmproj": ["NV_I8=1", "NV_I8_RNE=1"],
-   "gemmprojc": ["NV_I8=1", "NV_I8_RNE=1"],
-   "gemmvact": ["NV_I8=1", "NV_I8_RNE=1"]
+   "ffwd3w": ["NV_I8=7", "NV_I8_RNE=1"]
   }
  },
  "variants": {
