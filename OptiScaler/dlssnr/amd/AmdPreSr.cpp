@@ -345,13 +345,19 @@ void NotifyNgxLists(HMODULE h, const AmdLayout* L, ID3D12CommandQueue* queue, UI
     bool srMatched = false, rrMatched = false;
     if (!MatchNgxPendingLists(h, L, n, lists, srMatched, rrMatched))
         return;
+    // The slot holds no reference: 0.8.0's presentBefore writes the swapchain's queue there raw on every present, so
+    // releasing what we find in it took one reference off the game's present queue per frame and freed it a few
+    // frames after DLSS was picked (crash in dxgi.dll or ReShade64.dll). The reference lives here instead.
+    static std::atomic<ID3D12CommandQueue*> held { nullptr };
     if (queue && L->queue && At<ID3D12CommandQueue*>(h, L->queue) != queue)
     {
-        auto old = At<ID3D12CommandQueue*>(h, L->queue);
-        queue->AddRef();
+        if (held.load(std::memory_order_acquire) != queue)
+        {
+            queue->AddRef();
+            if (auto old = held.exchange(queue, std::memory_order_acq_rel))
+                old->Release();
+        }
         At<ID3D12CommandQueue*>(h, L->queue) = queue;
-        if (old)
-            old->Release();
     }
     auto chain = At<NotifyFn volatile>(h, L->ngxNotifyChain);
     if (!chain)
@@ -2830,15 +2836,10 @@ void Backend::Submitting(ID3D12CommandQueue* queue, UINT n, ID3D12CommandList* c
             p->completionOrderValid = false;
             p->Log("Render queue migration Wait failed; stopping NR and retaining outstanding resources");
         }
+        // p->queue keeps the reference; the slot is borrowed (0.8.0's host overwrites it raw at every present).
         for (auto h : p->runtime)
             if (h)
-            {
-                auto old = At<ID3D12CommandQueue*>(h, L->queue);
-                queue->AddRef();
                 At<ID3D12CommandQueue*>(h, L->queue) = queue;
-                if (old)
-                    old->Release();
-            }
         p->queue = queue;
         p->Log("Render submission queue changed; dependency on completion=" + std::to_string(p->serial));
     }
