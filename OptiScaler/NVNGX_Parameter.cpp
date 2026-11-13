@@ -867,13 +867,20 @@ void InitNGXParameters(NVSDK_NGX_Parameter* InParams, API api)
         }
 
         // D3D12 without FSR Ray Regeneration (RX 7000): OpenRR alone offers it, as NVNGX_DLSS_Dx12 then creates it
-        if (!ssDenoiseAvailable && api == API::DX12 && State::Instance().currentD3D12Device != nullptr &&
-            IdentifyGpu::getPrimaryGpu().vendorId != VendorId::Nvidia &&
-            Config::Instance()->OpenNrRrEnabled.value_or_default() && OpenNrRr::SplitReady() &&
-            OpenNrRr::Usable(State::Instance().currentD3D12Device->GetAdapterLuid()))
+        // Streamline can ask before the game's device exists: the primary GPU stands in for it then
+        if (!ssDenoiseAvailable && api == API::DX12 && IdentifyGpu::getPrimaryGpu().vendorId != VendorId::Nvidia &&
+            Config::Instance()->OpenNrRrEnabled.value_or_default())
         {
-            ssDenoiseAvailable = true;
-            LOG_DEBUG("Setting DLSSD flags for OpenRR on D3D12");
+            auto device = State::Instance().currentD3D12Device;
+            const LUID luid = device != nullptr ? device->GetAdapterLuid() : IdentifyGpu::getPrimaryGpu().luid;
+            ssDenoiseAvailable = OpenNrRr::SplitReady() && OpenNrRr::Usable(luid);
+
+            static int last = -1;
+            if (last != (int) ssDenoiseAvailable)
+                LOG_INFO("OpenRR on D3D12 {} (device {}, split {}{}{})", ssDenoiseAvailable ? "offered" : "not offered",
+                         device != nullptr ? "known" : "not yet", OpenNrRr::SplitReady(),
+                         ssDenoiseAvailable ? "" : ", ", ssDenoiseAvailable ? "" : OpenNrRr::Reason());
+            last = (int) ssDenoiseAvailable;
         }
 
         // Vulkan: OpenRR on the game's device when it was made for the runtime
