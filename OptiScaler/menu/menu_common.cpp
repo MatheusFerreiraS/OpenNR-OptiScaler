@@ -62,6 +62,7 @@
 #include <low_latency/input/input_common.h>
 #include <hooks/Vulkan_Hooks.h>
 #include <low_latency/input/input_xell.h>
+#include <plugins/PluginApi.h>
 
 #include "i18n/MenuLocaleImGui.h"
 
@@ -345,6 +346,16 @@ static std::string NameWithVersion(IFeature* feature)
 {
     const auto version = feature->Version();
     return StrFmt("%s %u.%u.%u", feature->ShortName().c_str(), version.major, version.minor, version.patch);
+}
+
+// An upscaler a plugin runs itself (PluginApi ReportUpscaler, WrongGPU's ray reconstruction for example) while none
+// of OptiScaler's own upscalers is in use: its name and the GPU time of its last frame
+static bool PluginUpscaler(IFeature* feature, std::string* name = nullptr, float* gpuTimeMs = nullptr)
+{
+    if (feature != nullptr && feature->IsInited() && !feature->IsFrozen())
+        return false;
+
+    return PluginApi::ReportedUpscaler(name, gpuTimeMs);
 }
 
 // CARDS -----------------------------
@@ -2526,6 +2537,8 @@ void MenuCommon::UpdateFrameTimeAverages(RenderMenuContext& ctx)
 
         float lastFT = static_cast<float>(state.frameTimes.empty() ? 0.0f : state.frameTimes.back());
         float lastUT = static_cast<float>(state.upscaleTimes.empty() ? 0.0f : state.upscaleTimes.back());
+        if (float pluginTime = 0.0f; PluginUpscaler(ctx.currentFeature, nullptr, &pluginTime))
+            lastUT = pluginTime;
         gFrameTimes.Push(lastFT);
         gUpscalerTimes.Push(lastUT);
         gNeuralTimes.Push(DlssNr::AmdBridge::NeuralMsLast());
@@ -2864,6 +2877,10 @@ void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
 
                 featurePart = StrFmt(" | %s -> %s%s", ApiUpscalerInputName(state.currentInputApiName).c_str(),
                                      NameWithVersion(currentFeature).c_str(), usesDx12CompatLayer ? " w/Dx12" : "");
+            }
+            else if (std::string pluginName; PluginUpscaler(currentFeature, &pluginName))
+            {
+                featurePart = " | " + pluginName;
             }
 
             uint32_t interpolatedFrameCount = 0;
@@ -3235,6 +3252,18 @@ void MenuCommon::RenderUpscalerStateMessage(RenderMenuContext& ctx)
     auto& currentFeature = ctx.currentFeature;
     auto& menuResScale = ctx.menuResScale;
     auto& primaryGpu = *ctx.primaryGpu;
+
+    // The game's upscaling runs in a plugin, not in one of OptiScaler's upscalers
+    if (std::string pluginName; PluginUpscaler(currentFeature, &pluginName))
+    {
+        ImGui::Spacing();
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(StatusOk(), "%s is running (plugin).", pluginName.c_str());
+        ImGui::TextDisabled("Its settings are in its own card.");
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        return;
+    }
 
     // No active upscaler message
     if (currentFeature == nullptr || !currentFeature->IsInited())
@@ -11337,6 +11366,8 @@ void MenuCommon::RenderMainMenuTabs(RenderMenuContext& ctx)
         break;
 
     case 1:
+        // Cards of plugins come first and are always shown (WrongGPU's ray reconstruction box, for example)
+        PluginApi::DrawCustomCards(ctx.menuResScale, toneMapColor);
         if (basic)
         {
             RenderBasicUpscaling(ctx);
@@ -11356,6 +11387,22 @@ void MenuCommon::RenderMainMenuTabs(RenderMenuContext& ctx)
 
         RenderFsrCommonSettings(ctx);
         RenderUpscalerInputsSettings(ctx);
+
+        // Tabs plugins registered, each as its own section
+        {
+            const auto pluginTabs = PluginApi::GetTabs();
+            for (size_t i = 0; i < pluginTabs.size(); i++)
+            {
+                ImGui::SeparatorText(pluginTabs[i].name.c_str());
+                if (!pluginTabs[i].description.empty() && ImGui::IsItemHovered())
+                {
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted(pluginTabs[i].description.c_str());
+                    ImGui::EndTooltip();
+                }
+                PluginApi::DrawTab(i, ctx.menuResScale, toneMapColor);
+            }
+        }
         break;
 
     case 2:
@@ -11436,10 +11483,14 @@ void MenuCommon::RenderUpscalerTimeGraph(RenderMenuContext& ctx)
     auto& menuResScale = ctx.menuResScale;
     auto& averageUpscalerFT = ctx.averageUpscalerFT;
 
-    if (!IsUpscalerActive(currentFeature))
+    float pluginTime = 0.0f;
+    const bool pluginUpscaler = PluginUpscaler(currentFeature, nullptr, &pluginTime);
+
+    if (!IsUpscalerActive(currentFeature) && !pluginUpscaler)
         return;
 
-    ImGui::Text("Upscaler GPU time: %.2fms (avg: %.2fms)", state.upscaleTimes.back(), averageUpscalerFT);
+    ImGui::Text("Upscaler GPU time: %.2fms (avg: %.2fms)", pluginUpscaler ? pluginTime : state.upscaleTimes.back(),
+                averageUpscalerFT);
 
     PlotLinesWithRange(
         "##UpscalerTime",

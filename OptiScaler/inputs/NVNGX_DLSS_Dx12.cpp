@@ -31,11 +31,106 @@
 #include "detours/detours.h"
 #include <ankerl/unordered_dense.h>
 #include <misc/IdentifyGpu.h>
+#include "plugins/PluginApi.h"
 
 static ankerl::unordered_dense::map<unsigned int, ContextData<IFeature_Dx12>> Dx12Contexts;
 static std::unordered_map<unsigned int, NVSDK_NGX_Feature> HandleToFeature;
 
 static ID3D12Device* D3D12Device = nullptr;
+
+
+// ---- Ray reconstruction from a plugin (plugin API version 4, games that call NGX directly) ---------------------------
+// While a plugin registered an NGX ray reconstruction provider, the DX12 ray reconstruction feature is created,
+// evaluated and released by it. Its handles live above PLUGIN_RR_ID_OFFSET (OptiScaler's own features start at
+// DLSS_MOD_ID_OFFSET, the frame generation provider's at NVNGX_PROVIDER_ID_OFFSET).
+constexpr unsigned int PLUGIN_RR_ID_OFFSET = 3000000;
+static std::mutex PluginRrMutex;
+static ankerl::unordered_dense::map<unsigned int, void*> PluginRrContexts;
+static unsigned int PluginRrCounter = PLUGIN_RR_ID_OFFSET;
+
+static bool PluginRrGetResource(void* block, const char* key, void** value)
+{
+    auto* params = static_cast<NVSDK_NGX_Parameter*>(block);
+    ID3D12Resource* resource = nullptr;
+    if (params->Get(key, &resource) != NVSDK_NGX_Result_Success || resource == nullptr)
+    {
+        void* raw = nullptr;
+        if (params->Get(key, &raw) != NVSDK_NGX_Result_Success || raw == nullptr)
+            return false;
+        resource = static_cast<ID3D12Resource*>(raw);
+    }
+    *value = resource;
+    return true;
+}
+
+static bool PluginRrGetPointer(void* block, const char* key, void** value)
+{
+    void* raw = nullptr;
+    if (static_cast<NVSDK_NGX_Parameter*>(block)->Get(key, &raw) != NVSDK_NGX_Result_Success)
+        return false;
+    *value = raw;
+    return true;
+}
+
+static bool PluginRrGetUInt(void* block, const char* key, uint32_t* value)
+{
+    auto* params = static_cast<NVSDK_NGX_Parameter*>(block);
+    unsigned int u = 0;
+    if (params->Get(key, &u) == NVSDK_NGX_Result_Success)
+    {
+        *value = u;
+        return true;
+    }
+    int i = 0;
+    if (params->Get(key, &i) == NVSDK_NGX_Result_Success)
+    {
+        *value = (uint32_t) i;
+        return true;
+    }
+    return false;
+}
+
+static bool PluginRrGetInt(void* block, const char* key, int32_t* value)
+{
+    auto* params = static_cast<NVSDK_NGX_Parameter*>(block);
+    int i = 0;
+    if (params->Get(key, &i) == NVSDK_NGX_Result_Success)
+    {
+        *value = i;
+        return true;
+    }
+    unsigned int u = 0;
+    if (params->Get(key, &u) == NVSDK_NGX_Result_Success)
+    {
+        *value = (int32_t) u;
+        return true;
+    }
+    return false;
+}
+
+static bool PluginRrGetFloat(void* block, const char* key, float* value)
+{
+    auto* params = static_cast<NVSDK_NGX_Parameter*>(block);
+    float f = 0.0f;
+    if (params->Get(key, &f) == NVSDK_NGX_Result_Success)
+    {
+        *value = f;
+        return true;
+    }
+    double d = 0.0;
+    if (params->Get(key, &d) == NVSDK_NGX_Result_Success)
+    {
+        *value = (float) d;
+        return true;
+    }
+    return false;
+}
+
+static OptiNgxParams PluginRrParams(NVSDK_NGX_Parameter* params)
+{
+    return OptiNgxParams { params, PluginRrGetResource, PluginRrGetPointer, PluginRrGetUInt, PluginRrGetInt,
+                           PluginRrGetFloat };
+}
 static int evalCounter = 0;
 static bool shutdown = false;
 static bool _skipInit = false;
@@ -887,6 +982,32 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_CreateFeature(ID3D12GraphicsComma
         return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
     }
 
+    // Ray reconstruction by a plugin (plugin API version 4), ahead of OpenRR and FSR Ray Regeneration
+    if (InFeatureID == NVSDK_NGX_Feature_RayReconstruction)
+    {
+        if (const OptiNgxRayReconstruction* rr = PluginApi::NgxRayReconstruction())
+        {
+            OptiNgxParams params = PluginRrParams(InParameters);
+            void* context = nullptr;
+            if (!rr->create(rr->userData, D3D12Device, InCmdList, &params, &context) || context == nullptr)
+            {
+                LOG_WARN("The plugin's ray reconstruction refused the feature");
+                return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+            }
+
+            unsigned int handleId;
+            {
+                std::lock_guard<std::mutex> lock(PluginRrMutex);
+                handleId = ++PluginRrCounter;
+                PluginRrContexts[handleId] = context;
+            }
+            *OutHandle = new NVSDK_NGX_Handle { handleId };
+            HandleToFeature[handleId] = InFeatureID;
+            LOG_INFO("Created the plugin's ray reconstruction feature, HandleId: {}", handleId);
+            return NVSDK_NGX_Result_Success;
+        }
+    }
+
     // OptiScaler internal handling (SuperSampling or RayReconstruction)
     auto tryResult = TryCreateOptiFeature(InCmdList, InFeatureID, InParameters, OutHandle);
 
@@ -916,6 +1037,29 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_ReleaseFeature(NVSDK_NGX_Handle* 
     DlssNr::ExposureScan::ReleaseTrackedResources();
 
     auto handleId = InHandle->Id;
+
+    // The plugin's ray reconstruction (plugin API version 4)
+    if (handleId > PLUGIN_RR_ID_OFFSET)
+    {
+        void* context = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(PluginRrMutex);
+            if (auto it = PluginRrContexts.find(handleId); it != PluginRrContexts.end())
+            {
+                context = it->second;
+                PluginRrContexts.erase(it);
+            }
+        }
+        if (context != nullptr)
+        {
+            if (const OptiNgxRayReconstruction* rr = PluginApi::NgxRayReconstruction())
+                rr->release(rr->userData, context);
+            HandleToFeature.erase(handleId);
+            delete InHandle;
+            LOG_INFO("Released the plugin's ray reconstruction feature, HandleId: {}", handleId);
+            return NVSDK_NGX_Result_Success;
+        }
+    }
 
     // Clean up framegen
     if (State::Instance().currentFG != nullptr && State::Instance().activeFgInput == FGInput::Upscaler)
@@ -1250,6 +1394,27 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
 
     const uint32_t handleId = InFeatureHandle->Id;
     LOG_DEBUG("EvaluateFeature - Handle: {}, CmdList: {:p}", handleId, (void*) InCmdList);
+
+    // The plugin's ray reconstruction (plugin API version 4)
+    if (handleId > PLUGIN_RR_ID_OFFSET)
+    {
+        void* context = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(PluginRrMutex);
+            if (auto it = PluginRrContexts.find(handleId); it != PluginRrContexts.end())
+                context = it->second;
+        }
+        const OptiNgxRayReconstruction* rr = PluginApi::NgxRayReconstruction();
+        if (context != nullptr && rr != nullptr)
+        {
+            OptiNgxParams params = PluginRrParams(InParameters);
+            // The provider records into the game's list: put the game's root state back afterwards (version 5)
+            PluginApi::BeginCommandListWork(nullptr, InCmdList);
+            const bool ok = rr->evaluate(rr->userData, context, InCmdList, &params);
+            PluginApi::EndCommandListWork(nullptr, InCmdList);
+            return ok ? NVSDK_NGX_Result_Success : NVSDK_NGX_Result_Fail;
+        }
+    }
 
     const State& state = State::Instance();
     const Config& cfg = *Config::Instance();

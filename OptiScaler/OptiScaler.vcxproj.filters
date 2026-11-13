@@ -1336,6 +1336,9 @@
     <ClCompile Include="menu\menu_common.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="plugins\PluginApi.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="menu\menu_dx_base.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
