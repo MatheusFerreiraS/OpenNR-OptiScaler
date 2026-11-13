@@ -19,7 +19,7 @@ Ko-fi: <https://ko-fi.com/T6T213OVFE>
 | NR, danielblnc 0.8.0 (NeuralHub host) | RX 7000, RX 9000 |
 | NR, lmxxf 0.45 | RX 9070 and RX 9060 series |
 | NR, mochizuki 0.0.8.2 (Vulkan) | RX 9000; RX 7000, RDNA3 APUs and RX 6000 on experimental networks |
-| Ray Reconstruction, OpenRR 0.1.5 | RX 9000, D3D12 and Vulkan games |
+| Ray Reconstruction, OpenRR 0.1.6 | RX 9000 (RX 7000 and RDNA 3.5 experimental), D3D12 and Vulkan games |
 | Ray Reconstruction, FSR-RR (AMD Ray Regeneration) | RX 9000 |
 
 ## Install
