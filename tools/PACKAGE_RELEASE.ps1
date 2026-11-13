@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.6.7-opennr, the version in OptiScaler/resource.h.
+  Default product: OptiScaler-0.6.8-opennr, the version in OptiScaler/resource.h.
   The danielblnc runtime it drives is 0.8.0 (NeuralHub's neuralhub_host.dll; 0.6.0, 0.5.1, 0.5.0, 0.4.3, 0.4.2, 0.4.1,
   0.4.0, 0.3.1 and 0.3.0 still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
@@ -9,11 +9,11 @@
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.6.7-opennr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.6.8-opennr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.6.7-opennr',
+    [string]$Version = '0.6.8-opennr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',
@@ -251,6 +251,10 @@ MochizukiStabilizerThreshold=2
 MochizukiAco=true
 MochizukiInt4=false
 MochizukiOptimizedLayers=3
+; mochizuki on an RX 6000: the INT8 form of its network (dlssnr-amd\shaders-rdna2-int8), about a tenth faster than the
+; FP16 one; false keeps FP16, which also runs without that folder or when the INT8 pipelines fail. Other cards ignore
+; it. Taken when the game starts.
+MochizukiRdna2Int8=true
 ; OriginalModel: the 310.8 model instead of 310.9.16's new one (dlssnr-amd\dlssnr-small.bin, about a third faster,
 ; the default when it is there). Int4 always runs on the 310.8 model. ApplyModel=false runs the network
 ; at full cost but shows the original frame.
