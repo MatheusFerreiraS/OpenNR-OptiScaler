@@ -23,6 +23,10 @@
 #extension GL_KHR_shader_subgroup_shuffle : require
 #extension GL_EXT_control_flow_attributes : require
 
+#ifndef NV_I8
+#define NV_I8 0
+#endif
+
 #if !NR_USE_FRAGMENT_EPI || !(defined(NR_PACKED_WEIGHT_N2) || (defined(NR_TILED_B) && defined(NR_B_DIRECT))) || \
     !defined(NR_TILED_A) || !defined(NR_A_DIRECT) || !NR_KOFF_SPLIT || NR_ACC_F16 != 0 || NR_OUT_KPAIR || NR_XPIPE || \
     NR_A_LDSV || NR_B_LDSV || NR_A_KPAIR || NR_DIAG_APAIR || NR_KPAIR_ABL || NR_I4_SIDE || defined(NR_I4) || \
@@ -84,6 +88,139 @@ float ng_dot8(float s, uvec4 x0, uvec4 x1, uvec4 w0, uvec4 w1) {
 #define NG_PROD_C(c) acc[ng_i][c] = ng_dot8(acc[ng_i][c], ngx[ng_i][0], ngx[ng_i][1], NG_WSRC[c][0], NG_WSRC[c][1]);
 #define NG_PROD_T(i) { const int ng_i = i; NR_FOR_J(NR_NG_CL, NG_PROD_C) }
 #define NG_TILE { uvec4 ngx[NR_NG_TW][2]; NR_FOR_K(NR_NG_TW, NG_XLOAD_T) NR_FOR_K(NR_NG_TW, NG_PROD_T) }
+
+#if NV_I8
+// NV_I8 (the RDNA2 INT8 network): the tiled e4m3 GEMMs without the raster copies, the pool or the QKV norm in int8
+// (i8.glsl), for another layout of the tile: a lane a token (NR_MTILE / 32 of them) and NR_NTILE / NR_NG_WAVES channels a
+// wave. The tile's tokens get one scale each over K (a first pass, the token's lanes reduced by shuffles), then go
+// through LDS as int8 a chunk of 256 k values at a time; the channels' int8 rows (host role kI8Gemm*) are the same for
+// every lane: scalar uvec4 into v_dot4. The epilogue is the FP16 body's, element by element.
+#include "i8.glsl"
+layout(set = 0, binding = 3, std430) readonly buffer NgWgtF { float ng_wf[]; };
+#if NR_QKV_FUSED_NORM || NR_POOL || NR_OUT_PERM || !defined(NR_OUT_E4M3) || !defined(NR_OUT_TILED)
+#error "NV_I8: the tiled e4m3 GEMMs without raster copies, pool or QKV norm only"
+#endif
+#define NI_TPL (NR_MTILE / 32)                  // tokens a lane
+#define NI_CW (NR_NTILE / NR_NG_WAVES)          // channels a wave
+#define NI_P (NR_NG_WAVES * 32 / NR_MTILE)      // lanes a token in the scale pass
+#define NI_KC 16                                // k fragments in LDS at a time
+#if NR_MTILE % 32 || NR_NTILE % NR_NG_WAVES || NI_CW > 32 || 32 % NI_P
+#error "NV_I8: the tile must split into a lane a token and whole channels a wave"
+#endif
+shared uvec4 ni_x[NR_MTILE * NI_KC];            // [token][fragment of the chunk]: 16 int8
+shared int ni_s[NR_MTILE];                      // the token's scale exponent
+
+void main() {
+    NR_PROF_BEGIN()
+    nr_chain_wait()
+    NR_TC_PROLOGUE
+    const uint lane = gl_SubgroupInvocationID;
+    const uint wave = subgroupBroadcastFirst(gl_SubgroupID);
+    const uint tid = gl_LocalInvocationID.x;
+#if NR_GEMM_REMAP_PC
+    uint nr_gm = gl_WorkGroupID.x, nr_gn = gl_WorkGroupID.y;
+    if (pc.remap != 0u) {
+        const uint gx = gl_NumWorkGroups.x, gy = gl_NumWorkGroups.y;
+        const uint lin = gl_WorkGroupID.x + gx * gl_WorkGroupID.y;
+        const uint G = pc.remap;
+        const uint grp = lin / (G * gy), bm = grp * G, gt = min(G, gx - bm);
+        const uint r = lin - grp * G * gy;
+        nr_gm = bm + r % gt; nr_gn = r / gt;
+    }
+    const uint mg0 = nr_gm * uint(NR_MTILE);
+    const uint ng0 = nr_gn * uint(NR_NTILE);
+#else
+    const uint mg0 = gl_WorkGroupID.x * uint(NR_MTILE);
+    const uint ng0 = gl_WorkGroupID.y * uint(NR_NTILE);
+#endif
+    nr_tchain_wait(mg0 / 16u, NR_MTILE / 16)
+    NR_PROF_ITEM_START()
+    const uint KT = pc.K / 16u;
+    // a token's 16 k values of fragment kf (tile-blocked [t/16][kf] 16x16 FP16 tiles), zero past M's last tile
+    #define NI_X(t, kf, h) ng_x4[pc.x_off / 8u + ((t) >> 4u) * KT * 32u + ((t) & 15u) * 2u + (kf) * 32u + (h)]
+
+    // ---- the tokens' scales: NI_P lanes a token, each a stride of its fragments
+    {
+        const uint t = tid / uint(NI_P), part = tid % uint(NI_P), tg = mg0 + t;
+        float amax = 0.0;
+        if ((tg & ~15u) < pc.M)
+            for (uint kf = part; kf < KT; kf += uint(NI_P))
+                for (uint h = 0u; h < 2u; ++h) {
+                    const uvec4 u = NI_X(tg, kf, h);
+                    for (int e = 0; e < 4; ++e) { const vec2 f = vec2(ng_h(u[e])); amax = max(amax, max(abs(f.x), abs(f.y))); }
+                }
+        for (uint m = 1u; m < uint(NI_P); m <<= 1u) amax = max(amax, subgroupShuffleXor(amax, m));
+        if (part == 0u) ni_s[t] = i8_exp(amax);
+    }
+    barrier();
+
+    const uint ch0 = ng0 + wave * uint(NI_CW);
+    int acc[NI_TPL][NI_CW];
+    for (int s = 0; s < NI_TPL; ++s) for (int c = 0; c < NI_CW; ++c) acc[s][c] = 0;
+    for (uint k0 = 0u; k0 < KT; k0 += uint(NI_KC)) {
+        // ---- the chunk's fragments of every token as int8 into LDS
+        const uint nk = min(uint(NI_KC), KT - k0);
+        for (uint i = tid; i < uint(NR_MTILE) * nk; i += uint(NR_NG_WAVES * 32)) {
+            const uint t = i / nk, kf = i % nk, tg = mg0 + t;
+            uvec4 q = uvec4(0u);
+            if ((tg & ~15u) < pc.M) {
+                const int s = ni_s[t];
+                const uint fb = i8_floor(s);
+                const float inv = i8_pow2(-s);
+                for (uint h = 0u; h < 2u; ++h) {
+                    const uvec4 u = NI_X(tg, k0 + kf, h);
+                    const vec2 f0 = vec2(ng_h(u.x)), f1 = vec2(ng_h(u.y)), f2 = vec2(ng_h(u.z)), f3 = vec2(ng_h(u.w));
+                    q[2u * h] = i8_pack(i8_q(f0.x, fb, inv), i8_q(f0.y, fb, inv), i8_q(f1.x, fb, inv), i8_q(f1.y, fb, inv));
+                    q[2u * h + 1u] = i8_pack(i8_q(f2.x, fb, inv), i8_q(f2.y, fb, inv), i8_q(f3.x, fb, inv), i8_q(f3.y, fb, inv));
+                }
+            }
+            ni_x[t * uint(NI_KC) + kf] = q;
+        }
+        barrier();
+        // ---- the products: lane l the tokens l, l + 32 ..; the wave's channels as scalar rows
+        for (uint kf = 0u; kf < nk; kf = kf + 1u) {
+            uvec4 xs[NI_TPL];
+            for (int s = 0; s < NI_TPL; ++s) xs[s] = ni_x[(lane + 32u * uint(s)) * uint(NI_KC) + kf];
+            for (int c = 0; c < NI_CW; ++c) {
+                const uvec4 wv = ng_w4[I8_WROW(pc.w_off, KT, ch0 + uint(c), k0 + kf)];
+                for (int s = 0; s < NI_TPL; ++s) acc[s][c] = i8_dot16(acc[s][c], wv, xs[s]);
+            }
+        }
+        barrier();
+    }
+
+    // ---- the epilogue of the FP16 body, element (token t, channel ch) of the tiled output
+    for (int s = 0; s < NI_TPL; ++s) {
+        const uint t = mg0 + lane + 32u * uint(s);
+        if ((t & ~15u) >= pc.M) continue;
+        const float xs = i8_pow2(ni_s[lane + 32u * uint(s)]);
+        for (int c = 0; c < NI_CW; ++c) {
+            const uint ch = ch0 + uint(c);
+            const uint e = ((t >> 4u) * (pc.N / 16u) + ch / 16u) * 256u + (t & 15u) * 16u + (ch & 15u);
+            const float raw = float(acc[s][c]) * (xs * I8_WSCALE(ng_wf, pc.w_off, pc.N, pc.K, ch));
+#ifdef NR_NO_RESIDUAL
+            const NR_F16 v = NR_F16(NR_ACT_APPLY(raw));
+#else
+            const NR_F16 g = wgt_f16[pc.g_off + ch];
+            const NR_F16 r = act_e4m3[pc.r_off + e];
+            const NR_F16 v = NR_F16(NR_ACT_APPLY(raw + float(g) * float(r)));
+#endif
+            act_e4m3[pc.o_off + e] = nr_quant_e4m3(v);
+        }
+    }
+    NR_OCC_USE(pc.K == 0u, act_f32[0] = 0.0)
+    nr_chain_signal()
+#if NR_TCHAIN
+    if (nr_tc_sig != 0xFFFFFFFFu) {
+        memoryBarrier(gl_ScopeDevice, gl_StorageSemanticsBuffer, gl_SemanticsRelease);
+        barrier();
+    }
+#endif
+    if (wave < uint(NR_WAVES)) { nr_tchain_signal_wave(mg0 / 16u + (wave / uint(NR_WN)) * uint(NR_MFRAG), NR_MFRAG) }
+    NR_PROF_ITEM_END(pc.o_off | 0x80000000u, 0u)
+    NR_PROF_END(pc.o_off)
+}
+#else
 
 void main() {
     NR_PROF_BEGIN()
@@ -258,3 +395,4 @@ void main() {
     NR_PROF_ITEM_END(pc.o_off | 0x80000000u, 0u)
     NR_PROF_END(pc.o_off)
 }
+#endif

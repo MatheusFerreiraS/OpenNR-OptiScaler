@@ -109,7 +109,8 @@ static int One(const std::wstring& path, const std::string& name)
     const bool robustExt = HasExt(phys, VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
     VkPhysicalDevicePipelineRobustnessFeaturesEXT hasRob { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_ROBUSTNESS_FEATURES_EXT };
     VkPhysicalDeviceVulkan12Features has12 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, robustExt ? &hasRob : nullptr };
-    VkPhysicalDeviceFeatures2 has { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &has12 };
+    VkPhysicalDeviceVulkan13Features has13 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, &has12 };
+    VkPhysicalDeviceFeatures2 has { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &has13 };
     vkGetPhysicalDeviceFeatures2(phys, &has);
     const bool robust = robustExt && hasRob.pipelineRobustness;
 
@@ -127,6 +128,7 @@ static int One(const std::wstring& path, const std::string& name)
     f12.vulkanMemoryModelDeviceScope = VK_TRUE;
     f12.bufferDeviceAddress = has12.bufferDeviceAddress;
     f13.subgroupSizeControl = f13.synchronization2 = VK_TRUE;
+    f13.shaderIntegerDotProduct = has13.shaderIntegerDotProduct;   // the RDNA2 INT8 network's v_dot4
     wml.workgroupMemoryExplicitLayout = wml.workgroupMemoryExplicitLayout8BitAccess =
         wml.workgroupMemoryExplicitLayout16BitAccess = VK_TRUE;
     rob.pipelineRobustness = VK_TRUE;

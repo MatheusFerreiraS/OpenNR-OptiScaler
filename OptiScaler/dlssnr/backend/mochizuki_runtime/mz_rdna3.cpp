@@ -555,6 +555,8 @@ void Child(const LUID& luid, unsigned threads, const std::wstring& listPath, Lin
     f12.bufferDeviceAddress = has12.bufferDeviceAddress;
     f12.timelineSemaphore = mirror && has12.timelineSemaphore;
     f13.subgroupSizeControl = f13.synchronization2 = VK_TRUE;
+    // RDNA2's INT8 network (v_dot4): its shaders declare the integer dot product (the runtime checked it is offered).
+    f13.shaderIntegerDotProduct = variant == L"-rdna2-int8" ? VK_TRUE : VK_FALSE;
     wml.workgroupMemoryExplicitLayout = wml.workgroupMemoryExplicitLayout8BitAccess =
         wml.workgroupMemoryExplicitLayout16BitAccess = VK_TRUE;
     rob.pipelineRobustness = VK_TRUE;

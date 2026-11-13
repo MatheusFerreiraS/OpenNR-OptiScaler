@@ -18,11 +18,18 @@ constexpr bool fp16_network(Arch a) { return a != Arch::rdna4; }
 constexpr const char* arch_name(Arch a) {
     return a == Arch::rdna3 ? "RDNA3" : a == Arch::rdna2 ? "RDNA2" : "RDNA4";
 }
-constexpr const char* arch_shaders(Arch a) {
-    return a == Arch::rdna3 ? "shaders-rdna3" : a == Arch::rdna2 ? "shaders-rdna2" : "shaders";
+// RDNA2's INT8 network (linux/shaders/rdna2 built with build_network.py --int8): dlssnr-amd/shaders-rdna2-int8,
+// pipeline-rdna2-int8.cache. The host sets it before the runtime starts, for an RDNA2 device that has the folder,
+// offers shaderIntegerDotProduct and was asked for it (MZ_RDNA2_INT8=1, OptiScaler's MochizukiRdna2Int8).
+inline bool rdna2_int8 = false;
+
+inline const char* arch_shaders(Arch a) {
+    return a == Arch::rdna3 ? "shaders-rdna3"
+         : a == Arch::rdna2 ? (rdna2_int8 ? "shaders-rdna2-int8" : "shaders-rdna2") : "shaders";
 }
-constexpr const char* arch_cache(Arch a) {
-    return a == Arch::rdna3 ? "pipeline-rdna3.cache" : a == Arch::rdna2 ? "pipeline-rdna2.cache" : "pipeline.cache";
+inline const char* arch_cache(Arch a) {
+    return a == Arch::rdna3 ? "pipeline-rdna3.cache"
+         : a == Arch::rdna2 ? (rdna2_int8 ? "pipeline-rdna2-int8.cache" : "pipeline-rdna2.cache") : "pipeline.cache";
 }
 
 }  // namespace nr

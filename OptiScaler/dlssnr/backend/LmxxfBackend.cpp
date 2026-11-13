@@ -539,6 +539,10 @@ bool LmxxfBackend::EnsureSession()
     info.flags = LMXXF_NR_CREATE_FLAG_ZERO_OUTPUT_FALLBACK;
     if (!Lmxxf() && Config::Instance()->MochizukiAco.value_or_default())
         info.flags |= LMXXF_NR_CREATE_FLAG_ACO;
+    // mochizuki's RX 6000 network in its INT8 form: read by the runtime (and its pipeline check's child process) when it
+    // picks the RDNA2 network.
+    if (!Lmxxf() && Config::Instance()->MochizukiRdna2Int8.value_or_default())
+        SetEnvironmentVariableA("MZ_RDNA2_INT8", "1");
     void* ctx = nullptr;
     int32_t createRc = api->table.Create(&info, &ctx);
     // A runtime from before ACO refuses the flag: it runs without it.

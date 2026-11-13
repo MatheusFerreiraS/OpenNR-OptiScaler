@@ -60,6 +60,9 @@ python "%UP%\windows\build\build_network.py" rdna3 --tree linux --no-quad --out 
 rem The RDNA2 network (RX 6000, no FP8 and no matrices) in shaders-rdna2\: linux\shaders\rdna2, the RDNA3 network with
 rem its matrix fragments emulated in ALU, built the same way.
 python "%UP%\windows\build\build_network.py" rdna2 --tree linux --no-quad --out "%OUT%\dlssnr-amd\shaders-rdna2" || goto fail
+rem Its INT8 form (v_dot4_i32_i8; MZ_RDNA2_INT8=1, MochizukiRdna2Int8) in shaders-rdna2-int8\: the same sources with
+rem pipelines.json "int8" (include\i8.glsl); the host writes the int8 weights that set names.
+python "%UP%\windows\build\build_network.py" rdna2 --tree linux --no-quad --int8 --out "%OUT%\dlssnr-amd\shaders-rdna2-int8" || goto fail
 rem The RenoDX stage's shaders in shaders\renodx\ (Slang 2026.19 is downloaded into toolchain\ on first use).
 python tools\build-mochizuki-renodx.py "%UP%" "%OUT%\dlssnr-amd\shaders\renodx" "%OBJ%\renodx" "%GLSLANG%\bin\glslang.exe" || goto fail
 rem ACO's network (LMXXF_NR_CREATE_FLAG_ACO): the Linux network's SPIR-V, which ACO's records were made from (each

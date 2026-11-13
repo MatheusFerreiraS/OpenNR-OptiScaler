@@ -492,6 +492,10 @@ class Config
     // only. Takes effect when the game starts again; without the driver's pipeline binaries the driver compiles as
     // before.
     CustomOptional<bool> MochizukiAco { true };
+    // RX 6000 (the RDNA2 network): its INT8 form (dlssnr-amd\shaders-rdna2-int8, the 8-bit dot products) instead of
+    // the FP16 one. On by default (other cards ignore it); taken when the game starts. Sets MZ_RDNA2_INT8 for the
+    // runtime, which falls back to FP16 without the folder, the driver feature or a passing pipeline check.
+    CustomOptional<bool> MochizukiRdna2Int8 { true };
     // With ACO on an RX 9000: upstream's CC_SILVER_AARDWOLD_OPTIMIZED, which replaced the int4 mixed network this key
     // first named (upstream 0.0.8.3): the 310.8 model made faster, its picture very close to that model's. A change
     // rebuilds the network in a few seconds while the frames keep the current one, without a restart.

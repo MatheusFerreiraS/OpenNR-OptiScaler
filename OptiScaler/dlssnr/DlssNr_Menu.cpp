@@ -474,6 +474,14 @@ static uint32_t MochizukiNetwork(std::string& off, const char*& offCard)
                : 0;
 }
 
+// The RX 6000 network runs its INT8 form (MochizukiRdna2Int8, and the runtime took it).
+static bool MochizukiInt8()
+{
+    MochizukiNrInfo info {};
+    return DlssNr::Backend::LmxxfBackend::MochizukiInfo(info) &&
+           info.struct_size >= offsetof(MochizukiNrInfo, rdna2_int8) + sizeof info.rdna2_int8 && info.rdna2_int8;
+}
+
 // mochizuki's network, chosen the way its own NR Control does: one list of the networks by the names in NVIDIA's DLL,
 // with the optimized one's level under it. They map onto MochizukiOriginalModel, MochizukiExperimental and
 // MochizukiInt4, so older INIs keep their choice. A network this card or install can't run is greyed out with why.
@@ -1108,6 +1116,15 @@ void RenderMenu(Config* config, float menuResScale)
                                "\nis kept for this driver (dlssnr-amd\\rdna3-check.txt); a new driver is checked again."
                                "\nmochizuki_nr.log has the details.");
             }
+            else if (network == 3 && MochizukiInt8())
+            {
+                ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "RX 6000 (experimental, INT8 network)");
+                HelpMarker("The RX 6000 has neither FP8 nor matrix units, so this runs the RX 7000's network"
+                           "\nwith most of its matrices worked out in 8-bit integer dot products: about a tenth faster"
+                           "\nthan its FP16 form, still much slower than on an RX 9000 or RX 7000. The FP16 form is"
+                           "\nunder Performance and advanced."
+                           "\nExperimental: if the picture looks wrong or the game stutters, turn NR off and report it.");
+            }
             else if (network == 3)
             {
                 ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "RX 6000 (experimental, FP16 network)");
@@ -1343,6 +1360,16 @@ void RenderMenu(Config* config, float menuResScale)
                                    "\nCC_SMALL_FP8_EXPERIMENTAL and CC_SILVER_AARDWOLD_OPTIMIZED need it. Tested by its"
                                    "\nauthor on AMD Software 26.9.2 only; if the game crashes or the picture is wrong, turn"
                                    "\nit off. Save Settings and start the game again to apply it.");
+                if (rx6000)
+                {
+                    bool int8 = config->MochizukiRdna2Int8.value_or_default();
+                    if (ImGui::Checkbox("INT8 network (restart)", &int8))
+                        config->MochizukiRdna2Int8 = int8;
+                    HelpMarker("On the RX 6000: most of the network's products as 8-bit integer dot products"
+                               "\n(dlssnr-amd\\shaders-rdna2-int8), about a tenth faster than FP16. On by default. Off,"
+                               "\nor without that folder, the FP16 network runs (with ACO, when it is on above)."
+                               "\nSave Settings and start the game again to apply it.");
+                }
                 // MochizukiDynamicResolution: exact, auto or always; anything else is auto, as the host sends it.
                 const std::string dynamicResolution = config->MochizukiDynamicResolution.value_or_default();
                 int drs = dynamicResolution == "exact" ? 1 : dynamicResolution == "always" ? 2 : 0;

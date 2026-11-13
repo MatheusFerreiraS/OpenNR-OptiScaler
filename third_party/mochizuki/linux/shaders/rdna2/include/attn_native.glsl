@@ -32,6 +32,16 @@ shared uint na_vt[32 * 32];            // V quantised, [channel][token pair]
 #define na_qn(i) na_qk4[i]
 #define na_kn(i) na_qk4[256u + (i)]
 
+#ifndef NV_I8
+#define NV_I8 0
+#endif
+#if NV_I8
+// NV_I8 (the RDNA2 INT8 network): the QKV projection in int8 (i8.glsl): x one scale a token over its C channels (a first
+// pass over x for it), the head's rows int8 in the twin (host role kI8Attn). Q . K and P . V stay FP16.
+#include "i8.glsl"
+layout(set = 0, binding = 2, std430) readonly buffer NaWgtF { float na_wf[]; };
+#endif
+
 layout(set = 0, binding = 4, std430) readonly buffer NaAct4 { uvec4 na_x4[]; };
 layout(set = 0, binding = 2, std430) readonly buffer NaWgt4 { uvec4 na_w4[]; };
 layout(set = 0, binding = 0, std430) writeonly buffer NaOut4 { uvec4 na_o4[]; };
@@ -99,6 +109,45 @@ void main() {
                 xq[j] = (pc.x_off + nr_tile_base(t >> 4u) + (t & 15u) * 16u) / 8u;
             }
             float acc[2][48];
+#if NV_I8
+            int sx[2];
+            for (int j = 0; j < 2; ++j) {
+                float amax = 0.0;
+                for (uint kf = 0u; kf < KF; kf = kf + 1u) {
+                    const uvec4 x0 = na_x4[xq[j] + kf * 32u], x1 = na_x4[xq[j] + kf * 32u + 1u];
+                    for (int e = 0; e < 4; ++e) {
+                        const vec2 f0 = vec2(na_h(x0[e])), f1 = vec2(na_h(x1[e]));
+                        amax = max(amax, max(max(abs(f0.x), abs(f0.y)), max(abs(f1.x), abs(f1.y))));
+                    }
+                }
+                sx[j] = i8_exp(amax);
+            }
+            int ai[2][48];
+            for (int j = 0; j < 2; ++j) for (int r = 0; r < 48; ++r) ai[j][r] = 0;
+            for (uint kf = 0u; kf < KF; kf = kf + 1u) {
+                uvec4 q[2];
+                for (int j = 0; j < 2; ++j) {
+                    const uint fb = i8_floor(sx[j]);
+                    const float inv = i8_pow2(-sx[j]);
+                    const uvec4 x0 = na_x4[xq[j] + kf * 32u], x1 = na_x4[xq[j] + kf * 32u + 1u];
+                    for (int e = 0; e < 2; ++e) {
+                        const vec2 f0 = vec2(na_h(x0[2 * e])), f1 = vec2(na_h(x0[2 * e + 1]));
+                        q[j][e] = i8_pack(i8_q(f0.x, fb, inv), i8_q(f0.y, fb, inv), i8_q(f1.x, fb, inv), i8_q(f1.y, fb, inv));
+                        const vec2 g0 = vec2(na_h(x1[2 * e])), g1 = vec2(na_h(x1[2 * e + 1]));
+                        q[j][2 + e] = i8_pack(i8_q(g0.x, fb, inv), i8_q(g0.y, fb, inv), i8_q(g1.x, fb, inv), i8_q(g1.y, fb, inv));
+                    }
+                }
+                for (int r = 0; r < 48; ++r) {
+                    const uvec4 wv = na_w4[I8_WROW(pc.w_off, KF, 96u * h + r0 + uint(r), kf)];
+                    ai[0][r] = i8_dot16(ai[0][r], wv, q[0]);
+                    ai[1][r] = i8_dot16(ai[1][r], wv, q[1]);
+                }
+            }
+            for (int r = 0; r < 48; ++r) {
+                const float ws = I8_WSCALE(na_wf, pc.w_off, 1536u, pc.C, 96u * h + r0 + uint(r));
+                for (int j = 0; j < 2; ++j) acc[j][r] = float(ai[j][r]) * (ws * i8_pow2(sx[j]));
+            }
+#else
             for (int j = 0; j < 2; ++j) for (int r = 0; r < 48; ++r) acc[j][r] = 0.0;
             uvec4 xa[2][2], xb[2][2];
             { const uint na_kf = 0u; xa[0][0] = na_x4[xq[0]]; xa[0][1] = na_x4[xq[0] + 1u];
@@ -115,6 +164,7 @@ void main() {
 #undef NA_XS
                 }
             }
+#endif
             // Q and K rows FP16 as the emulated NR_F16(qacc); V rows quantised (zero for a token of a tile outside the
             // image), packed two tokens a word with the neighbouring lane.
             for (int j = 0; j < 2; ++j) {

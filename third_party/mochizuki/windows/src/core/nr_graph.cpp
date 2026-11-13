@@ -175,6 +175,25 @@ static std::vector<size_t> g_tc_err;   // error words, as indices into g_tc_word
 static size_t g_tc_base = 0;
 static bool g_fp16 = false;   // this build's Context::fp16(): the RDNA3 or the RDNA2 network
 static bool g_rdna2 = false;  // this build's network is RDNA2's
+// RDNA2's INT8 kernels (linux/shaders/rdna2/include/i8.glsl): shader-constants.txt `int8 <roles>` names the weight
+// matrices they read as int8 (bits below, kI8*). Those matrices go into the FP16 weight twin, at the twin's byte
+// offset of the matrix, as int8 in the plain tile-blocked [row/16][k/16][16 row][16 k] order, followed by one fp32
+// scale a row: w = q * scale, q from the e4m3 values (not the fp16 table) so the rounding the network was made for
+// is the one quantised. MZ_I8_FAKE=<roles> (diagnostic, FP16 shaders): the same q * scale as FP16 in the twin's own
+// layout, which measures what the int8 weights cost with the FP16 kernels. MZ_I8_WSCALE=1: power-of-two scales.
+enum : uint32_t {
+    kI8SwinE = 1u << 0, kI8SwinCt = 1u << 1, kI8SwinQkv = 1u << 2, kI8SwinWo = 1u << 3,          // C = 32
+    kI8WideE = 1u << 4, kI8WideMid = 1u << 5, kI8WideCt = 1u << 6, kI8WideQkv = 1u << 7, kI8WideWo = 1u << 8,  // C >= 64
+    kI8Gemm = 1u << 9,                                             // gemmproj and gemmprojc
+    kI8PreE = 1u << 10, kI8PostE = 1u << 11, kI8UpsE = 1u << 12,   // E of the C = 32 pre, post and fused upsample blocks
+    kI8Attn = 1u << 13,                                            // the C = 512 attention's QKV projection
+    kI8Ffwd1 = 1u << 14, kI8Ffwd2 = 1u << 15, kI8Ffwd3 = 1u << 16, // the C = 512 grouped feed-forward's three matrices
+    kI8GemmVact = 1u << 17,                                        // the ViT MLP expansion (gemmvact)
+};
+static uint32_t g_i8 = 0, g_i8_fake = 0;
+struct I8Matrix { uint32_t off; size_t rows, K; std::vector<float> scale; };
+static std::vector<I8Matrix> g_i8_mats;
+static std::vector<std::pair<size_t, std::vector<uint8_t>>> g_i8_twin;   // FP16 twin byte offset, bytes
 // RDNA3 (and RDNA2, which runs its kernels) keeps the barriers unless NR_TCHAIN=1: on an RX 7900 XT (Windows driver) the chained
 // 720p runs gave a darker picture that changed from run to run; the 9070 XT, forced onto the
 // same network, is bit-identical with and without them, so it is gfx11's side.
@@ -2304,6 +2323,16 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
             return 1;
         }
         kswap = built.at("kswap");
+        g_i8 = built.count("int8") ? built.at("int8") : 0;
+        g_i8_fake = std::getenv("MZ_I8_FAKE") ? uint32_t(std::strtoul(std::getenv("MZ_I8_FAKE"), nullptr, 0)) : 0;
+        if ((g_i8 || g_i8_fake) && !g_rdna2) {
+            std::fprintf(stderr, "%s: INT8 weights are RDNA2's only\n", path.c_str());
+            return 1;
+        }
+        if (g_i8 && g_i8_fake) g_i8_fake = 0;
+        g_i8_mats.clear(); g_i8_twin.clear();
+        if (g_i8) nr::logf("[nr] RDNA2 INT8 kernels: weight roles 0x%x as int8", g_i8);
+        if (g_i8_fake) nr::logf("[nr] MZ_I8_FAKE: weight roles 0x%x rounded to int8 in the FP16 twin", g_i8_fake);
         if (!built.count("ffwd_gmajor")) built["ffwd_gmajor"] = 0;
         if (!built.count("gemm_remap")) built["gemm_remap"] = 0;
         for (const auto& [name, mine] : want) {
@@ -4205,9 +4234,92 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
     if (!arena_probe)
         nr::logf("weight arena %.1f MB over %zu dispatches", double(wblob.size()) / 1e6, disp.size());
 
+    // RDNA2 INT8 (g_i8 / g_i8_fake above): every matrix of the chosen roles, read here in its plain tile-blocked
+    // order, before the packing and the k-pair swap below move its bytes.
+    if (g_i8 | g_i8_fake) {
+        const uint32_t roles = g_i8 | g_i8_fake;
+        const bool pow2 = std::getenv("MZ_I8_WSCALE") && std::atoi(std::getenv("MZ_I8_WSCALE")) == 1;
+        std::set<uint32_t> seen;
+        auto quantise = [&](uint32_t role, uint32_t off, size_t rows, size_t K) {
+            if (!(roles & role) || !seen.insert(off).second) return;
+            const size_t bytes = rows * K;
+            if (rows % 16 || K % 16 || size_t(off) + bytes > wblob.size() || off % 128)
+                throw std::runtime_error("int8: weight matrix bounds");
+            std::vector<uint8_t> e(bytes);
+            wblob.read(off, e.data(), bytes);
+            const size_t KF = K / 16;
+            auto at = [&](size_t r, size_t k) { return ((r / 16) * KF + k / 16) * 256 + (r % 16) * 16 + k % 16; };
+            I8Matrix m{off, rows, K, std::vector<float>(rows, 1.0f)};
+            for (size_t r = 0; r < rows; ++r) {
+                float amax = 0.0f;
+                for (size_t k = 0; k < K; ++k) amax = std::max(amax, std::fabs(tin::e4m3_to_f(e[at(r, k)])));
+                if (amax > 0.0f) m.scale[r] = pow2 ? std::ldexp(1.0f, std::ilogb(amax) - 6) : amax / 127.0f;
+            }
+            if (g_i8 & role) {
+                std::vector<uint8_t> t(bytes + rows * 4);
+                for (size_t r = 0; r < rows; ++r)
+                    for (size_t k = 0; k < K; ++k) {
+                        const long q = long(std::nearbyint(tin::e4m3_to_f(e[at(r, k)]) / m.scale[r]));
+                        t[at(r, k)] = uint8_t(int8_t(std::clamp(q, -127L, 127L)));
+                    }
+                std::memcpy(t.data() + bytes, m.scale.data(), rows * 4);
+                g_i8_twin.emplace_back(size_t(off) * 2, std::move(t));
+            }
+            g_i8_mats.push_back(std::move(m));
+        };
+        for (const auto& pd : disp) {
+            const std::string& k = pd.kern;
+            if (k.rfind("fswin", 0) == 0) {
+                PushFSwin p{};
+                if (pd.push.size() < sizeof p) throw std::runtime_error("int8: Swin push mismatch");
+                std::memcpy(&p, pd.push.data(), sizeof p);
+                if (k.size() >= 2 && k.compare(k.size() - 2, 2, "32") == 0) {
+                    quantise(k == "fswinimagepreds32" ? kI8PreE : k == "fswinimagepost32" ? kI8PostE
+                             : k == "fswinfusedup32" ? kI8UpsE : kI8SwinE, p.e_off, 128, 32);
+                    quantise(kI8SwinCt, p.ct_off, 32, 128);
+                    quantise(kI8SwinQkv, p.qkv_off, 96, 32);
+                    quantise(kI8SwinWo, p.op_off, 32, 32);
+                } else {
+                    size_t C = 0;
+                    for (size_t c : {64u, 128u, 256u})
+                        if (k.size() >= 3 && k.compare(k.size() - std::to_string(c).size(), std::string::npos, std::to_string(c)) == 0) C = c;
+                    if (!C) throw std::runtime_error("int8: unknown Swin kernel " + k);
+                    quantise(kI8WideE, p.e_off, 4 * C, C);
+                    quantise(kI8WideMid, p.mid_off, C, 128);
+                    quantise(kI8WideCt, p.ct_off, C, C);
+                    quantise(kI8WideQkv, p.qkv_off, 3 * C, C);
+                    quantise(kI8WideWo, p.op_off, C, C);
+                }
+            } else if (k == "attn") {
+                PushAttn p{};
+                if (pd.push.size() < sizeof p) throw std::runtime_error("int8: attention push mismatch");
+                std::memcpy(&p, pd.push.data(), sizeof p);
+                quantise(kI8Attn, p.w_off, 1536, p.C);
+            } else if (k == "ffwd3" || k == "ffwd3w") {
+                PushFfwd3 p{};
+                if (pd.push.size() != sizeof p) throw std::runtime_error("int8: FFWD push mismatch");
+                std::memcpy(&p, pd.push.data(), sizeof p);
+                quantise(kI8Ffwd1, p.a_off, FF_GROUPS * FF_R, FF_K);
+                quantise(kI8Ffwd2, p.q0_off, FF_GROUPS * FF_J, FF_R);
+                quantise(kI8Ffwd3, p.q2_off, FF_GROUPS * FF_OUT, FF_J);
+            } else if (k.rfind("gemm", 0) == 0) {
+                PushGemm p{};
+                if (pd.push.size() != sizeof p) throw std::runtime_error("int8: GEMM push mismatch");
+                std::memcpy(&p, pd.push.data(), sizeof p);
+                if (k == "gemmproj" || k == "gemmprojc") quantise(kI8Gemm, p.w_off, p.N, p.K);
+                else if (k == "gemmvact") quantise(kI8GemmVact, p.w_off, p.N, p.K);
+            }
+        }
+        size_t n8 = 0;
+        for (const auto& t : g_i8_twin) n8 += t.second.size();
+        nr::logf("[nr] int8 weights: %zu matrices (%zu as int8, %.1f MB)%s", g_i8_mats.size(), g_i8_twin.size(),
+                 double(n8) / 1e6, pow2 ? ", power-of-two row scales" : "");
+    }
+
     // ---- one dispatch for a run of consecutive blocks ----------------------
     // Manifest v2 layouts 1/2 pair adjacent output-channel fragments so a lane
     // fetches 16 FP8 weights at once. Original files and K order stay intact.
+    std::map<uint32_t, int> packed_kind;   // RDNA2 MZ_I8_FAKE: 1 N-pair lane order, 2 N-pair plain tiles
     if (weight_layout != 0) {
         size_t packed_count=0;
         std::set<uint32_t> binary_packed_attn;
@@ -4228,6 +4340,7 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
                     packed[dst]=orig[src];
                 }
             wblob.write(offset, packed.data(), bytes); ++packed_count;
+            packed_kind[offset] = plain_tiles ? 2 : 1;
         };
         // Layout 2 extends layout 1 with the three grouped FFWD matrices.
         const bool pack_ffwd = weight_layout >= 2;
@@ -4351,6 +4464,26 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
         }
         std::printf("N-pair FP8 weight layout: %zu matrices\n",packed_count);
         if(kswap) std::printf("k-pair swap (kswap): odd rows of %zu Swin weight matrices\n",kswap_count);
+    }
+    // MZ_I8_FAKE: the int8 values of the matrices above as FP16, in the order the FP16 twin now holds them (the k-pair
+    // swap keeps a byte in its row; a packed matrix's rows move with their tiles).
+    for (const I8Matrix& m : g_i8_fake ? g_i8_mats : std::vector<I8Matrix>{}) {
+        const size_t bytes = m.rows * m.K, KT = m.K / 16;
+        const auto kind = packed_kind.find(m.off);
+        std::vector<uint8_t> e(bytes), t(bytes * 2);
+        wblob.read(m.off, e.data(), bytes);
+        for (size_t d = 0; d < bytes; ++d) {
+            const size_t tile = d / 256, in = d % 256;
+            size_t row = (tile / KT) * 16 + in / 16;
+            if (kind != packed_kind.end())
+                row = (tile / (2 * KT)) * 32 + (kind->second == 2 ? (d % 512) / 256 * 16 + in / 16
+                                                                    : (d % 16) / 8 * 16 + (d % 512) / 16 % 16);
+            const float s = m.scale[row];
+            const float q = std::clamp(std::nearbyint(tin::e4m3_to_f(e[d]) / s), -127.0f, 127.0f) * s;
+            const uint16_t h = tin::f_to_f16(q);
+            std::memcpy(t.data() + d * 2, &h, 2);
+        }
+        g_i8_twin.emplace_back(size_t(m.off) * 2, std::move(t));
     }
 
     //
@@ -5345,7 +5478,13 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
             ctx.upload_with(arenas->wgt_twin, 0, VkDeviceSize(wblob.size()) * 2, [&](VkDeviceSize off, VkDeviceSize n, uint8_t* dst) {
                 wblob.read(size_t(off / 2), codes.data(), size_t(n / 2));
                 e4m3_to_f16(codes.data(), reinterpret_cast<uint16_t*>(dst), size_t(n / 2));
+                for (const auto& [at, t] : g_i8_twin)   // RDNA2 INT8: the int8 matrices over their FP16 ranges
+                    if (at < off + n && at + t.size() > off) {
+                        const size_t a = std::max<size_t>(at, size_t(off)), b = std::min<size_t>(at + t.size(), size_t(off + n));
+                        std::memcpy(dst + (a - off), t.data() + (a - at), b - a);
+                    }
             });
+            g_i8_twin.clear();
         }
         // The extent tail is kept for the resize path (GraphCore::tail); the rest of the host copy is not needed
         // again: free it before the runtime allocates.

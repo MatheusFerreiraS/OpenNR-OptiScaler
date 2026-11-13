@@ -236,7 +236,10 @@ std::atomic<bool> g_buildOomInjected { false }; // MZ_TEST_BUILD_OOM_ONCE: once 
 // rdna2-check.txt. MZ_RDNA3_CHECK=0 (MZ_RDNA2_CHECK=0) skips them, MZ_RDNA3_CHECK=pipelines the RDNA3 layout probes
 // only (diagnostics: MZ_FORCE_RDNA3 on an RX 9000 then builds and runs). The RDNA2 network has no layout probes: its
 // fragments are arrays in a layout of its own, not the hardware's.
-const wchar_t* Fp16Tag(nr::Arch arch) { return arch == nr::Arch::rdna2 ? L"rdna2" : L"rdna3"; }
+const wchar_t* Fp16Tag(nr::Arch arch)
+{
+    return arch == nr::Arch::rdna2 ? (nr::rdna2_int8 ? L"rdna2-int8" : L"rdna2") : L"rdna3";
+}
 std::wstring Fp16CheckFile(nr::Arch arch) { return DataDirectory() + L"\\dlssnr-amd\\" + Fp16Tag(arch) + L"-check.txt"; }
 
 bool Fp16CheckSkips(nr::Arch arch, bool layout)
@@ -1139,9 +1142,49 @@ struct Vulkan
         else if (arch == nr::Arch::rdna2)
         {
             chain = &f11;
-            nr::logf("[mochizuki] the RDNA2 network, its matrices emulated in ALU (FP16 products, FP32 sums): %s",
-                     fp16Why.c_str());
-            Rdna2Aco();
+            // The INT8 network (shaders-rdna2-int8, v_dot4_i32_i8): asked for, installed and offered.
+            nr::rdna2_int8 = false;
+            if (env1("MZ_RDNA2_INT8"))
+            {
+                VkPhysicalDeviceShaderIntegerDotProductProperties dp {
+                    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_PROPERTIES
+                };
+                VkPhysicalDeviceProperties2 p2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &dp };
+                vkGetPhysicalDeviceProperties2(physical, &p2);
+                VkPhysicalDeviceVulkan13Features has13 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+                VkPhysicalDeviceFeatures2 has { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &has13 };
+                vkGetPhysicalDeviceFeatures2(physical, &has);
+                const bool folder = std::filesystem::is_directory(DataDirectory() + L"\\dlssnr-amd\\shaders-rdna2-int8");
+                if (!folder)
+                    nr::logf("[mochizuki] MZ_RDNA2_INT8: dlssnr-amd\\shaders-rdna2-int8 is not installed; the FP16 network");
+                else if (!has13.shaderIntegerDotProduct)
+                    nr::logf("[mochizuki] MZ_RDNA2_INT8: the driver offers no shaderIntegerDotProduct; the FP16 network");
+                else
+                {
+                    // A pipeline check this driver failed on the INT8 shaders (rdna2-int8-check.txt): the FP16 ones.
+                    nr::rdna2_int8 = true;
+                    std::string key = mzr3::Key(deviceId, driverVersion), why;
+                    Fp16PipelineFiles(arch, key);
+                    if (!Fp16CheckSkips(arch, false) && mzr3::Cached(Fp16CheckFile(arch), key, "pipelines", why) &&
+                        !why.empty())
+                    {
+                        nr::rdna2_int8 = false;
+                        nr::logf("[mochizuki] MZ_RDNA2_INT8: the INT8 network failed its pipeline check on this driver "
+                                 "(%s); the FP16 network", why.c_str());
+                    }
+                    else
+                    {
+                        f13.shaderIntegerDotProduct = VK_TRUE;
+                        nr::logf("[mochizuki] MZ_RDNA2_INT8: the INT8 network (v_dot4), 4x8-bit packed signed dot "
+                                 "product %s",
+                                 dp.integerDotProduct4x8BitPackedSignedAccelerated ? "accelerated" : "NOT accelerated");
+                    }
+                }
+            }
+            nr::logf("[mochizuki] the RDNA2 network, its matrices emulated in ALU (%s products, FP32 sums): %s",
+                     nr::rdna2_int8 ? "INT8 and FP16" : "FP16", fp16Why.c_str());
+            if (!nr::rdna2_int8)
+                Rdna2Aco();
         }
         else
         {
@@ -3870,6 +3913,14 @@ struct Session
         }
         if (why.empty())
             return;
+        // The RX 6000's INT8 shaders failed: its FP16 ones, checked in turn (the device takes both).
+        if (vk.arch == nr::Arch::rdna2 && nr::rdna2_int8)
+        {
+            nr::logf("[mochizuki] the INT8 network failed its pipeline check (%s); the FP16 network", why.c_str());
+            nr::rdna2_int8 = false;
+            Fp16Pipelines();
+            return;
+        }
         const std::string off = std::string(tag) + " network off: " + why;
         nr::logf("[mochizuki] %s", off.c_str());
         {
@@ -5558,14 +5609,17 @@ static_assert(offsetof(MochizukiNrInfo, reserved0) == 44 && offsetof(MochizukiNr
               offsetof(MochizukiNrInfo, preprocess_ev) == 324 && offsetof(MochizukiNrInfo, white_point) == 328 &&
               offsetof(MochizukiNrInfo, build_stage) == 332 && offsetof(MochizukiNrInfo, build_total) == 340 &&
               offsetof(MochizukiNrInfo, renodx_effective) == 344 && offsetof(MochizukiNrInfo, network) == 348 &&
-              sizeof(MochizukiNrInfo) == 360);
+              offsetof(MochizukiNrInfo, rdna2_int8) == 360 && sizeof(MochizukiNrInfo) == 368);
 
 // The bytes GetInfo writes into a struct of `size` bytes: the whole fields that fit, never part of one, and never
 // Info's tail padding. A host that appends a field there (sizeof does not grow) then sees struct_size end before it.
 size_t InfoBytes(size_t size)
 {
     constexpr size_t ends[] = {
-        offsetof(MochizukiNrInfo, network) + sizeof(MochizukiNrInfo::network), // the last field
+        offsetof(MochizukiNrInfo, rdna2_int8) + sizeof(MochizukiNrInfo::rdna2_int8), // the last field
+        offsetof(MochizukiNrInfo, rdna2_int8),
+        offsetof(MochizukiNrInfo, optimized),
+        offsetof(MochizukiNrInfo, experimental),
         offsetof(MochizukiNrInfo, network),
         offsetof(MochizukiNrInfo, renodx_effective),
         offsetof(MochizukiNrInfo, build_stage),
@@ -5638,6 +5692,7 @@ int32_t GetInfo(void* context, MochizukiNrInfo* out)
                                                         : 0u;
         info.experimental = s->infoExperimental;
         info.optimized = s->infoOptimized;
+        info.rdna2_int8 = s->vk.arch == nr::Arch::rdna2 && nr::rdna2_int8;
         // The core's own build progress (nr_log.hpp: builds run one at a time), while this session builds.
         if (info.building)
         {

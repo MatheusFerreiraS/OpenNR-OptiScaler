@@ -642,6 +642,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             NrFoveationFalloff.set_from_config(readFloat("DlssNr", "FoveationFalloff"));
             NrFoveationEdge.set_from_config(readFloat("DlssNr", "FoveationEdge"));
             MochizukiAco.set_from_config(readBool("DlssNr", "MochizukiAco"));
+            MochizukiRdna2Int8.set_from_config(readBool("DlssNr", "MochizukiRdna2Int8"));
             MochizukiInt4.set_from_config(readBool("DlssNr", "MochizukiInt4"));
             MochizukiOptimizedLayers.set_from_config(readString("DlssNr", "MochizukiOptimizedLayers", true)
                                                          .and_then(
@@ -1965,6 +1966,8 @@ bool Config::SaveIni()
                      GetFloatValue(Instance()->NrFoveationFalloff.value_for_config()).c_str());
         ini.SetValue("DlssNr", "FoveationEdge", GetFloatValue(Instance()->NrFoveationEdge.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiAco", GetBoolValue(Instance()->MochizukiAco.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiRdna2Int8",
+                     GetBoolValue(Instance()->MochizukiRdna2Int8.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiInt4", GetBoolValue(Instance()->MochizukiInt4.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiOptimizedLayers",
                      GetIntValue(Instance()->MochizukiOptimizedLayers.value_for_config()).c_str());

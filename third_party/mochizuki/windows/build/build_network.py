@@ -82,6 +82,8 @@ def main():
                     help='keep the pair quantisation loops (windows/build/quad_quant_glsl.py off)')
     ap.add_argument('--tree', choices=['windows', 'linux'], default='windows',
                     help='linux: the network of linux/shaders/<arch> (RDNA3), preprocessed the same way')
+    ap.add_argument('--int8', action='store_true',
+                    help='the INT8 network of pipelines.json "int8" (RDNA2): its defines per pipeline, its marker')
     a = ap.parse_args()
     global QUAD, SHADERS
     QUAD = not a.no_quad
@@ -93,6 +95,11 @@ def main():
     out.mkdir(parents=True)
 
     pipelines = table['pipelines']
+    if a.int8:
+        i8 = table['int8']
+        for name, extra in i8['add'].items():
+            pipelines[name]['defines'] = pipelines[name]['defines'] + extra
+        table['markers']['shader-constants.txt'].append(f"int8 {i8['marker']}")
     # post_no_out1 in the manifest tells the host that the post kernels never write their second output (it makes
     # that image 1x1): it has to say what they are built with.
     consts = dict(r.split() for r in table['markers']['shader-constants.txt'][1:])

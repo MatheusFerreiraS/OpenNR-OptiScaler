@@ -73,7 +73,7 @@ int main(int argc, char** argv)
     std::printf("image %ux%u\n", w, h);
 
     HMODULE dll = LoadLibraryW(W(argv[1]).c_str());
-    Require(dll, "load runtime");
+    if (!dll) { std::fprintf(stderr, "FAIL: load runtime: error %lu\n", GetLastError()); return 1; }   // 4551: App Control
     auto getApi = reinterpret_cast<int32_t (*)(uint32_t, LmxxfNrApi*)>(GetProcAddress(dll, "LmxxfNrGetApi"));
     LmxxfNrApi api {};
     api.struct_size = sizeof(api);

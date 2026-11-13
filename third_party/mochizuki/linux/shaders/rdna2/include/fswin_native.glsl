@@ -26,6 +26,18 @@
 #extension GL_KHR_shader_subgroup_shuffle : require
 #extension GL_KHR_shader_subgroup_ballot : require
 
+// NV_I8 (the RDNA2 INT8 network, pipelines.json "int8"): which of the body's products run in int8 (i8.glsl), a bit
+// each: 1 E, 2 Ct, 4 the QKV projection, 8 Wo, 16 Q . K, 32 Wmid (C >= 64). P . V stays FP16. The weights of the int8
+// products are int8 in the twin (the host's role mask, nr_graph.cpp kI8*, must name the same matrices).
+#ifndef NV_I8
+#define NV_I8 0
+#endif
+#define NV_I8E ((NV_I8 & 1) != 0)
+#define NV_I8CT ((NV_I8 & 2) != 0)
+#define NV_I8QKV ((NV_I8 & 4) != 0)
+#define NV_I8WO ((NV_I8 & 8) != 0)
+#define NV_I8QK ((NV_I8 & 16) != 0)
+#define NV_I8MID ((NV_I8 & 32) != 0)
 #if defined(NR_FUSED_IMAGE_INPUT)
 #define NV_PRE 1                 // the pre block: x lifted from the image features, a pooled copy of the output
 #else
@@ -95,6 +107,24 @@ layout(set = 0, binding = 3, std430) readonly buffer NvF32x4 { vec4 nv_f4[]; };
 layout(set = 0, binding = 4, std430) readonly buffer NvWgtF16x8 { uvec4 nv_w16[]; };   // the FP16 lift matrix
 #endif
 
+#if NV_I8
+#include "i8.glsl"
+layout(set = 0, binding = 2, std430) readonly buffer NvWgtF { float nv_wf[]; };
+#endif
+#if NV_I8QK
+// A token's query as int8 and its scale.
+#define NV_QDECL const uint q[8], float qs
+#define NV_QPASS q, qs
+#else
+#define NV_QDECL const uint q[16]
+#define NV_QPASS q
+#endif
+#if NV_I8
+#define NV_CDECL out float cq[32]        // the context as FP32, rounded by the caller
+#else
+#define NV_CDECL out uint cq[16]
+#endif
+
 f16vec2 nv_h(uint u) { return unpackFloat2x16(u); }
 uint nv_p(float16_t a, float16_t b) { return packFloat2x16(f16vec2(a, b)); }
 
@@ -150,8 +180,17 @@ float16_t nv_norm(const float a[32]) {
 // Logits of query q against the 16 keys 16j .. 16j+15 of head h (K in nv_y4), and the probabilities before
 // normalisation. The exponent trick (nr_swin_exp_baked) works on a pair, and with NR_EXP_NOHI the second value
 // depends on the first, so the pairs are the emulated body's: keys (4c + hi, 4c + 2 + hi) of the block.
-void nv_probs16(uint h, uint T, uint j, const uint q[16], out f16vec2 pr[8]) {
+void nv_probs16(uint h, uint T, uint j, NV_QDECL, out f16vec2 pr[8]) {
     float lg[16];
+#if NV_I8QK
+    // K int8 at nv_y4[256h + 2T + r], its scales as floats from nv_y4[256h + 128] on (nv_store_kv)
+    for (int i = 0; i < 16; ++i) {
+        const uint key = 16u * j + uint(i);
+        const int d = i8_dot16(i8_dot16(0, nv_y4[256u * h + 2u * key], uvec4(q[0], q[1], q[2], q[3])),
+                               nv_y4[256u * h + 2u * key + 1u], uvec4(q[4], q[5], q[6], q[7]));
+        lg[i] = float(d) * (qs * uintBitsToFloat(nv_y4[256u * h + 128u + (key >> 2u)][key & 3u]));
+    }
+#else
     for (int i = 0; i < 16; ++i) {
         const uint key = 16u * j + uint(i);
         float s = 0.0;
@@ -164,6 +203,7 @@ void nv_probs16(uint h, uint T, uint j, const uint q[16], out f16vec2 pr[8]) {
         }
         lg[i] = s;
     }
+#endif
     const uint bb = (pc.b_off + h * 4096u) / 4u + T * 16u + 4u * j;
     float bs[16];
     for (int r = 0; r < 4; ++r) { const vec4 b4 = nv_f4[bb + uint(r)]; for (int e = 0; e < 4; ++e) bs[4 * r + e] = b4[e]; }
@@ -187,7 +227,7 @@ void nv_probs16(uint h, uint T, uint j, const uint q[16], out f16vec2 pr[8]) {
 #ifndef NV_PCROLL
 #define NV_PCROLL 1
 #endif
-void nv_attn(uint h, uint T, const uint q[16], out uint cq[16]) {
+void nv_attn(uint h, uint T, NV_QDECL, NV_CDECL) {
     const int opaque = int(gl_WorkGroupID.z);
     // pass 1: the probability sum in the emulated body's order: pair (4c + hi, 4c + 2 + hi) of block j into
     // partial [hi][c], j outer; then ((p0 + p1) + p2) + p3 a half, the halves added, then .x + .y, all FP16.
@@ -200,8 +240,8 @@ void nv_attn(uint h, uint T, const uint q[16], out uint cq[16]) {
     for (int i = 0; i < 32; ++i) prc[i] = f16vec2(0.0hf);
     for (int j = 0; j < 2 + opaque; j = j + 1) {
         f16vec2 pa[8], pb[8];
-        nv_probs16(h, T, uint(2 * j), q, pa);
-        nv_probs16(h, T, uint(2 * j + 1), q, pb);
+        nv_probs16(h, T, uint(2 * j), NV_QPASS, pa);
+        nv_probs16(h, T, uint(2 * j + 1), NV_QPASS, pb);
         for (int c = 0; c < 4; ++c) for (int hi = 0; hi < 2; ++hi) part[hi][c] = part[hi][c] + pa[2 * c + hi];
         for (int c = 0; c < 4; ++c) for (int hi = 0; hi < 2; ++hi) part[hi][c] = part[hi][c] + pb[2 * c + hi];
         for (int i = 0; i < 16; ++i) prc[i] = prc[i + 16];
@@ -217,7 +257,7 @@ void nv_attn(uint h, uint T, const uint q[16], out uint cq[16]) {
     for (int j = 0; j < 4 + opaque; j = j + 1) {
 #endif
         f16vec2 pr[8];
-        nv_probs16(h, T, uint(j), q, pr);
+        nv_probs16(h, T, uint(j), NV_QPASS, pr);
 #if NV_PCACHE && NV_PCROLL == 0
         for (int i = 0; i < 8; ++i) prc[8 * j + i] = pr[i];
 #elif NV_PCACHE
@@ -240,7 +280,7 @@ void nv_attn(uint h, uint T, const uint q[16], out uint cq[16]) {
 #if NV_PCACHE
         for (int i = 0; i < 8; ++i) pr[i] = j == 0 ? prc[i] : j == 1 ? prc[8 + i] : j == 2 ? prc[16 + i] : prc[24 + i];
 #else
-        nv_probs16(h, T, uint(j), q, pr);
+        nv_probs16(h, T, uint(j), NV_QPASS, pr);
 #endif
         float16_t pk[16];
         for (int c = 0; c < 4; ++c)
@@ -262,13 +302,24 @@ void nv_attn(uint h, uint T, const uint q[16], out uint cq[16]) {
             }
         }
     }
+#if NV_I8
+    cq = ctx;
+#else
     for (int p = 0; p < 16; ++p) cq[p] = nv_p(nv_q16(ctx[2 * p]), nv_q16(ctx[2 * p + 1]));
+#endif
 }
 
 // K and V of head h for token T into LDS (layout above). k, v: the token's 16 quantised pairs. V goes in key
 // pairs, so lanes T and T ^ 1 (one wave) exchange theirs: the even token writes channels 0..15, the odd 16..31.
+#if NV_I8QK
+void nv_store_kv(uint h, uint T, const uint k[8], float ks, const uint v[16]) {
+    nv_y4[256u * h + 2u * T] = uvec4(k[0], k[1], k[2], k[3]);
+    nv_y4[256u * h + 2u * T + 1u] = uvec4(k[4], k[5], k[6], k[7]);
+    nv_y4[256u * h + 128u + (T >> 2u)][T & 3u] = floatBitsToUint(ks);
+#else
 void nv_store_kv(uint h, uint T, const uint k[16], const uint v[16]) {
     for (int q = 0; q < 4; ++q) nv_y4[256u * h + 4u * T + uint(q)] = uvec4(k[4 * q], k[4 * q + 1], k[4 * q + 2], k[4 * q + 3]);
+#endif
     const bool odd = (T & 1u) != 0u;
     uint dw[16];
     for (int p = 0; p < 16; ++p) {
@@ -287,6 +338,16 @@ void nv_qk(const float a[32], int part, float16_t hscale, out uint o[16]) {
     const float f = part == 0 ? float(n) * float(hscale) : float(n);
     for (int p = 0; p < 16; ++p) o[p] = packFloat2x16(nr_quant_pair32(vec2(a[2 * p], a[2 * p + 1]) * f));
 }
+#if NV_I8
+// The same scaled values as int8 with the token's scale (returned).
+float nv_qk8(const float a[32], int part, float16_t hscale, out uint o[8]) {
+    const float16_t n = nv_norm(a);
+    const float f = part == 0 ? float(n) * float(hscale) : float(n);
+    float v[32];
+    for (int c = 0; c < 32; ++c) v[c] = a[c] * f;
+    return i8_vec32(v, o);
+}
+#endif
 
 #if NV_PRE || NV_DS
 // The 2x2 mean of 8 FP32 values across lanes l, l^1, l^4, l^5 (one 2x2 group of a tile's 4x4 pixels), as the emulated
@@ -377,6 +438,401 @@ void nv_ds_project(uint lane, uint w, uint rows, int nb) {
         } \
     } }
 
+#if NV_I8
+// The int8 body. Activations, one scale a token over its C channels (every wave reads or shares the token's largest
+// value, nv_tokmax), go into nv_y4 as [k fragment][token] uvec4 of 16 int8: x and then y in the lower half (NV_X8),
+// m in the upper half (NV_M8), and the context of head h over its K (NV_C8). x and y stay in nv_x4 in FP16 for the
+// residuals, as in the FP16 body. acc: int sums, rows row0..row0+7 for tokens lane, lane + 32.
+#define NV_X8(kf, T) (uint(kf) * 64u + (T))
+#define NV_M8(kf, T) (uint(NV_CF * 64) + uint(kf) * 64u + (T))
+#define NV_C8(kf, T) (256u * (uint(kf) >> 1u) + (uint(kf) & 1u) * 64u + (T))
+#define NV_GEMM8I(acc, XI, woff, KF, row0) { \
+    for (int kf = 0; kf < (KF) + nv_opaque; kf = kf + 1) { \
+        const uvec4 xa = nv_y4[XI(kf, lane)], xb = nv_y4[XI(kf, lane + 32u)]; \
+        for (int j = 0; j < 8; ++j) { \
+            const uvec4 wv = nv_w4[I8_WROW(woff, KF, (row0) + uint(j), kf)]; \
+            acc[j] = i8_dot16(acc[j], wv, xa); \
+            acc[8 + j] = i8_dot16(acc[8 + j], wv, xb); \
+        } \
+    } }
+// The scale exponents of tokens lane and lane + 32 from each wave's largest |value| of its own channels (a0, a1),
+// exchanged through nv_y4[256h + 144 ..+16] (free in every head's block between the K scales and 160 whenever this
+// runs; the barriers around it keep the LDS that was live before and the LDS written after out of it).
+void nv_tokmax(uint w, uint lane, float a0, float a1, out int s0, out int s1) {
+    barrier();
+    nv_y4[256u * w + 144u + (lane >> 2u)][lane & 3u] = floatBitsToUint(a0);
+    nv_y4[256u * w + 152u + (lane >> 2u)][lane & 3u] = floatBitsToUint(a1);
+    barrier();
+    float m0 = 0.0, m1 = 0.0;
+    for (int h = 0; h < NR_HEADS; ++h) {
+        m0 = max(m0, uintBitsToFloat(nv_y4[256u * uint(h) + 144u + (lane >> 2u)][lane & 3u]));
+        m1 = max(m1, uintBitsToFloat(nv_y4[256u * uint(h) + 152u + (lane >> 2u)][lane & 3u]));
+    }
+    barrier();
+    s0 = i8_exp(m0);
+    s1 = i8_exp(m1);
+}
+// 16 values (from v[base]) as int8 with scale 2^s.
+uvec4 nv_q16x(const float v[32], int base, int s) {
+    const uint fb = i8_floor(s);
+    const float inv = i8_pow2(-s);
+    uvec4 r;
+    for (int p = 0; p < 4; ++p)
+        r[p] = i8_pack(i8_q(v[base + 4 * p], fb, inv), i8_q(v[base + 4 * p + 1], fb, inv),
+                       i8_q(v[base + 4 * p + 2], fb, inv), i8_q(v[base + 4 * p + 3], fb, inv));
+    return r;
+}
+float nv_amax(const float v[32]) { float a = 0.0; for (int i = 0; i < 32; ++i) a = max(a, abs(v[i])); return a; }
+
+void main() {
+    const int nv_opaque = int(gl_WorkGroupID.z);
+    const uint tid = gl_LocalInvocationID.x, lane = gl_SubgroupInvocationID, w = subgroupBroadcastFirst(gl_SubgroupID);
+#if NV_UPS
+    // ---- stage 0, fused upsample: the level below (2C channels at half resolution, the 4x4 pixels under this
+    //      window) projected to C channels in FP16, then x = q(g * skip + up) at each token's half-resolution
+    //      pixel (the emulated body's NR_WIDE_UPS_PROJECT and NR_UPS_BLEND_PK=2 prologue) ----------------------
+    {
+        // the 16 source pixels into nv_y4[(2kf + hx) * 16 + t], kf < 2C/16, clamped to the level below
+        for (uint i = tid; i < uint(2 * NV_CF * 32); i += uint(NR_THREADS)) {
+            const uint hx = i & 1u, t = (i >> 1u) & 15u, kf = i >> 5u;
+            const uint px = uint(clamp(4 * int(gl_WorkGroupID.x) + 2 * pc.shift + int(t % 4u), 0, int(pc.blend_itiles_x * 4u) - 1));
+            const uint py = uint(clamp(4 * int(gl_WorkGroupID.y) + 2 * pc.shift_y + int(t / 4u), 0, int(pc.blend_itiles_y * 4u) - 1));
+            const uint tile = (py / 4u) * pc.blend_itiles_x + px / 4u, islot = (py % 4u) * 4u + px % 4u;
+            nv_y4[(2u * kf + hx) * 16u + t] =
+                nv_a4[(pc.blend_p_off + (tile * uint(2 * NV_CF) + kf) * 256u + islot * 16u + hx * 8u) / 8u];
+        }
+        barrier();
+        // the projection, channels 32w.. of this wave, one lane a pixel (lanes 16-31 repeat 0-15), into
+        // nv_y4[NV_UPB + (c / 8) * 16 + t] in FP16
+        const uint NV_UPB = uint(2 * NV_CF * 32), t = lane & 15u;
+        for (int b = 0; b < 4; ++b) {
+            float acc[8];
+            for (int j = 0; j < 8; ++j) acc[j] = 0.0;
+            for (int kf = 0; kf < 2 * NV_CF + nv_opaque; kf = kf + 1) {
+                const uvec4 x0 = nv_y4[uint(kf) * 32u + t], x1 = nv_y4[uint(kf) * 32u + 16u + t];
+                const uint wb = NV_WROW(pc.ups_weight_off, 2 * NV_CF, 32u * w + 8u * uint(b), kf);
+                for (int j = 0; j < 8; ++j) acc[j] = nv_dot8(acc[j], nv_w4[wb + 2u * uint(j)], nv_w4[wb + 2u * uint(j) + 1u], x0, x1);
+            }
+            if (lane < 16u)
+                nv_y4[NV_UPB + (4u * w + uint(b)) * 16u + t] = uvec4(nv_p(float16_t(acc[0]), float16_t(acc[1])),
+                    nv_p(float16_t(acc[2]), float16_t(acc[3])), nv_p(float16_t(acc[4]), float16_t(acc[5])),
+                    nv_p(float16_t(acc[6]), float16_t(acc[7])));
+        }
+        barrier();
+        for (uint i = tid; i < uint(NV_CF * 128); i += uint(NR_THREADS)) {
+            const uint hx = i & 1u, T = (i >> 1u) & 63u, kf = i >> 7u, q = T >> 4u, slot = T & 15u;
+            const uint dx = slot % 4u, dy = slot / 4u;
+            const uint tx = uint(clamp(2 * int(gl_WorkGroupID.x) + pc.shift + int(q & 1u), 0, int(pc.tiles_x) - 1));
+            const uint ty = uint(clamp(2 * int(gl_WorkGroupID.y) + pc.shift_y + int(q >> 1u), 0, int(pc.tiles_y) - 1));
+            const uint local = ((q >> 1u) * 2u + dy / 2u) * 4u + (q & 1u) * 2u + dx / 2u;
+            const uint stile = ty * (pc.blend_stiles_x != 0u ? pc.blend_stiles_x : pc.blend_tiles_x) + tx;
+            const uvec4 pv = nv_y4[NV_UPB + (2u * kf + hx) * 16u + local];
+            const uvec4 sv = nv_a4[(pc.blend_s_off + (stile * uint(NV_CF) + kf) * 256u + slot * 16u + hx * 8u) / 8u];
+            uvec4 v;
+            for (int p = 0; p < 4; ++p) {
+                const uint ch = kf * 16u + hx * 8u + uint(2 * p);
+                const f16vec2 g2 = unpackFloat2x16(wgt_u32[(pc.blend_g_off + ch) >> 1u]);   // ch even, gains 16-byte aligned
+                v[p] = packFloat2x16(nr_quant_pair(fma(nv_h(sv[p]), g2, nv_h(pv[p]))));
+            }
+            if (nr_tile_oob(q)) v = uvec4(0u);
+            nv_x4[kf * 128u + hx * 64u + T] = v;
+        }
+    }
+    barrier();
+#else
+    // ---- stage 0: the window's x into nv_x4; tiles outside the image are zero -------------------------
+    for (uint i = tid; i < uint(NV_CF * 128); i += uint(NR_THREADS)) {
+        const uint hx = i & 1u, T = (i >> 1u) & 63u, kf = i >> 7u, m = T >> 4u;
+        uvec4 v = uvec4(0u);
+        if (!nr_tile_oob(m)) v = nv_a4[(pc.x_off + nr_tile_base(m) + kf * 256u + (T & 15u) * 16u + hx * 8u) / 8u];
+        nv_x4[kf * 128u + hx * 64u + T] = v;
+    }
+    barrier();
+#endif
+
+    // ---- x as int8 (NV_I8E): every wave reads its two tokens' whole x for the scale, then writes its own 32 channels
+    int xs0 = 0, xs1 = 0;
+    if (NV_I8E) {
+        float a0 = 0.0, a1 = 0.0;
+        for (int kf = 0; kf < NV_CF; ++kf)
+            for (int hx = 0; hx < 2; ++hx) {
+                const uvec4 u0 = nv_x4[uint(kf) * 128u + uint(hx) * 64u + lane], u1 = nv_x4[uint(kf) * 128u + uint(hx) * 64u + lane + 32u];
+                for (int i = 0; i < 4; ++i) {
+                    const vec2 f0 = vec2(nv_h(u0[i])), f1 = vec2(nv_h(u1[i]));
+                    a0 = max(a0, max(abs(f0.x), abs(f0.y))); a1 = max(a1, max(abs(f1.x), abs(f1.y)));
+                }
+            }
+        xs0 = i8_exp(a0); xs1 = i8_exp(a1);
+        for (int s = 0; s < 2; ++s) {
+            float v[32];
+            for (int q = 0; q < 4; ++q) {
+                const uvec4 u = nv_x4[(2u * w + uint(q >> 1)) * 128u + uint(q & 1) * 64u + lane + 32u * uint(s)];
+                for (int i = 0; i < 4; ++i) { v[8 * q + 2 * i] = float(nv_h(u[i]).x); v[8 * q + 2 * i + 1] = float(nv_h(u[i]).y); }
+            }
+            for (int r = 0; r < 2; ++r) nv_y4[NV_X8(2u * w + uint(r), lane + 32u * uint(s))] = nv_q16x(v, 16 * r, s == 0 ? xs0 : xs1);
+        }
+        barrier();
+    }
+
+    // ---- stage 1: e = act(E . x) for hidden group w (128 rows), 32 rows at a time into the group's middle
+    //      projection m = Wmid . e (32 rows, channels 32w..32w+31) -----------------------------------------
+    float mid[64];                                    // [32 s + o]
+    for (int o = 0; o < 64; ++o) mid[o] = 0.0;
+    for (int g = 0; g < 4 + nv_opaque; g = g + 1) {   // rolled
+        float e[2][32];
+        for (int hb = 0; hb < 4; ++hb) {
+            const uint row0 = w * 128u + uint(g) * 32u + uint(hb) * 8u;
+            if (NV_I8E) {
+                int acc[16];
+                for (int j = 0; j < 16; ++j) acc[j] = 0;
+                NV_GEMM8I(acc, NV_X8, pc.e_off, NV_CF, row0)
+                for (int j = 0; j < 8; ++j) {
+                    const float ws = I8_WSCALE(nv_wf, pc.e_off, 4 * NR_C, NR_C, row0 + uint(j));
+                    e[0][8 * hb + j] = float(acc[j]) * (ws * i8_pow2(xs0));
+                    e[1][8 * hb + j] = float(acc[8 + j]) * (ws * i8_pow2(xs1));
+                }
+            } else {
+                float acc[16];
+                for (int j = 0; j < 16; ++j) acc[j] = 0.0;
+                NV_GEMM8(acc, nv_x4, pc.e_off, NV_CF, row0)
+                for (int j = 0; j < 8; ++j) { e[0][8 * hb + j] = acc[j]; e[1][8 * hb + j] = acc[8 + j]; }
+            }
+        }
+        for (int s = 0; s < 2; ++s)
+            for (int i = 0; i < 32; ++i) e[s][i] = (i & 1) != 0 ? nr_act_horner_b(e[s][i]) : nr_act_horner(e[s][i]);
+        if (NV_I8MID) {
+            uvec4 eq[2][2];
+            float es[2];
+            for (int s = 0; s < 2; ++s) {
+                const int se = i8_exp(nv_amax(e[s]));
+                eq[s][0] = nv_q16x(e[s], 0, se); eq[s][1] = nv_q16x(e[s], 16, se);
+                es[s] = i8_pow2(se);
+            }
+            for (int o = 0; o < 32; ++o) {
+                const uvec4 w0 = nv_w4[I8_WROW(pc.mid_off, 8, 32u * w + uint(o), 2 * g)];
+                const uvec4 w1 = nv_w4[I8_WROW(pc.mid_off, 8, 32u * w + uint(o), 2 * g + 1)];
+                for (int s = 0; s < 2; ++s)
+                    mid[32 * s + o] = fma(float(i8_dot16(i8_dot16(0, w0, eq[s][0]), w1, eq[s][1])), es[s], mid[32 * s + o]);
+            }
+        } else {
+            for (int hb = 0; hb < 2; ++hb) {
+                uvec4 ep[4];                              // [2 s + half]
+                for (int s = 0; s < 2; ++s)
+                    for (int p = 0; p < 8; ++p)
+                        ep[2 * s + (p >> 2)][p & 3] = packFloat2x16(nr_quant_pair32(vec2(e[s][16 * hb + 2 * p], e[s][16 * hb + 2 * p + 1])));
+                // Wmid: tile row (32w + o) / 16, k fragment 2g + hb; odd rows k-pair swapped (`kswap`).
+                for (int o = 0; o < 32; ++o) {
+                    const uint wb = NV_WROW(pc.mid_off, 8, 32u * w + uint(o), 2 * g + hb);
+                    const uvec4 w0 = nv_w4[wb], w1 = nv_w4[wb + 1u];
+                    for (int s = 0; s < 2; ++s)
+                        mid[32 * s + o] = (o & 1) != 0 ? nv_dot8s(mid[32 * s + o], w0, w1, ep[2 * s], ep[2 * s + 1])
+                                                       : nv_dot8(mid[32 * s + o], w0, w1, ep[2 * s], ep[2 * s + 1]);
+                }
+            }
+        }
+    }
+    if (NV_I8MID)
+        for (int o = 0; o < 32; ++o) {
+            const float ws = I8_WSCALE(nv_wf, pc.mid_off, NR_C, 128, 32u * w + uint(o));
+            mid[o] *= ws; mid[32 + o] *= ws;
+        }
+    // ---- stage 2: y = q(Ct . m + rs * x), channels 32w..32w+31, in place over x; m int8 (NV_M8) for an int8 Ct,
+    //      else FP16 on the e4m3 grid as the FP16 body stores it ----------------------------------------------
+    float yv[2][32];
+    if (NV_I8CT) {
+        float m0[32], m1[32];
+        for (int o = 0; o < 32; ++o) { m0[o] = mid[o]; m1[o] = mid[32 + o]; }
+        int ms0, ms1;
+        nv_tokmax(w, lane, nv_amax(m0), nv_amax(m1), ms0, ms1);
+        for (int r = 0; r < 2; ++r) {
+            nv_y4[NV_M8(2u * w + uint(r), lane)] = nv_q16x(m0, 16 * r, ms0);
+            nv_y4[NV_M8(2u * w + uint(r), lane + 32u)] = nv_q16x(m1, 16 * r, ms1);
+        }
+        barrier();
+        for (int b = 0; b < 4; ++b) {
+            const uint xi = (2u * w + uint(b >> 1)) * 128u + uint(b & 1) * 64u + lane, ch = 32u * w + 8u * uint(b);
+            int acc[16];
+            for (int j = 0; j < 16; ++j) acc[j] = 0;
+            NV_GEMM8I(acc, NV_M8, pc.ct_off, NV_CF, ch)
+            for (int s = 0; s < 2; ++s) {
+                const uvec4 x = nv_x4[xi + 32u * uint(s)];
+                const float ms = i8_pow2(s == 0 ? ms0 : ms1);
+                for (int j = 0; j < 8; ++j)
+                    yv[s][8 * b + j] = fma(float(acc[8 * s + j]), ms * I8_WSCALE(nv_wf, pc.ct_off, NR_C, NR_C, ch + uint(j)),
+                                           float(nv_h(x[j >> 1])[j & 1]) * wgt_f32[pc.rs_off + ch + uint(j)]);
+            }
+        }
+    } else {
+        barrier();                                        // x8 read by every wave before m replaces it
+        for (int s = 0; s < 2; ++s)
+            for (int b = 0; b < 4; ++b) {
+                float t[16];
+                for (int j = 0; j < 8; ++j) t[j] = mid[32 * s + 8 * b + j];
+                nv_y4[(2u * w + uint(b >> 1)) * 128u + uint(b & 1) * 64u + lane + 32u * uint(s)] = nv_pack_q16(t, 0);
+            }
+        barrier();
+        for (int b = 0; b < 4; ++b) {
+            const uint xi = (2u * w + uint(b >> 1)) * 128u + uint(b & 1) * 64u + lane, ch = 32u * w + 8u * uint(b);
+            float acc[16];
+            for (int s = 0; s < 2; ++s) {
+                const uvec4 x = nv_x4[xi + 32u * uint(s)];
+                for (int j = 0; j < 8; ++j)
+                    acc[8 * s + j] = float(nv_h(x[j >> 1])[j & 1]) * wgt_f32[pc.rs_off + ch + uint(j)];
+            }
+            NV_GEMM8(acc, nv_y4, pc.ct_off, NV_CF, ch)
+            for (int j = 0; j < 8; ++j) { yv[0][8 * b + j] = acc[j]; yv[1][8 * b + j] = acc[8 + j]; }
+        }
+    }
+    // y in FP16 over x (each wave its own channels: no other wave reads them), int8 for an int8 QKV
+    for (int s = 0; s < 2; ++s)
+        for (int b = 0; b < 4; ++b) {
+            float t[16];
+            for (int j = 0; j < 8; ++j) t[j] = yv[s][8 * b + j];
+            nv_x4[(2u * w + uint(b >> 1)) * 128u + uint(b & 1) * 64u + lane + 32u * uint(s)] = nv_pack_q16(t, 0);
+        }
+    if (NV_I8QKV) {
+        int ys0, ys1;
+        nv_tokmax(w, lane, nv_amax(yv[0]), nv_amax(yv[1]), ys0, ys1);
+        for (int r = 0; r < 2; ++r) {
+            nv_y4[NV_X8(2u * w + uint(r), lane)] = nv_q16x(yv[0], 16 * r, ys0);
+            nv_y4[NV_X8(2u * w + uint(r), lane + 32u)] = nv_q16x(yv[1], 16 * r, ys1);
+        }
+        xs0 = ys0; xs1 = ys1;                         // from here the token scales of y
+    }
+    barrier();
+
+    // ---- stages 3 to 5: head w. Q, K, V = Wqkv . y; cosine-normalised Q and K, attention -----------------
+    uint yres[32];                                // [16 s + p]: the residual y of channels 32w..
+    float co[2][32];
+    {
+        const float16_t hscale = float16_t(wgt_f32[pc.s_off + w]);
+#if NV_I8QK
+        uint qe[2][8], ke[2][8];
+        float qsc[2], ksc[2];
+#else
+        uint qe[2][16], ke[2][16];
+#endif
+        uint ve[2][16];
+        for (int part = 0; part < 3; ++part) {    // Q, K, V: rows 96w + 32 part ..
+            float a[2][32];
+            for (int b = 0; b < 4; ++b) {
+                const uint row0 = 96u * w + 32u * uint(part) + 8u * uint(b);
+                if (NV_I8QKV) {
+                    int acc[16];
+                    for (int j = 0; j < 16; ++j) acc[j] = 0;
+                    NV_GEMM8I(acc, NV_X8, pc.qkv_off, NV_CF, row0)
+                    for (int j = 0; j < 8; ++j) {
+                        const float ws = I8_WSCALE(nv_wf, pc.qkv_off, 3 * NR_C, NR_C, row0 + uint(j));
+                        a[0][8 * b + j] = float(acc[j]) * (ws * i8_pow2(xs0));
+                        a[1][8 * b + j] = float(acc[8 + j]) * (ws * i8_pow2(xs1));
+                    }
+                } else {
+                    float acc[16];
+                    for (int j = 0; j < 16; ++j) acc[j] = 0.0;
+                    NV_GEMM8(acc, nv_x4, pc.qkv_off, NV_CF, row0)
+                    for (int s = 0; s < 2; ++s)
+                        for (int j = 0; j < 8; ++j) a[s][8 * b + j] = acc[8 * s + j];
+                }
+            }
+            for (int s = 0; s < 2; ++s) {
+#if NV_I8QK
+                if (part == 0) qsc[s] = nv_qk8(a[s], 0, hscale, qe[s]);
+                else if (part == 1) ksc[s] = nv_qk8(a[s], 1, hscale, ke[s]);
+#else
+                if (part == 0) nv_qk(a[s], 0, hscale, qe[s]);
+                else if (part == 1) nv_qk(a[s], 1, hscale, ke[s]);
+#endif
+                else for (int p = 0; p < 16; ++p) ve[s][p] = nv_p(nv_q16(a[s][2 * p]), nv_q16(a[s][2 * p + 1]));
+            }
+        }
+        for (int s = 0; s < 2; ++s)
+            for (int q = 0; q < 4; ++q) {
+                const uvec4 y = nv_x4[(2u * w + uint(q >> 1)) * 128u + uint(q & 1) * 64u + lane + 32u * uint(s)];
+                for (int i = 0; i < 4; ++i) yres[16 * s + 4 * q + i] = y[i];
+            }
+        barrier();                                // every wave is done with y: reuse its LDS per head
+#if NV_I8QK
+        for (int s = 0; s < 2; ++s) nv_store_kv(w, lane + 32u * uint(s), ke[s], ksc[s], ve[s]);
+#else
+        for (int s = 0; s < 2; ++s) nv_store_kv(w, lane + 32u * uint(s), ke[s], ve[s]);
+#endif
+        subgroupMemoryBarrierShared();
+        // the two tokens' attention in one rolled loop (NV_PCACHE's form)
+        for (int s = 0; s < 2 + nv_opaque; s = s + 1) {
+            float r[32];
+#if NV_I8QK
+            uint qs[8];
+            for (int p = 0; p < 8; ++p) qs[p] = s == 0 ? qe[0][p] : qe[1][p];
+            nv_attn(w, lane + 32u * uint(s), qs, s == 0 ? qsc[0] : qsc[1], r);
+#else
+            uint qs[16];
+            for (int p = 0; p < 16; ++p) qs[p] = s == 0 ? qe[0][p] : qe[1][p];
+            nv_attn(w, lane + 32u * uint(s), qs, r);
+#endif
+            for (int p = 0; p < 32; ++p) { co[0][p] = s == 0 ? r[p] : co[0][p]; co[1][p] = s == 0 ? co[1][p] : r[p]; }
+        }
+    }
+    // ---- the context: int8 with the token's scale over every head (NV_I8WO), else FP16 on the e4m3 grid ----
+    int cs0 = 0, cs1 = 0;
+    if (NV_I8WO) {
+        nv_tokmax(w, lane, nv_amax(co[0]), nv_amax(co[1]), cs0, cs1);
+        for (int r = 0; r < 2; ++r) {
+            nv_y4[NV_C8(2u * w + uint(r), lane)] = nv_q16x(co[0], 16 * r, cs0);
+            nv_y4[NV_C8(2u * w + uint(r), lane + 32u)] = nv_q16x(co[1], 16 * r, cs1);
+        }
+    } else {
+        subgroupMemoryBarrierShared();            // every lane's last K read before the context replaces it
+        for (int s = 0; s < 2; ++s)
+            for (int q = 0; q < 4; ++q) {
+                float t[16];
+                for (int j = 0; j < 8; ++j) t[j] = co[s][8 * q + j];
+                nv_y4[256u * w + uint(q >> 1) * 128u + uint(q & 1) * 64u + lane + 32u * uint(s)] = nv_pack_q16(t, 0);
+            }
+    }
+    barrier();
+
+    // ---- stage 6: out = q(Wo . context + ars * y), channels 32w..32w+31, to the arena ------------------
+    for (int b = 0; b < 4; ++b) {
+        const uint ch = 32u * w + 8u * uint(b);
+        float acc[16];
+        for (int s = 0; s < 2; ++s)
+            for (int j = 0; j < 8; ++j)
+                acc[8 * s + j] = float(nv_h(yres[16 * s + 4 * b + (j >> 1)])[j & 1]) * wgt_f32[pc.ars_off + ch + uint(j)];
+        if (NV_I8WO) {
+            int ia[16];
+            for (int j = 0; j < 16; ++j) ia[j] = 0;
+            NV_GEMM8I(ia, NV_C8, pc.op_off, NV_CF, ch)
+            for (int j = 0; j < 8; ++j) {
+                const float ws = I8_WSCALE(nv_wf, pc.op_off, NR_C, NR_C, ch + uint(j));
+                acc[j] = fma(float(ia[j]), ws * i8_pow2(cs0), acc[j]);
+                acc[8 + j] = fma(float(ia[8 + j]), ws * i8_pow2(cs1), acc[8 + j]);
+            }
+        } else {
+            NV_GEMM8(acc, nv_y4, pc.op_off, NV_CF, ch)
+        }
+        for (int s = 0; s < 2; ++s) {
+            const uint m = (lane >> 4u) + 2u * uint(s);
+            if (!nr_tile_oob(m))
+                nv_a4[(pc.o_off + nr_tile_base(m) + (ch >> 4u) * 256u + (lane & 15u) * 16u + (ch & 15u)) / 8u] =
+                    nv_pack_q16(acc, 8 * s);
+#if NV_DS
+            // The pooled copy of these 8 channels (nv_pool8) into nv_x4[(c / 8) * 16 + p], p the pooled pixel of
+            // the window's 4x4; nothing reads nv_x4 in this stage.
+            float v8[8];
+            for (int j = 0; j < 8; ++j) v8[j] = acc[8 * s + j];
+            const uvec4 pq = nv_pool8(v8);
+            const uint t16 = lane & 15u;
+            if ((t16 & 5u) == 0u)
+                nv_x4[(ch >> 3u) * 16u + (2u * (m >> 1u) + t16 / 8u) * 4u + 2u * (m & 1u) + (t16 % 4u) / 2u] = pq;
+#endif
+        }
+    }
+#if NV_DS
+    barrier();
+    nv_ds_project(lane, w, 64u, 8);
+#endif
+}
+#else
 void main() {
     const int nv_opaque = int(gl_WorkGroupID.z);
     // The wave index through readfirstlane: gl_SubgroupID alone stays a VGPR on gfx103x, and so would every weight
@@ -574,6 +1030,7 @@ void main() {
     nv_ds_project(lane, w, 64u, 8);
 #endif
 }
+#endif   // NV_I8
 
 #else   // C = 32, one head, two waves
 
@@ -739,6 +1196,145 @@ void main() {
         xr = x;
     }
 #endif
+#if NV_I8
+    // ---- the MLP, 32 hidden units at a time: y = Ct . q(act(E . x)) + rs * x. In int8 (NV_I8E / NV_I8CT) x is
+    //      one vector a token, the hidden group one a group, and Ct's row scale goes on once at the end ---------
+    float yi[32], yf[32];                         // the Ct sums: int8 (each group times its scale), FP16
+    for (int c = 0; c < 32; ++c) { yi[c] = 0.0; yf[c] = 0.0; }
+    {
+        uvec4 x0 = uvec4(0u), x1 = uvec4(0u);
+        float xs = 1.0;
+        if (NV_I8E) {
+            float xv[32];
+            for (int c = 0; c < 32; ++c) xv[c] = float(nv_h(x[c >> 1])[c & 1]);
+            uint xq[8];
+            xs = i8_vec32(xv, xq);
+            x0 = uvec4(xq[0], xq[1], xq[2], xq[3]); x1 = uvec4(xq[4], xq[5], xq[6], xq[7]);
+        }
+        for (int g = 0; g < 4 + nv_opaque; g = g + 1) {   // rolled
+            float e[32];
+            if (NV_I8E) {
+                for (int j = 0; j < 32; ++j) {
+                    const uint row = 32u * uint(g) + uint(j);
+                    const int d = i8_dot16(i8_dot16(0, nv_w4[I8_WROW(pc.e_off, 2, row, 0)], x0), nv_w4[I8_WROW(pc.e_off, 2, row, 1)], x1);
+                    e[j] = float(d) * (xs * I8_WSCALE(nv_wf, pc.e_off, 128, 32, row));
+                }
+            } else {
+                float e0[16], e1[16];
+                for (int i = 0; i < 16; ++i) { e0[i] = 0.0; e1[i] = 0.0; }
+                NV_ROWS32(e0, pc.e_off, 32 * g, x, NV_ESWAP)
+                NV_ROWS32(e1, pc.e_off, 32 * g + 16, x, NV_ESWAP)
+                for (int i = 0; i < 16; ++i) { e[i] = e0[i]; e[16 + i] = e1[i]; }
+            }
+            for (int i = 0; i < 32; ++i) e[i] = (i & 1) != 0 ? nr_act_horner_b(e[i]) : nr_act_horner(e[i]);
+            if (NV_I8CT) {
+                uint eq[8];
+                const float es = i8_vec32(e, eq);
+                const uvec4 e0 = uvec4(eq[0], eq[1], eq[2], eq[3]), e1 = uvec4(eq[4], eq[5], eq[6], eq[7]);
+                for (int o = 0; o < 32; ++o) {
+                    const int d = i8_dot16(i8_dot16(0, nv_w4[I8_WROW(pc.ct_off, 8, o, 2 * g)], e0), nv_w4[I8_WROW(pc.ct_off, 8, o, 2 * g + 1)], e1);
+                    yi[o] = fma(float(d), es, yi[o]);
+                }
+            } else {
+                uvec4 ep[4];
+                for (int p = 0; p < 16; ++p) ep[p >> 2][p & 3] = packFloat2x16(nr_quant_pair32(vec2(e[2 * p], e[2 * p + 1])));
+                // Ct: [32][128], tile row o / 16, k fragment 2g + hb; odd rows k-pair swapped (`kswap`).
+                for (int o = 0; o < 32; ++o)
+                    for (int hb = 0; hb < 2; ++hb) {
+                        const uint wb = NV_WROW(pc.ct_off, 8, o, 2 * g + hb);
+                        yf[o] = (o & 1) != 0 ? nv_dot8s(yf[o], nv_w4[wb], nv_w4[wb + 1u], ep[2 * hb], ep[2 * hb + 1])
+                                             : nv_dot8(yf[o], nv_w4[wb], nv_w4[wb + 1u], ep[2 * hb], ep[2 * hb + 1]);
+                    }
+            }
+        }
+    }
+    float y[32];
+    for (int c = 0; c < 32; ++c)
+        y[c] = (NV_I8CT ? yi[c] * I8_WSCALE(nv_wf, pc.ct_off, 32, 128, c) : yf[c]) +
+               float(nv_h(xr[c >> 1])[c & 1]) * wgt_f32[pc.rs_off + uint(c)];
+    uint yh[16];
+    for (int p = 0; p < 16; ++p) yh[p] = nv_p(float16_t(y[2 * p]), float16_t(y[2 * p + 1]));
+    // ---- Q, K, V from y (FP16, then on the e4m3 grid; int8 with the token's scale for NV_I8QKV) ----------
+    {
+        const float16_t hscale = float16_t(wgt_f32[pc.s_off]);
+        uvec4 y0 = uvec4(0u), y1 = uvec4(0u);
+        float ys = 1.0;
+        uint yq[16];
+        if (NV_I8QKV) {
+            float yv[32];
+            for (int c = 0; c < 32; ++c) yv[c] = float(nv_h(yh[c >> 1])[c & 1]);
+            uint q8[8];
+            ys = i8_vec32(yv, q8);
+            y0 = uvec4(q8[0], q8[1], q8[2], q8[3]); y1 = uvec4(q8[4], q8[5], q8[6], q8[7]);
+        } else {
+            for (int p = 0; p < 16; ++p) yq[p] = packFloat2x16(nr_quant_pair(nv_h(yh[p])));
+        }
+#if NV_I8QK
+        uint qe[8], ke[8];
+        float qsc = 1.0, ksc = 1.0;
+#else
+        uint qe[16], ke[16];
+#endif
+        uint ve[16];
+        for (int part = 0; part < 3; ++part) {
+            float a[32];
+            if (NV_I8QKV) {
+                for (int j = 0; j < 32; ++j) {
+                    const uint row = 32u * uint(part) + uint(j);
+                    const int d = i8_dot16(i8_dot16(0, nv_w4[I8_WROW(pc.qkv_off, 2, row, 0)], y0), nv_w4[I8_WROW(pc.qkv_off, 2, row, 1)], y1);
+                    a[j] = float(d) * (ys * I8_WSCALE(nv_wf, pc.qkv_off, 96, 32, row));
+                }
+            } else {
+                float a0[16], a1[16];
+                for (int i = 0; i < 16; ++i) { a0[i] = 0.0; a1[i] = 0.0; }
+                NV_ROWS32(a0, pc.qkv_off, 32 * part, yq, part < 2)
+                NV_ROWS32(a1, pc.qkv_off, 32 * part + 16, yq, part < 2)
+                for (int i = 0; i < 16; ++i) { a[i] = a0[i]; a[16 + i] = a1[i]; }
+            }
+#if NV_I8QK
+            if (part == 0) qsc = nv_qk8(a, 0, hscale, qe);
+            else if (part == 1) ksc = nv_qk8(a, 1, hscale, ke);
+#else
+            if (part == 0) nv_qk(a, 0, hscale, qe);
+            else if (part == 1) nv_qk(a, 1, hscale, ke);
+#endif
+            else for (int p = 0; p < 16; ++p) ve[p] = nv_p(nv_q16(a[2 * p]), nv_q16(a[2 * p + 1]));
+        }
+#if NV_I8QK
+        nv_store_kv(0u, T, ke, ksc, ve);
+#else
+        nv_store_kv(0u, T, ke, ve);
+#endif
+        barrier();                                // keys and values of both waves
+        float co[32];
+#if NV_I8QK
+        nv_attn(0u, T, qe, qsc, co);
+#else
+        nv_attn(0u, T, qe, co);
+#endif
+        // ---- out = q(Wo . context + ars * yh) --------------------------------------------------------
+        float o0[16], o1[16];
+        for (int j = 0; j < 16; ++j) {
+            o0[j] = float(nv_h(yh[j >> 1])[j & 1]) * wgt_f32[pc.ars_off + uint(j)];
+            o1[j] = float(nv_h(yh[8 + (j >> 1)])[j & 1]) * wgt_f32[pc.ars_off + 16u + uint(j)];
+        }
+        if (NV_I8WO) {
+            uint c8[8];
+            const float cs = i8_vec32(co, c8);
+            const uvec4 c0 = uvec4(c8[0], c8[1], c8[2], c8[3]), c1 = uvec4(c8[4], c8[5], c8[6], c8[7]);
+            float ov[32];
+            for (int j = 0; j < 32; ++j) {
+                const int d = i8_dot16(i8_dot16(0, nv_w4[I8_WROW(pc.op_off, 2, j, 0)], c0), nv_w4[I8_WROW(pc.op_off, 2, j, 1)], c1);
+                ov[j] = float(d) * (cs * I8_WSCALE(nv_wf, pc.op_off, 32, 32, j));
+            }
+            for (int j = 0; j < 16; ++j) { o0[j] += ov[j]; o1[j] += ov[16 + j]; }
+        } else {
+            uint cq[16];
+            for (int p = 0; p < 16; ++p) cq[p] = nv_p(nv_q16(co[2 * p]), nv_q16(co[2 * p + 1]));
+            NV_ROWS32(o0, pc.op_off, 0, cq, true)
+            NV_ROWS32(o1, pc.op_off, 16, cq, true)
+        }
+#else
     // ---- the MLP, streamed: y = Ct . q(act(E . x)) + rs * x ----------------------------------------
     float y[32];
     for (int c = 0; c < 32; ++c) y[c] = float(nv_h(xr[c >> 1])[c & 1]) * wgt_f32[pc.rs_off + uint(c)];
@@ -790,6 +1386,7 @@ void main() {
         }
         NV_ROWS32(o0, pc.op_off, 0, cq, true)
         NV_ROWS32(o1, pc.op_off, 16, cq, true)
+#endif
 #if NV_POST
         // The RGB projection of the output in FP16 (four rows with the history weight), channel pairs in order,
         // then the pixel's composition (fswin_imgout.glsl).

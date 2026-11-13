@@ -240,7 +240,8 @@ extern "C"
         /* CC_SILVER_AARDWOLD_OPTIMIZED: 0 not running, else 1 + its Optimized layers level (1 Quality .. 4 Ultra
            Performance) */
         uint32_t optimized;
-        /* The fields end at byte 360, sizeof. */
+        uint32_t rdna2_int8; /* 1: the RX 6000 network runs its INT8 form (shaders-rdna2-int8) */
+        /* The fields end at byte 364; sizeof is 368. */
     } MochizukiNrInfo;
 
     /* All but GetFeatures return an LmxxfNrStatus. SetControls takes effect on the next PrepareFrame; call it on the
