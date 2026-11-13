@@ -20,6 +20,8 @@ bool Info(OnrRrInfo& info);
 // Whether the game's lists are OptiScaler's split proxies, set up at launch when an NR runtime that splits them or
 // OpenRR was enabled.
 bool SplitReady();
+// The split is armed and turns on with the swapchain: enough to offer Ray Reconstruction before that.
+bool SplitComing();
 // NrOnDenoised: what mochizuki on the denoised image is doing, or why it is not running. Empty while it is off.
 std::string DenoisedNrStatus();
 // The runtime's ABI 5 (the Vulkan host backend), loading the runtime; null when it does not offer it.

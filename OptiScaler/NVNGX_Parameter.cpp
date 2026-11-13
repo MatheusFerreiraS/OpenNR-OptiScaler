@@ -873,12 +873,12 @@ void InitNGXParameters(NVSDK_NGX_Parameter* InParams, API api)
         {
             auto device = State::Instance().currentD3D12Device;
             const LUID luid = device != nullptr ? device->GetAdapterLuid() : IdentifyGpu::getPrimaryGpu().luid;
-            ssDenoiseAvailable = OpenNrRr::SplitReady() && OpenNrRr::Usable(luid);
+            ssDenoiseAvailable = OpenNrRr::SplitComing() && OpenNrRr::Usable(luid);
 
             static int last = -1;
             if (last != (int) ssDenoiseAvailable)
                 LOG_INFO("OpenRR on D3D12 {} (device {}, split {}{}{})", ssDenoiseAvailable ? "offered" : "not offered",
-                         device != nullptr ? "known" : "not yet", OpenNrRr::SplitReady(),
+                         device != nullptr ? "known" : "not yet", OpenNrRr::SplitComing(),
                          ssDenoiseAvailable ? "" : ", ", ssDenoiseAvailable ? "" : OpenNrRr::Reason());
             last = (int) ssDenoiseAvailable;
         }

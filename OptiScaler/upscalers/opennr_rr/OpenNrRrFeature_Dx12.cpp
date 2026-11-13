@@ -591,6 +591,8 @@ bool SplitReady()
            DlssNr::Submission::Hooks::ProxyWrapEnabled();
 }
 
+bool SplitComing() { return DlssNr::Backend::SubmissionHooksWanted() && DlssNr::Submission::Hooks::IsArmed(); }
+
 std::vector<const char*> NgxTextureKeys() { return { std::begin(kNgxTextures), std::end(kNgxTextures) }; }
 std::vector<const char*> NgxScalarKeys() { return { std::begin(kNgxScalars), std::end(kNgxScalars) }; }
 
