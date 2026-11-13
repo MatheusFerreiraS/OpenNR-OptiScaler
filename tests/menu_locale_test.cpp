@@ -331,6 +331,11 @@ int main(int argc, char** argv)
 
         checkEq(MenuLocale::Text("no such text##x"), "no such text##x", "unknown text falls through");
 
+        // A format with ##: one %s and one %d stay, nothing repeats them
+        const std::string fsr = MenuLocale::Format("FSR %s##%d");
+        check(fsr.ends_with("##%d") && fsr.find("###") == fsr.npos && fsr.find("%s") == fsr.rfind("%s"),
+              "format keeps its own ## suffix");
+
         if (!folder.empty() && frames)
             renderPicture(code, folder);
     }

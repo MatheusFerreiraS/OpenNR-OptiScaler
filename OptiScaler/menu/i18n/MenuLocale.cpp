@@ -455,7 +455,25 @@ std::string Printf(const char* fmt, ...)
     return out;
 }
 
-const char* Format(const char* english) { return strstr(english, "##") != nullptr ? Label(english) : Text(english); }
+// A format keeps its own ##suffix: Label's Tr###english##suffix would repeat the conversions, and "FSR %s##%d" then
+// read the %d argument as a string (DX11 games crashed in the FFX Upscaler list).
+const char* Format(const char* english)
+{
+    const char* id = strstr(english, "##");
+    if (id == nullptr || id[2] == '#')
+        return id == nullptr ? Text(english) : Label(english);
+
+    const char* text = TextOrNull(std::string_view(english, id - english));
+    if (text == nullptr)
+        return english;
+
+    static thread_local std::string ring[16];
+    static thread_local unsigned next = 0;
+    std::string& out = ring[next++ % std::size(ring)];
+    out = text;
+    out += id;
+    return out.c_str();
+}
 
 const char* Label(const char* english)
 {
