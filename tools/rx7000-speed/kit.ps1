@@ -285,6 +285,11 @@ if ($model -and -not $script:notRdna3) {
     $table.Add(('{0,-22} {1,9} {2,9} {3,9} {4,9}  pick (ms a frame, summed over {5})' -f 'kernel', 'nat', 'coop', 'acofix', 'acocoop', (($RefPics | ForEach-Object { $_.name }) -join ' + ')))
     foreach ($k in $kernels) {
         $d = Sum 'nat' $k; $cp = Sum 'coop' $k; $af = Sum 'acofix' $k; $ac = Sum 'acocoop' $k
+        if ($k -eq 'vitattn' -and $null -ne $d) {
+            # The driver as the runtime now runs it: the matrix body from 1080p up, the native one below.
+            $d = 0.0
+            foreach ($c in $RefPics) { $t = if ($c.h -ge 1080) { 'coop' } else { 'nat' }; $v = $steps[$t]["$($c.name)|$k"]; if ($null -ne $v) { $d += $v } }
+        }
         $pick = 'driver'
         if ($null -ne $d -and $null -ne $af -and $af -lt 0.97 * $d) { $pick = 'acofix' }
         if (($k -eq 'attn' -or $k -eq 'vitattn') -and $coopOk -and $null -ne $ac -and $null -ne $d -and $ac -lt 0.97 * $d -and ($null -eq $af -or $ac -lt $af)) { $pick = 'acocoop' }
@@ -303,7 +308,11 @@ if ($model -and -not $script:notRdna3) {
         $n = "g_$k.spv"
         if (-not (Test-Path -LiteralPath (Join-Path $hyb "shaders\$n"))) { continue }
         switch ($picks[$k]) {
-            'driver' { Copy-Item -LiteralPath (Join-Path $files "dlssnr-amd\shaders-rdna3\$n") -Destination (Join-Path $hyb "shaders\$n") -Force }
+            'driver' {
+                Copy-Item -LiteralPath (Join-Path $files "dlssnr-amd\shaders-rdna3\$n") -Destination (Join-Path $hyb "shaders\$n") -Force
+                # With g_vitattncm.spv beside it the runtime takes the matrix body from 1080p up, as without ACO.
+                if ($k -eq 'vitattn') { Copy-Item -LiteralPath (Join-Path $files 'dlssnr-amd\shaders-rdna3\g_vitattncm.spv') -Destination (Join-Path $hyb 'shaders') -Force }
+            }
             'acocoop' { Copy-Item -LiteralPath (Join-Path $files "bundles\coop\shaders\$n") -Destination (Join-Path $hyb "shaders\$n") -Force; ++$nAco }
             default { ++$nAco }
         }
