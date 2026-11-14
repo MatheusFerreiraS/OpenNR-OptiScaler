@@ -14,8 +14,9 @@ struct IDirect3DSurface9;
 // The screenshot key: the next frame the game presents, as it reaches the screen (NR's final image included),
 // without OptiScaler's overlays. Each capture point below sits after everything that draws into the frame and
 // before the overlay does. The GPU copy happens there; the file is written by a thread of its own.
-// With the menu open (and ScreenshotWithMenu), the ...Menu points copy the same frame again once the overlay is
-// drawn on it, before the real present: "<name> (menu).png" beside the clean one.
+// With the menu open or the FPS overlay on (and ScreenshotWithMenu), the ...Menu points copy the same frame again
+// once the overlay is drawn on it, before the real present: "<name> (menu).png", or "<name> (overlay).png" with
+// only the FPS overlay, beside the clean one.
 namespace Screenshot
 {
 void Request();
