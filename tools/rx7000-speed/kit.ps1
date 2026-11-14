@@ -13,6 +13,7 @@
 # KIT_QUIET=1 opens no Explorer at the end.
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
+[Threading.Thread]::CurrentThread.CurrentCulture = [Globalization.CultureInfo]::InvariantCulture
 $files = $PSScriptRoot
 $kit = Split-Path $files -Parent
 $result = Join-Path $kit 'result'
@@ -291,8 +292,8 @@ if ($model -and -not $script:notRdna3) {
             foreach ($c in $RefPics) { $t = if ($c.h -ge 1080) { 'coop' } else { 'nat' }; $v = $steps[$t]["$($c.name)|$k"]; if ($null -ne $v) { $d += $v } }
         }
         $pick = 'driver'
-        if ($null -ne $d -and $null -ne $af -and $af -lt 0.97 * $d) { $pick = 'acofix' }
-        if (($k -eq 'attn' -or $k -eq 'vitattn') -and $coopOk -and $null -ne $ac -and $null -ne $d -and $ac -lt 0.97 * $d -and ($null -eq $af -or $ac -lt $af)) { $pick = 'acocoop' }
+        if ($null -ne $d -and $null -ne $af -and $af -lt 0.97 * $d -and $d - $af -gt 0.02) { $pick = 'acofix' }
+        if (($k -eq 'attn' -or $k -eq 'vitattn') -and $coopOk -and $null -ne $ac -and $null -ne $d -and $ac -lt 0.97 * $d -and $d - $ac -gt 0.02 -and ($null -eq $af -or $ac -lt $af)) { $pick = 'acocoop' }
         $picks[$k] = $pick
         $f = { param($x) if ($null -ne $x) { $x.ToString('0.000') } else { '-' } }
         $table.Add(('{0,-22} {1,9} {2,9} {3,9} {4,9}  {5}' -f $k, (& $f $d), (& $f $cp), (& $f $af), (& $f $ac), $pick))
@@ -341,7 +342,8 @@ $tail = @('', 'How to read this: nat = driver compiler with the native ViT atten
           'matrix ViT attention, acofix / acocoop = ACO machine code (kit 7''s bundles), hyb = ACO only for the kernels it',
           'won here. GOOD = every run 40 dB or more from the RX 9070 XT (sizes without a reference: 45 dB or more from this',
           'card''s nat run) and runs identical or within 50 dB of each other. network ms = the network''s GPU time a frame.',
-          'kernel-times.csv / kernel-table.txt: each kernel''s GPU ms a frame (NR_STEP_TIMES). Raw logs in runs\<set>\<size>\.')
+          'kernel-times.csv / kernel-table.txt: each kernel''s GPU ms a frame (NR_STEP_TIMES); in the table vitattn''s nat column is',
+          'the driver as the runtime now picks it (native below 1080p, matrix from 1080p up). Raw logs in runs\<set>\<size>\.')
 Set-Content -LiteralPath (Join-Path $result 'SUMMARY.txt') -Value ($head + $summary + $tail)
 Stop-Transcript | Out-Null
 Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
