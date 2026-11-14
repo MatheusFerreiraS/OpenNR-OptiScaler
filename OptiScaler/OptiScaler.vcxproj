@@ -584,6 +584,8 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="dllmain.h" />
     <ClInclude Include="menu\menu_dx_base.h" />
     <ClInclude Include="menu\menu_common.h" />
+    <ClInclude Include="plugins\PluginApi.h" />
+    <ClInclude Include="..\plugin_sdk\optiscaler_plugin.h" />
     <ClInclude Include="menu\i18n\MenuLocale.h" />
     <ClInclude Include="menu\i18n\MenuLocaleImGui.h" />
     <ClInclude Include="menu\i18n\MenuLocaleTables.h" />
@@ -877,6 +879,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="hooks\Vulkan_Hooks.cpp" />
     <ClCompile Include="hooks\GL_Hooks.cpp" />
     <ClCompile Include="menu\menu_common.cpp" />
+    <ClCompile Include="plugins\PluginApi.cpp" />
     <ClCompile Include="menu\i18n\MenuLocale.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions></ClCompile>
     <ClCompile Include="menu\i18n\MenuLocaleTables.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader><AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions></ClCompile>
     <ClCompile Include="menu\menu_dx_base.cpp" />

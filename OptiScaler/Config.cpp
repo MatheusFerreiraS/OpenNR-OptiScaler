@@ -13,6 +13,9 @@
 
 static CSimpleIniA ini;
 
+// Plugins can read and write the ini from their own threads
+static std::recursive_mutex iniMutex;
+
 static inline int64_t GetTicks()
 {
     LARGE_INTEGER ticks;
@@ -139,6 +142,8 @@ bool Config::ResetFfxDenoiserSettings()
 
 bool Config::Reload(std::filesystem::path iniPath)
 {
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+
     auto pathWStr = iniPath.wstring();
 
     LOG_INFO("Trying to load ini from: {0}", wstring_to_string(pathWStr));
@@ -1364,6 +1369,8 @@ std::string GetIntValue(std::optional<int> value)
 
 bool Config::SaveIni()
 {
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+
     // Upscalers
     {
         auto SaveUpscaler = [&](const char* key, auto& upscalerSetting)
@@ -2645,10 +2652,41 @@ bool Config::WriteIni()
 
 bool Config::SaveXeFG()
 {
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+
     ini.SetValue("XeFG", "DepthInverted", GetBoolValue(Instance()->FGXeFGDepthInverted.value_for_config()).c_str());
     ini.SetValue("XeFG", "JitteredMV", GetBoolValue(Instance()->FGXeFGJitteredMV.value_for_config()).c_str());
     ini.SetValue("XeFG", "HighResMV", GetBoolValue(Instance()->FGXeFGHighResMV.value_for_config()).c_str());
 
+    return WriteIni();
+}
+
+std::optional<std::string> Config::GetRawValue(const char* section, const char* key)
+{
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+
+    const char* value = ini.GetValue(section, key, nullptr);
+    if (value == nullptr)
+        return std::nullopt;
+
+    return std::string(value);
+}
+
+void Config::SetRawValue(const char* section, const char* key, const char* value)
+{
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+    ini.SetValue(section, key, value);
+}
+
+void Config::DeleteRawValue(const char* section, const char* key)
+{
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+    ini.Delete(section, key, true);
+}
+
+bool Config::SaveRawValues()
+{
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
     return WriteIni();
 }
 

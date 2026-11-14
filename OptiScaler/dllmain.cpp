@@ -10,6 +10,7 @@
 #include <misc/FirstLightPTUnlock.h>
 #include "BuildInfo.h"
 #include "misc/GameConfigs.h"
+#include "plugins/PluginApi.h"
 
 #include "proxies/Dxgi_Proxy.h"
 #include "proxies/D3D9_Proxy.h"
@@ -299,6 +300,10 @@ void LoadAsiPlugins()
                 if (init != nullptr)
                     init();
 
+                PluginApi::InitPlugin(
+                    hMod, (PFN_OptiPluginInit) KernelBaseProxy::GetProcAddress_()(hMod, OPTI_PLUGIN_INIT_NAME),
+                    entry.path());
+
                 if (patchResult != nullptr)
                 {
                     auto pr = patchResult();
@@ -361,6 +366,11 @@ void LoadAsiPlugins()
 
                                     if (init != nullptr)
                                         init();
+
+                                    PluginApi::InitPlugin(hMod,
+                                                          (PFN_OptiPluginInit) KernelBaseProxy::GetProcAddress_()(
+                                                              hMod, OPTI_PLUGIN_INIT_NAME),
+                                                          entry.path());
 
                                     if (patchResult != nullptr)
                                     {
