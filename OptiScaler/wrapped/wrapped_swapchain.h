@@ -87,6 +87,10 @@ class DECLSPEC_UUID("3af622a3-82d0-49cd-994f-cce05122c222") WrappedIDXGISwapChai
     IDXGISwapChain3* _real3 = nullptr;
     IDXGISwapChain4* _real4 = nullptr;
 
+    // Another tool's wrapper (3DMigoto) that hid IDXGISwapChain2-4; _real is the DXGI swapchain under it and our
+    // reference is released through the wrapper so it can clean up
+    IDXGISwapChain* _foreignOwner = nullptr;
+
     int _id = 0;
     bool _uwp = false;
     bool _composition = false;

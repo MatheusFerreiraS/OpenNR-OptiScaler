@@ -561,6 +561,80 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     return presentResult;
 }
 
+static bool ReadPointer(const void* address, void** value)
+{
+    __try
+    {
+        *value = *(void* const*) address;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+static bool InSystemDxgi(const void* address)
+{
+    static HMODULE dxgi = []
+    {
+        wchar_t path[MAX_PATH] {};
+        auto len = GetSystemDirectoryW(path, MAX_PATH);
+        if (len == 0 || len + 10 >= MAX_PATH)
+            return (HMODULE) nullptr;
+
+        wcscat_s(path, L"\\dxgi.dll");
+        return GetModuleHandleW(path);
+    }();
+
+    HMODULE module = nullptr;
+    return dxgi != nullptr &&
+           GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              (LPCWSTR) address, &module) &&
+           module == dxgi;
+}
+
+// Looks through the first fields of a foreign swapchain wrapper for the DXGI swapchain it holds. A candidate must
+// have its vtable in the system dxgi.dll, expose IDXGISwapChain4 and describe the same window and buffers.
+// Returns a pointer that holds no reference of its own, or nullptr.
+static IDXGISwapChain4* FindDxgiSwapChainBehind(IDXGISwapChain* wrapper)
+{
+    void* vtable = nullptr;
+    if (!ReadPointer(wrapper, &vtable) || InSystemDxgi(vtable))
+        return nullptr;
+
+    DXGI_SWAP_CHAIN_DESC wrapperDesc {};
+    if (FAILED(wrapper->GetDesc(&wrapperDesc)))
+        return nullptr;
+
+    for (size_t i = 1; i <= 16; i++)
+    {
+        void* candidate = nullptr;
+        if (!ReadPointer((void* const*) wrapper + i, &candidate) || candidate == nullptr || candidate == wrapper ||
+            ((size_t) candidate & (sizeof(void*) - 1)) != 0)
+            continue;
+
+        if (!ReadPointer(candidate, &vtable) || !InSystemDxgi(vtable))
+            continue;
+
+        IDXGISwapChain4* sc4 = nullptr;
+        if (FAILED(((IUnknown*) candidate)->QueryInterface(IID_PPV_ARGS(&sc4))) || sc4 == nullptr)
+            continue;
+
+        DXGI_SWAP_CHAIN_DESC desc {};
+        const bool same = SUCCEEDED(sc4->GetDesc(&desc)) && desc.OutputWindow == wrapperDesc.OutputWindow &&
+                          desc.BufferDesc.Width == wrapperDesc.BufferDesc.Width &&
+                          desc.BufferDesc.Height == wrapperDesc.BufferDesc.Height &&
+                          desc.BufferCount == wrapperDesc.BufferCount;
+        sc4->Release();
+
+        if (same)
+            return sc4;
+    }
+
+    return nullptr;
+}
+
 WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* pDevice, HWND hWnd, UINT flags,
                                                bool isUWP, bool isComposition)
     : _real(real), _device(pDevice), _handle(hWnd), _refcount(1), _uwp(isUWP), _composition(isComposition)
@@ -583,6 +657,36 @@ WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* p
     _real->QueryInterface(IID_PPV_ARGS(&_real4));
     if (_real4 != nullptr)
         _real4->Release();
+
+    // A D3D12 swapchain without IDXGISwapChain4 is hidden behind another tool's wrapper (3DMigoto/XXMI answers
+    // E_NOINTERFACE for 2-4); XeFG and FSR FG can't run on it, so talk to the DXGI swapchain directly
+    ID3D12CommandQueue* queue = nullptr;
+    if (_real4 == nullptr && pDevice != nullptr && SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue))))
+    {
+        queue->Release();
+
+        if (auto inner = FindDxgiSwapChainBehind(_real))
+        {
+            LOG_INFO("{} unwrapped foreign swapchain {:X} -> DXGI {:X}", _id, (size_t) _real, (size_t) inner);
+
+            _foreignOwner = _real;
+            _real = inner;
+
+            _real->QueryInterface(IID_PPV_ARGS(&_real1));
+            if (_real1 != nullptr)
+                _real1->Release();
+
+            _real->QueryInterface(IID_PPV_ARGS(&_real2));
+            if (_real2 != nullptr)
+                _real2->Release();
+
+            _real->QueryInterface(IID_PPV_ARGS(&_real3));
+            if (_real3 != nullptr)
+                _real3->Release();
+
+            _real4 = inner;
+        }
+    }
 
     _real->AddRef();
     auto refCount = _real->Release();
@@ -745,7 +849,7 @@ ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain4::Release()
                 State::Instance().currentFGSwapchain = nullptr;
         }
 
-        auto refCount = _real->Release();
+        auto refCount = _foreignOwner != nullptr ? _foreignOwner->Release() : _real->Release();
 
         // Disabled for now, cause issues with some games
         /*
