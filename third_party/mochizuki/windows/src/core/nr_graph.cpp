@@ -6103,6 +6103,21 @@ void NrSession::create_kernels(const std::string& spv_dir, const std::set<std::s
         if (ctx.arch == nr::Arch::rdna3 && (d.kern == "attn" || d.kern == "vitattn")) {
             const char* e = std::getenv(d.kern == "attn" ? "NR_RDNA3_ATTN" : "NR_RDNA3_VITATTN");
             const std::string mode = e ? e : "";
+            // vitattn: the native body is right on gfx11 at every size; the cooperative-matrix one (g_vitattncm, 0.5.8's)
+            // is faster and was right at 1080p and 1440p on RX 7000 kits 5-7, wrong at 648p/720p. It runs from
+            // NR_RDNA3_VITATTN_COOP_MIN ViT tokens up (default 600: 1280x720 has 288, 1920x1080 640), or always / never with
+            // NR_RDNA3_VITATTN=coop / native.
+            if (d.kern == "vitattn" && d.push.size() >= 12) {
+                uint32_t tokens = 0;
+                std::memcpy(&tokens, d.push.data() + 8, 4);
+                const char* m = std::getenv("NR_RDNA3_VITATTN_COOP_MIN");
+                const uint32_t min_tokens = m ? uint32_t(std::strtoul(m, nullptr, 10)) : 600u;
+                const std::string cm = spv_dir + "/g_vitattncm.spv";
+                if (mode == "coop" || (mode != "native" && tokens >= min_tokens)) {
+                    if (std::ifstream(nr::u8::path(cm)).good()) p = cm;
+                }
+                nr::logf("[nr] RDNA3 vitattn: %s body, %u tokens", p == cm ? "cooperative-matrix" : "native", tokens);
+            }
             if (mode.size() > 4 && mode.compare(mode.size() - 4, 4, ".spv") == 0 && std::ifstream(mode).good()) {
                 p = mode;
                 nr::logf("[nr] RDNA3 %s: %s", d.kern.c_str(), p.c_str());
