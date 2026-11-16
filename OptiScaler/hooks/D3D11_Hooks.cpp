@@ -404,10 +404,16 @@ static HRESULT hkD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVE
 
     _skipDx11Create = true;
 
+    // The factory hook wraps the swapchain this call makes. A d3d11.dll proxy in front of the system one (ENBSeries)
+    // hands back its own wrapper of ours, which must not be wrapped again: every Present would then go through
+    // OptiScaler twice, NR and the menu included.
+    const auto wrappedBefore = State::Instance().currentWrappedSwapchain;
     auto result = o_D3D11CreateDeviceAndSwapChain(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels,
                                                   SDKVersion, pSwapChainDesc != nullptr ? &localDesc : nullptr,
                                                   ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
     _skipDx11Create = false;
+    const bool wrappedInside = State::Instance().currentWrappedSwapchain != wrappedBefore &&
+                               State::Instance().currentWrappedSwapchain != nullptr;
 
     if (result == S_OK && *ppDevice != nullptr && State::Instance().currentD3D12Device == nullptr)
     {
@@ -438,6 +444,11 @@ static HRESULT hkD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVE
         if (State::Instance().currentWrappedSwapchain == *ppSwapChain)
         {
             LOG_DEBUG("Same as current wrapped swapchain, skipping wrapping");
+        }
+        else if (wrappedInside)
+        {
+            LOG_INFO("Swapchain {:X} sits on OptiScaler's wrapper {:X} (a d3d11.dll proxy), not wrapped again",
+                     (UINT64) *ppSwapChain, (UINT64) State::Instance().currentWrappedSwapchain);
         }
         else
         {
