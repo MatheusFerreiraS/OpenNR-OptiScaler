@@ -3997,7 +3997,23 @@ struct Session
                 throw std::runtime_error("stopped: the session is being destroyed");
             {
                 const nr::BuildCancelScope cancel(&abandon);
-                made = std::make_unique<ProductRuntime>(host, made_config, temporal, key, vk);
+                try
+                {
+                    made = std::make_unique<ProductRuntime>(host, made_config, temporal, key, vk);
+                }
+                catch (const nr::binary::Error& e)
+                {
+                    // ACO's machine code itself failed (a record, its template, the driver refusing the import, a
+                    // user-data layout the adapter does not know): ACO off for the process and the network built
+                    // again by the driver's compiler, as upstream's host does. Out of memory and a lost device are
+                    // not Error and stay this build's failure.
+                    if (abandon)
+                        throw;
+                    nr::binary::disable(std::string("the ACO network did not build (") + e.what() + ")");
+                    nr::logf("[mochizuki] ACO off: %s; building with the driver's compiler",
+                             nr::binary::disabled_why().c_str());
+                    made = std::make_unique<ProductRuntime>(host, made_config, temporal, key, vk);
+                }
             }
             pipelines.Finish();
         }

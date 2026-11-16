@@ -84,10 +84,12 @@ static void layout_test(bool g10, std::mt19937& rng, int iterations) {
         for (unsigned bit : {7u, 8u, 9u, 10u}) if (rng() % 2) rsrc2 |= 1u << bit;
         if (!g10 && rng() % 3 == 0) { rsrc2 |= 1; r.scratch = 256; }
         r.rsrc2 = rsrc2;
-        const unsigned push_bytes = 128, slot = push_bytes / 4 + 1;
-        nr::pal::Arguments a(r, slot);
+        // push_base: the push constants' first user-data entry (1 on a plain device; 2 or 3 with the entries
+        // VK_EXT_vertex_input_dynamic_state / transform feedback reserve, mochizuki's GitLab issue 5)
+        const unsigned push_base = 1 + rng() % 3, push_bytes = 128, slot = push_bytes / 4 + push_base;
+        nr::pal::Arguments a(r, slot, push_base);
         Bytes pro;
-        try { pro = nr::pal::prologue(r, slot, mach); }
+        try { pro = nr::pal::prologue(r, slot, mach, push_base); }
         catch (const std::exception& e) { CHECK(false, "prologue threw %s", e.what()); continue; }
         Machine m{g10};
         // PAL's side: user data entries by a.map, the spill table in memory, system SGPRs after a.user.
@@ -111,8 +113,8 @@ static void layout_test(bool g10, std::mt19937& rng, int iterations) {
         CHECK(pro.size() % 256 == 0, "prologue not 256-byte aligned");
         // ACO's side.
         CHECK(m.s[r.set0] == entry(slot), "set0");
-        for (auto [rg, dw] : r.inlines) CHECK(m.s[rg] == entry(dw + 1), "inline s%d = dw %d (got %08x)", rg, dw, m.s[rg]);
-        if (r.push >= 0) CHECK(m.s[r.push] == uint32_t(spill) + 4, "push pointer");
+        for (auto [rg, dw] : r.inlines) CHECK(m.s[rg] == entry(dw + push_base), "inline s%d = dw %d (got %08x)", rg, dw, m.s[rg]);
+        if (r.push >= 0) CHECK(m.s[r.push] == uint32_t(spill) + 4 * push_base, "push pointer");
         if (r.grid >= 0) for (unsigned j = 0; j < 3; ++j) CHECK(m.s[r.grid + j] == 0xC0000000u + j, "grid %u", j);
         for (unsigned i = 0; i < sysv.size(); ++i)
             CHECK(m.s[r.user + i] == sysv[i], "%s system SGPR %u (record user %u, PAL user %u): %08x",

@@ -82,8 +82,9 @@ inline std::vector<std::string> shell_dirs() {
 }
 inline std::mutex devices_mutex;
 inline std::set<VkDevice> enabled_devices;
-// A device's code objects as its driver writes them (device_code): the machine in e_flags and the key size.
-struct DeviceCode { uint32_t mach=0,key_size=0; };
+// A device's code objects as its driver writes them (device_code): the machine in e_flags, the key size and the
+// user-data entry its pipeline layouts put the push constants at (1 on a plain device; nr_pal_binary.hpp XglLayout).
+struct DeviceCode { uint32_t mach=0,key_size=0,push_base=1; };
 inline std::map<VkDevice,DeviceCode> device_codes;
 inline void mark(VkDevice d) {std::lock_guard<std::mutex> l(devices_mutex);enabled_devices.insert(d);}
 inline void forget(VkDevice d) {std::lock_guard<std::mutex> l(devices_mutex);enabled_devices.erase(d);device_codes.erase(d);}
@@ -263,8 +264,9 @@ inline pal::Bytes capture_binary(Functions& f,VkDevice device,const VkComputePip
     return blob;
 }
 // The GPU's machine as its driver writes it in e_flags, from the driver's compile of an empty kernel with the
-// pipeline's layout: once a device (gfx10.3 containers are built, not captured, and need it).
-inline DeviceCode device_code(Functions& f,VkDevice device,const VkComputePipelineCreateInfo& ci) {
+// pipeline's layout (push_bytes: that layout's push range): once a device (gfx10.3 containers are built, not captured,
+// and need it; the import cache's key takes the push constants' place).
+inline DeviceCode device_code(Functions& f,VkDevice device,const VkComputePipelineCreateInfo& ci,uint32_t push_bytes) {
     {std::lock_guard<std::mutex> l(devices_mutex);auto it=device_codes.find(device);if(it!=device_codes.end())return it->second;}
     // layout(local_size_x = 32) in; void main() {} (glslang 16.5.0, --target-env vulkan1.3)
     static const uint32_t empty_kernel[]={
@@ -285,9 +287,69 @@ inline DeviceCode device_code(Functions& f,VkDevice device,const VkComputePipeli
     vkDestroyShaderModule(device,module,nullptr);
     pal::require(blob.size()>=64,"captured binary size limit");
     const uint32_t flags=pal::read<uint32_t>(blob,48);
-    DeviceCode dc{pal::Elf(blob).mach,key.keySize};
+    const pal::Elf elf(blob);
+    DeviceCode dc{elf.mach,key.keySize};
     pal::require(dc.key_size && dc.key_size<=VK_MAX_PIPELINE_BINARY_KEY_SIZE_KHR,"driver binary key size");
-    nr::logf("[nr] ACO: the driver's code objects are for machine 0x%02x (e_flags 0x%x)",dc.mach,flags);
+    // Where the push constants are (1 on a plain device, 2 with VK_EXT_vertex_input_dynamic_state, ...): an empty
+    // kernel's .user_data_limit counts only the entries it uses, so a small kernel of its own layout - set 0 binding 0
+    // a storage buffer, 4 push-constant bytes, both read - is compiled: its limit is push_base + 2. Metadata without it
+    // (none seen so far) or a probe that fails keeps entry 1, the plain device's.
+    // #version 450 / layout(local_size_x = 32) in; / layout(set = 0, binding = 0) buffer B { uint v[]; };
+    // layout(push_constant) uniform P { uint x; }; / void main() { v[gl_GlobalInvocationID.x] = x; } (glslang 16.5.0)
+    static const uint32_t layout_kernel[]={
+        0x07230203,0x00010600,0x0008000b,0x0000001f,0x00000000,0x00020011,0x00000001,0x0006000b,0x00000001,0x4c534c47,
+        0x6474732e,0x3035342e,0x00000000,0x0003000e,0x00000000,0x00000001,0x0008000f,0x00000005,0x00000004,0x6e69616d,
+        0x00000000,0x0000000a,0x0000000f,0x00000016,0x00060010,0x00000004,0x00000011,0x00000020,0x00000001,0x00000001,
+        0x00030003,0x00000002,0x000001c2,0x00040005,0x00000004,0x6e69616d,0x00000000,0x00030005,0x00000008,0x00000042,
+        0x00040006,0x00000008,0x00000000,0x00000076,0x00030005,0x0000000a,0x00000000,0x00080005,0x0000000f,0x475f6c67,
+        0x61626f6c,0x766e496c,0x7461636f,0x496e6f69,0x00000044,0x00030005,0x00000014,0x00000050,0x00040006,0x00000014,
+        0x00000000,0x00000078,0x00030005,0x00000016,0x00000000,0x00040047,0x00000007,0x00000006,0x00000004,0x00030047,
+        0x00000008,0x00000002,0x00050048,0x00000008,0x00000000,0x00000023,0x00000000,0x00040047,0x0000000a,0x00000021,
+        0x00000000,0x00040047,0x0000000a,0x00000022,0x00000000,0x00040047,0x0000000f,0x0000000b,0x0000001c,0x00030047,
+        0x00000014,0x00000002,0x00050048,0x00000014,0x00000000,0x00000023,0x00000000,0x00020013,0x00000002,0x00030021,
+        0x00000003,0x00000002,0x00040015,0x00000006,0x00000020,0x00000000,0x0003001d,0x00000007,0x00000006,0x0003001e,
+        0x00000008,0x00000007,0x00040020,0x00000009,0x0000000c,0x00000008,0x0004003b,0x00000009,0x0000000a,0x0000000c,
+        0x00040015,0x0000000b,0x00000020,0x00000001,0x0004002b,0x0000000b,0x0000000c,0x00000000,0x00040017,0x0000000d,
+        0x00000006,0x00000003,0x00040020,0x0000000e,0x00000001,0x0000000d,0x0004003b,0x0000000e,0x0000000f,0x00000001,
+        0x0004002b,0x00000006,0x00000010,0x00000000,0x00040020,0x00000011,0x00000001,0x00000006,0x0003001e,0x00000014,
+        0x00000006,0x00040020,0x00000015,0x00000009,0x00000014,0x0004003b,0x00000015,0x00000016,0x00000009,0x00040020,
+        0x00000017,0x00000009,0x00000006,0x00040020,0x0000001a,0x0000000c,0x00000006,0x0004002b,0x00000006,0x0000001c,
+        0x00000020,0x0004002b,0x00000006,0x0000001d,0x00000001,0x0006002c,0x0000000d,0x0000001e,0x0000001c,0x0000001d,
+        0x0000001d,0x00050036,0x00000002,0x00000004,0x00000000,0x00000003,0x000200f8,0x00000005,0x00050041,0x00000011,
+        0x00000012,0x0000000f,0x00000010,0x0004003d,0x00000006,0x00000013,0x00000012,0x00050041,0x00000017,0x00000018,
+        0x00000016,0x0000000c,0x0004003d,0x00000006,0x00000019,0x00000018,0x00060041,0x0000001a,0x0000001b,0x0000000a,
+        0x0000000c,0x00000013,0x0003003e,0x0000001b,0x00000019,0x000100fd,0x00010038};
+    uint64_t limit=0;
+    VkDescriptorSetLayout set_layout{};VkPipelineLayout layout{};VkShaderModule probe{};
+    try{
+        VkDescriptorSetLayoutBinding binding{0,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
+        VkDescriptorSetLayoutCreateInfo sl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};sl.bindingCount=1;sl.pBindings=&binding;
+        check(vkCreateDescriptorSetLayout(device,&sl,nullptr,&set_layout),"create layout probe set");
+        VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT,0,4};
+        VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pl.setLayoutCount=1;pl.pSetLayouts=&set_layout;pl.pushConstantRangeCount=1;pl.pPushConstantRanges=&range;
+        check(vkCreatePipelineLayout(device,&pl,nullptr,&layout),"create layout probe layout");
+        VkShaderModuleCreateInfo pm{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};pm.codeSize=sizeof layout_kernel;pm.pCode=layout_kernel;
+        check(vkCreateShaderModule(device,&pm,nullptr,&probe),"create layout probe module");
+        VkComputePipelineCreateInfo pci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        pci.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};pci.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;
+        pci.stage.module=probe;pci.stage.pName="main";pci.layout=layout;
+        VkPipelineBinaryKeyKHR pkey{};
+        const pal::Bytes pb=capture_binary(f,device,pci,pkey);
+        const pal::Elf pe(pb);
+        limit=pal::pal_metadata(pe.data[pe.find(".note")]).at("amdpal.pipelines").items.at(0).at(".user_data_limit").number();
+    }catch(const std::exception& e){
+        nr::logf("[nr] ACO: the user-data layout probe failed (%s); push constants taken at entry 1",e.what());
+    }
+    if(probe)vkDestroyShaderModule(device,probe,nullptr);
+    if(layout)vkDestroyPipelineLayout(device,layout,nullptr);
+    if(set_layout)vkDestroyDescriptorSetLayout(device,set_layout,nullptr);
+    if(limit) {
+        try{dc.push_base=pal::xgl_layout_of_limit(limit,4).push_base;}
+        catch(const std::exception&){nr::logf("[nr] ACO: the layout probe's user-data limit %llu is not understood",(unsigned long long)limit);limit=0;}
+    }
+    nr::logf("[nr] ACO: the driver's code objects are for machine 0x%02x (e_flags 0x%x), push constants at user data %u%s",
+             dc.mach,flags,dc.push_base,limit?"":" (assumed)");
     std::lock_guard<std::mutex> l(devices_mutex);return device_codes.emplace(device,dc).first->second;
 }
 inline VkPipeline create(VkDevice device,const VkComputePipelineCreateInfo& ci,const pal::Record& record,uint32_t push_bytes,
@@ -310,8 +372,8 @@ inline VkPipeline create(VkDevice device,const VkComputePipelineCreateInfo& ci,c
     VkPipelineBinaryKeyKHR key{VK_STRUCTURE_TYPE_PIPELINE_BINARY_KEY_KHR};pal::Bytes blob;
     if(pal::is_gfx103(record.mach)) {
         // gfx10.3: the container is built (nr_pal_binary.hpp synthesize), with the GPU's machine; no template compile.
-        const DeviceCode dc=device_code(f,device,ci);
-        step("synthesize");blob=pal::synthesize(record,dc.mach,push_bytes,workgroup);key.keySize=dc.key_size;step("synthesized");
+        const DeviceCode dc=device_code(f,device,ci,push_bytes);
+        step("synthesize");blob=pal::synthesize(record,dc.mach,push_bytes,workgroup,dc.push_base);key.keySize=dc.key_size;step("synthesized");
     } else {
         step("capture pipeline");
         blob=capture_binary(f,device,ci,key);
@@ -436,11 +498,14 @@ inline VkResult create_aco(VkDevice device,VkPipelineCache cache,const VkCompute
                 check(vkCreateComputePipelines(device,cache,1,&shell_ci,nullptr,out),"create native shell pipeline");
             } else {
                 // The cached import is valid for this record, this template, these push/workgroup values,
-                // this GPU + driver and this build (the splice that made it: a plugin replaced by hand keeps
-                // the folder's aco-cache\ of an older build).
+                // this GPU + driver, this build (the splice that made it: a plugin replaced by hand keeps
+                // the folder's aco-cache\ of an older build) and this device's user-data layout (a device with
+                // VK_EXT_vertex_input_dynamic_state puts the push constants one entry later).
                 std::string cache_file;
                 const std::string cache=cache_dir();
                 if(!cache.empty()) {
+                    Functions f(device);
+                    const uint32_t push_base=device_code(f,device,shell_ci,push_bytes).push_base;
 #ifdef NR_BUILD_STAMP
                     static const char build[]=NR_BUILD_STAMP;
 #else
@@ -448,7 +513,7 @@ inline VkResult create_aco(VkDevice device,VkPipelineCache cache,const VkCompute
 #endif
                     uint64_t k[7]={pal::hash(record_bytes.data(),record_bytes.size()),pal::hash(shell.data(),shell.size()),
                                    identity(),push_bytes,(uint64_t(workgroup[0])<<32)|workgroup[1],workgroup[2],
-                                   pal::hash(build,sizeof build-1)};
+                                   pal::hash(build,sizeof build-1)^(uint64_t(push_base-1)<<56)};
                     char b[40];std::snprintf(b,sizeof b,"%016llx.nrb",static_cast<unsigned long long>(pal::hash(k,sizeof k)));
                     cache_file=cache+"/"+b;
                 }

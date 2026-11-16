@@ -193,15 +193,16 @@ struct Arguments {
     std::vector<uint64_t> map=std::vector<uint64_t>(32,0xffffffff);
     std::vector<std::pair<int,int>> moves,loads;
     unsigned user=0;int spill=-1,grid=-1;
-    explicit Arguments(const Record& r,unsigned descriptor_slot=33) {
+    // push_base: the user-data entry of the first push-constant dword (XglLayout below; 1 in the plain layout)
+    explicit Arguments(const Record& r,unsigned descriptor_slot=33,unsigned push_base=1) {
         map[0]=0x10000000;map[1]=descriptor_slot;user=2;moves.emplace_back(r.set0,1);
         unsigned extra=(r.grid>=0?2:0)+(r.push>=0?1:0);
         bool spill_needed=r.push>=0 || user+r.inlines.size()+extra>16;
         // A spill slot replaces the push-pointer slot, or one inline slot.
         unsigned limit=16-(r.grid>=0?2:0)-(spill_needed?1:0);
         for(auto [dst,dw]:r.inlines) {
-            if(user<limit) {map[user]=dw+1;moves.emplace_back(dst,int(user++));}
-            else loads.emplace_back(dst,4*(dw+1));
+            if(user<limit) {map[user]=dw+push_base;moves.emplace_back(dst,int(user++));}
+            else loads.emplace_back(dst,4*(dw+push_base));
         }
         if(spill_needed) {spill=int(user);map[user++]=0x10000002;}
         if(r.grid>=0) {grid=int(user);map[user]=0x10000006;user+=2;}
@@ -214,8 +215,8 @@ struct Arguments {
 // (a.user) to the record's (r.user). The instructions are the same as gfx12's but for the encodings: gfx10.3's
 // SOP1/SOPP opcodes differ and its m0 and null are 124 and 125 (gfx11/12: 125 and 124). The address32 high word
 // is the PC's high dword as it is (gfx12 sign-extends its low half).
-inline Bytes prologue_gfx11(const Record& r,unsigned descriptor_slot,uint32_t mach) {
-    Bytes b;Arguments a(r,descriptor_slot);
+inline Bytes prologue_gfx11(const Record& r,unsigned descriptor_slot,uint32_t mach,unsigned push_base) {
+    Bytes b;Arguments a(r,descriptor_slot,push_base);
     const bool g10=is_gfx103(mach);
     const uint32_t op_mov=g10?0x03:0x00,op_getpc=g10?0x1f:0x47,null_reg=g10?125:124,m0_reg=g10?124:125;
     auto mov=[&](unsigned dst,unsigned src){word(b,0xbe800000|(dst<<16)|(op_mov<<8)|src);};
@@ -241,7 +242,8 @@ inline Bytes prologue_gfx11(const Record& r,unsigned descriptor_slot,uint32_t ma
     // Downward: lowest first, after the argument copies (their targets lie below the record's user count).
     if(r.user<a.user) for(auto [dst,src]:sys) mov(dst,src);
     for(auto [reg,offset]:a.loads)ld(reg,96,offset);
-    if(r.push>=0) {word(b,0x80000000|(uint32_t(r.push)<<16)|(0x84<<8)|96);nop(2);}
+    // the push block's address: the spill table (s96) plus push_base entries (s_add_u32 with an inline constant)
+    if(r.push>=0) {word(b,0x80000000|(uint32_t(r.push)<<16)|((0x80+4*push_base)<<8)|96);nop(2);}
     if(r.grid>=0)for(unsigned j=0;j<3;++j)ld(r.grid+j,100,j*4);
     word(b,g10?0xbf8cc07fu:0xbf89fc07u); // s_waitcnt lgkmcnt(0)
     nop(3);
@@ -253,9 +255,10 @@ inline Bytes prologue_gfx11(const Record& r,unsigned descriptor_slot,uint32_t ma
 }
 // Incoming pointers are saved before argument copies; the body keeps its
 // relative branch offsets and uses m0 for the 32-bit address high word.
-inline Bytes prologue(const Record& r,unsigned descriptor_slot=33,uint32_t mach=0x4e) {
-    if(!is_gfx12(mach))return prologue_gfx11(r,descriptor_slot,mach);
-    Bytes b;Arguments a(r,descriptor_slot);
+inline Bytes prologue(const Record& r,unsigned descriptor_slot=33,uint32_t mach=0x4e,unsigned push_base=1) {
+    require(push_base>=1 && 4*push_base<=64,"push base out of range");   // its byte offset an inline constant
+    if(!is_gfx12(mach))return prologue_gfx11(r,descriptor_slot,mach,push_base);
+    Bytes b;Arguments a(r,descriptor_slot,push_base);
     auto mov=[&](unsigned dst,unsigned src){word(b,0xbe800000|(dst<<16)|src);};
     if(a.spill>=0)mov(96,a.spill);
     if(a.grid>=0) {mov(100,a.grid);mov(101,a.grid+1);}
@@ -270,7 +273,8 @@ inline Bytes prologue(const Record& r,unsigned descriptor_slot=33,uint32_t mach=
     };
     for(auto [dst,src]:a.moves)mov(dst,src);
     for(auto [reg,offset]:a.loads)ld(reg,96,offset);
-    if(r.push>=0) {word(b,0x80000000|(uint32_t(r.push)<<16)|(0x84<<8)|96);word(b,0xbf800002);}
+    // the push block's address: the spill table (s96) plus push_base entries (s_add_u32 with an inline constant)
+    if(r.push>=0) {word(b,0x80000000|(uint32_t(r.push)<<16)|((0x80+4*push_base)<<8)|96);word(b,0xbf800002);}
     if(r.grid>=0)for(unsigned j=0;j<3;++j)ld(r.grid+j,100,j*4);
     word(b,0xbfc70000);word(b,0xbf800003);
     if(r.rsrc2&(1<<10))mov(r.user,102);
@@ -326,10 +330,56 @@ struct Elf {
         for(const auto& s:sections) {size_t p=out.size();out.resize(p+64);write(out,p,s);}return out;
     }
 };
+// The PAL metadata (the AMDGPU note of type 32) of a pipeline's .note section.
+inline Value pal_metadata(const Bytes& src) {
+    for(size_t pos=0;pos<src.size();) {
+        range(src,pos,12);
+        const auto ns=read<uint32_t>(src,pos),ds=read<uint32_t>(src,pos+4),type=read<uint32_t>(src,pos+8);
+        const size_t name=pos+12,desc=name+((uint64_t(ns)+3)&~uint64_t(3)),next=desc+((uint64_t(ds)+3)&~uint64_t(3));
+        range(src,name,next-name);
+        if(type==32) return unpack(Bytes(src.begin()+desc,src.begin()+desc+ds));
+        pos=next;
+    }
+    throw std::runtime_error("PAL metadata missing");
+}
+// Where XGL put the push constants and set 0's pointer in a compute pipeline's user data (compact layout,
+// icd/api/vk_pipeline_layout.cpp BuildCompactSchemeInfo): entry 0 the vertex-buffer table, then entries the device's
+// features reserve - one for the uber-fetch shader's constant buffer when VK_EXT_vertex_input_dynamic_state or
+// VK_EXT_graphics_pipeline_library is enabled (emulators, DXVK), one for transform feedback when
+// VK_EXT_transform_feedback is (DXVK), one for debug printf -, then the push constants, then set 0's pointer, the
+// last entry (.user_data_limit - 1). A plain device puts the push constants at entry 1. Anything else (ray tracing's
+// entries between the push constants and the set) is refused: the network then runs from the driver's compiler.
+// Upstream v0.0.9 (GitLab issue 5).
+struct XglLayout { unsigned push_base, descriptor_slot; };
+inline XglLayout xgl_layout_of_limit(uint64_t limit,unsigned push_bytes) {
+    const uint64_t dwords=push_bytes/4;
+    require(limit>=dwords+2 && limit-1-dwords<=16,"unsupported XGL user-data layout");
+    return XglLayout{unsigned(limit-1-dwords),unsigned(limit-1)};
+}
+inline XglLayout xgl_layout(const Value& meta,unsigned push_bytes) {
+    const auto& ps=meta.at("amdpal.pipelines");require(ps.kind==Value::Array && ps.items.size()==1,"PAL pipeline count");
+    const uint64_t dwords=push_bytes/4;
+    const XglLayout l=xgl_layout_of_limit(ps.items[0].at(".user_data_limit").number(),push_bytes);
+    if(l.push_base!=1) {   // entries before the push constants: the capture must show the push constants there
+        const auto& map=ps.items[0].at(".hardware_stages").at(".cs").at(".user_data_reg_map");
+        require(map.kind==Value::Array,"PAL user-data map");
+        bool push_seen=dwords==0;
+        for(const auto& v:map.items) {
+            const uint64_t x=v.number();
+            if(x>=0x10000000) continue;   // the global table, the spill table, the grid, unused
+            require(x>=l.push_base && x<=l.descriptor_slot,"unsupported XGL user-data layout");
+            push_seen=push_seen || x<l.descriptor_slot;
+        }
+        require(push_seen,"unsupported XGL user-data layout");
+    }
+    return l;
+}
 // The record's code in a PAL container (the driver's own, or synthesize's), its metadata set to the record's.
-inline Bytes splice_elf(Elf& e,const Record& r,unsigned push_bytes,std::array<uint32_t,3> workgroup) {
+// layout: where the device's pipeline layout puts the push constants and set 0 (xgl_layout).
+inline Bytes splice_elf(Elf& e,const Record& r,unsigned push_bytes,std::array<uint32_t,3> workgroup,XglLayout layout) {
     require(push_bytes<=128 && push_bytes%4==0 && r.push_bytes<=push_bytes,"unsupported pipeline push range");
-    const unsigned descriptor_slot=push_bytes/4+1;
+    const unsigned descriptor_slot=layout.descriptor_slot;
+    require(descriptor_slot==layout.push_base+push_bytes/4,"unsupported XGL user-data layout");
     auto text=e.find(".text"),note=e.find(".note"),sym=e.find(".symtab");
     // NRPAL001 records are gfx12 code (upstream's); NRPAL002 name their machine.
     require(r.mach ? same_generation(r.mach,e.mach) : is_gfx12(e.mach),"record and GPU are different generations");
@@ -345,10 +395,10 @@ inline Bytes splice_elf(Elf& e,const Record& r,unsigned push_bytes,std::array<ui
         std::string name(e.data[sy.link].begin()+off,end);
         require(name=="_amdgpu_cs_main" && (e.data[sym][p+4]&15)==2 && read<uint64_t>(e.data[sym],p+8)==0,
                 "unsupported PAL text symbol");
-        auto pre=prologue(r,descriptor_slot,e.mach);write(e.data[sym],p+16,uint64_t(pre.size()+r.exec));++found;
+        auto pre=prologue(r,descriptor_slot,e.mach,layout.push_base);write(e.data[sym],p+16,uint64_t(pre.size()+r.exec));++found;
     }
     require(found==1,"PAL compute entry count");
-    auto pre=prologue(r,descriptor_slot,e.mach);e.data[text]=pre;e.data[text].insert(e.data[text].end(),r.code.begin(),r.code.end());
+    auto pre=prologue(r,descriptor_slot,e.mach,layout.push_base);e.data[text]=pre;e.data[text].insert(e.data[text].end(),r.code.begin(),r.code.end());
     Bytes notes;size_t pos=0;unsigned metadata=0;
     while(pos<e.data[note].size()) {
         auto& src=e.data[note];size_t start=pos;range(src,pos,12);
@@ -377,7 +427,7 @@ inline Bytes splice_elf(Elf& e,const Record& r,unsigned push_bytes,std::array<ui
         auto& map=cs.at(".user_data_reg_map");require(map.kind==Value::Array && map.items.size()==32 &&
                 map.items[0].number()==0x10000000,"PAL global table ABI");
         for(const auto& v:map.items) {auto x=v.number();require(x<=descriptor_slot || x==0xffffffff || x==0x10000000 || x==0x10000002 || x==0x10000006,"unhandled PAL user-data mapping");}
-        Arguments a(r,descriptor_slot);map.items.clear();for(auto x:a.map)map.items.emplace_back(x);
+        Arguments a(r,descriptor_slot,layout.push_base);map.items.clear();for(auto x:a.map)map.items.emplace_back(x);
         p.set(".spill_threshold",Value(a.spill>=0?1:65535));
         cs.set(".shader_spill_threshold",Value(a.spill>=0?1:65535));
         cs.set(".user_sgprs",Value(a.user));
@@ -403,7 +453,10 @@ inline Bytes splice_elf(Elf& e,const Record& r,unsigned push_bytes,std::array<ui
 }
 inline Bytes splice(const Bytes& binary,const Record& r,unsigned push_bytes=128,
                     std::array<uint32_t,3> workgroup={0,0,0}) {
-    Elf e(binary);return splice_elf(e,r,push_bytes,workgroup);
+    Elf e(binary);
+    require(push_bytes<=128 && push_bytes%4==0,"unsupported pipeline push range");
+    const XglLayout layout=xgl_layout(pal_metadata(e.data[e.find(".note")]),push_bytes);
+    return splice_elf(e,r,push_bytes,workgroup,layout);
 }
 
 // gfx10.3 (RX 6000): the driver's own code objects come from AMD's proprietary compiler, with metadata of its own
@@ -411,13 +464,17 @@ inline Bytes splice(const Bytes& binary,const Record& r,unsigned push_bytes=128,
 // an RX 6600, probe 2) imports bit-exact is the LLPC container instead: the RX 9070 XT's layout and metadata keys,
 // with the GPU's machine in e_flags (no feature bits) and EI_ABIVERSION 0 (1-3 are refused). It is built here, so a
 // gfx10.3 pipeline needs no compile of its template. mach: the GPU's machine, from a code object the driver made.
-inline Bytes synthesize(const Record& r,uint32_t mach,unsigned push_bytes,std::array<uint32_t,3> workgroup) {
+// push_base: where the device's layout puts the push constants (device_code reads it from the driver's empty kernel).
+inline Bytes synthesize(const Record& r,uint32_t mach,unsigned push_bytes,std::array<uint32_t,3> workgroup,
+                        unsigned push_base=1) {
     const char* isa=gfx103_isa(mach);
     require(isa && r.mach && is_gfx103(r.mach),"record and GPU are different generations");
     require(workgroup[0] && workgroup[1] && workgroup[2],"literal SPIR-V local size required");
     // IEEE mode is not in this container's metadata; ACO's gfx10.3 compute code never sets it.
     require(!((r.rsrc1>>23)&1),"IEEE mode unsupported on gfx10.3");
-    const unsigned slot=push_bytes/4+1;
+    require(push_bytes<=128 && push_bytes%4==0,"unsupported pipeline push range");
+    const XglLayout layout=xgl_layout_of_limit(push_base+push_bytes/4+1,push_bytes);
+    const unsigned slot=layout.descriptor_slot;
     Elf e;e.mach=mach;e.header=Bytes(64,0);
     std::memcpy(e.header.data(),"\x7f" "ELF\x02\x01\x01\x41",8);
     write(e.header,16,uint16_t(1));write(e.header,18,uint16_t(224));write(e.header,20,uint32_t(1));
@@ -468,6 +525,6 @@ inline Bytes synthesize(const Record& r,uint32_t mach,unsigned push_bytes,std::a
     Bytes sym(48,0);write(sym,24,at("_amdgpu_cs_main"));sym[28]=0x12;write(sym,30,uint16_t(2));
     add(".symtab",2,0,8,std::move(sym),1,1,24);
     write(e.header,60,uint16_t(e.sections.size()));write(e.header,62,uint16_t(1));
-    return splice_elf(e,r,push_bytes,workgroup);
+    return splice_elf(e,r,push_bytes,workgroup,layout);
 }
 } // namespace nr::pal

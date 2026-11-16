@@ -17,7 +17,7 @@ float3 PrepNeutralInv(float3 y) {
   const float start = 0.76, d = 0.24, desat = 0.15;
   const float np = max(y.x, max(y.y, y.z));
   if (np < start) return y;
-  const float peak = d * d / max(1.0 - np, 1e-6) - d + start;
+  const float peak = d * d / max(1.0 - np, 1.0 / 128.0) - d + start;   // bounded as prep_math.glsl's (blotches)
   const float g = 1.0 - 1.0 / (desat * (peak - np) + 1.0);
   return (y - g * np) / (1.0 - g) * (peak / np);
 }

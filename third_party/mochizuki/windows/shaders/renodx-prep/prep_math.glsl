@@ -18,7 +18,10 @@ vec3 neutral_inv(vec3 y) {
     const float start = 0.76, d = 0.24, desat = 0.15;
     const float np = max(y.r, max(y.g, y.b));
     if (np < start) return y;
-    const float peak = d * d / max(1.0 - np, 1e-6) - d + start;
+    // The gap to the clip kept >= 1/128 (scene peak <= ~7.9), as the other inverses are bounded: unbounded (1e-6, peak
+    // 57600) a channel at the clip - Edit strength drives a bright one there - turned g into 1 and the others into
+    // -1e8, i.e. a pure-colour blotch after the cap. 1/256 was the smallest gap that removed them on the reproduction.
+    const float peak = d * d / max(1.0 - np, 1.0 / 128.0) - d + start;
     const float g = 1.0 - 1.0 / (desat * (peak - np) + 1.0);
     return (y - g * np) / (1.0 - g) * (peak / np);
 }
