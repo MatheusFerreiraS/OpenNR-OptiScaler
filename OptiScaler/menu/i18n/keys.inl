@@ -1760,7 +1760,6 @@
 "not available",
 "not readable",
 "nothing matched yet.",
-"nr",
 "nvngx replacement",
 "nvngx.ini detected, please move over to using OptiScaler.ini and delete the old config",
 "nvngx_dlss.dll not found, DLSS disabled!",

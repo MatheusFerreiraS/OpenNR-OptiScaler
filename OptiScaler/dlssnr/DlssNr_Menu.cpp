@@ -763,17 +763,21 @@ static void Rdna2NetworkSection()
         const size_t sep = dataDir.find_last_of("\\/");
         const std::string leaf = sep == std::string::npos ? dataDir : dataDir.substr(sep + 1);
         size_t layout = _stricmp(leaf.c_str(), "nr_data") == 0 ? 1 : 0;
-        if (Rdna2Combo("Network layout", layout, layoutNames, std::size(layoutNames),
+        const bool known = sep != std::string::npos &&
+                           (_stricmp(leaf.c_str(), "nr_data") == 0 || _stricmp(leaf.c_str(), "nr_data_h15") == 0);
+        // Only where the other layout's folder is there too: the installed package carries nr_data_h15 alone, and a
+        // data_dir naming a folder that is missing leaves the runtime without a network.
+        std::filesystem::path other = dataDir.substr(0, sep + 1) + (layout == 1 ? "nr_data_h15" : "nr_data");
+        if (other.is_relative())
+            other = Rdna2IniPath().parent_path() / other;
+        std::error_code otherEc;
+        if (known && std::filesystem::is_directory(other, otherEc) &&
+            Rdna2Combo("Network layout", layout, layoutNames, std::size(layoutNames),
                        "Hybrid (recommended) runs the nr_data_h15 weights, Classic the nr_data ones. Only the last"
                        "\nfolder of data_dir changes."))
         {
-            const bool known = sep != std::string::npos &&
-                               (_stricmp(leaf.c_str(), "nr_data") == 0 || _stricmp(leaf.c_str(), "nr_data_h15") == 0);
-            if (known)
-            {
-                Rdna2IniWrite("data_dir", dataDir.substr(0, sep + 1) + (layout == 1 ? "nr_data" : "nr_data_h15"));
-                saved = true;
-            }
+            Rdna2IniWrite("data_dir", dataDir.substr(0, sep + 1) + (layout == 1 ? "nr_data" : "nr_data_h15"));
+            saved = true;
         }
 
         // Split is off for the release (picture trails behind in motion); the runtime ignores nr_split too.

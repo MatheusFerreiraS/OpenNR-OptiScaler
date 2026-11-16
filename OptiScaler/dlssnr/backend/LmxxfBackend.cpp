@@ -406,7 +406,7 @@ bool LmxxfBackend::EnsureRuntime()
 // and one the runtime reports unsupported ("[unsupported] ...") is never retried. Returns false.
 bool LmxxfBackend::SessionStartFailed(const char* step, const char* err)
 {
-    if (Lmxxf())
+    if (Lmxxf() && !Rdna2())
     {
         SetStatus((std::string("lmxxf: ") + step + " failed").c_str());
         return false;
@@ -433,7 +433,7 @@ bool LmxxfBackend::EnsureSession()
     if (sessionReady && session)
         return true;
     // Before anything else, the weights scan and the QueryInterface calls included.
-    if (!Lmxxf() && (sessionUnavailable || (sessionFailures && GetTickCount64() < nextSessionRetry)))
+    if ((!Lmxxf() || Rdna2()) && (sessionUnavailable || (sessionFailures && GetTickCount64() < nextSessionRetry)))
         return false;
     if (!EnsureRuntime() || !device || !queue)
         return false;
