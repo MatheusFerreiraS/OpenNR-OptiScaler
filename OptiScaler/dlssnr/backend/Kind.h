@@ -34,7 +34,8 @@ inline Kind ParseKind(std::string_view raw)
         return Kind::Daniel;
     if (eq(raw, "off") || eq(raw, "none"))
         return Kind::Off;
-    if (eq(raw, "lmxxf"))
+    // rdna2 / hexneural: Rdna2NrRuntime.dll, the lmxxf C ABI for RX 6000 (LmxxfRuntimeFile picks the file).
+    if (eq(raw, "lmxxf") || eq(raw, "rdna2") || eq(raw, "hexneural"))
         return Kind::Lmxxf;
     if (eq(raw, "mochizuki"))
         return Kind::Mochizuki;

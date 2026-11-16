@@ -695,6 +695,7 @@ static void RuntimeCombo(Config* config)
         { Kind::Daniel, "daniel", "danielblnc", L"dlssnr_amd_pass1.dll" },
         { Kind::Lmxxf, "lmxxf", "lmxxf", L"LmxxfNrRuntime.dll" },
         { Kind::Mochizuki, "mochizuki", "mochizuki", L"MochizukiNrRuntime.dll" },
+        { Kind::Lmxxf, "rdna2", "RDNA2 (HexNeural)", L"Rdna2NrRuntime.dll" },
     };
     std::error_code ec;
     const auto dir = Util::DllPath().parent_path();
@@ -705,19 +706,27 @@ static void RuntimeCombo(Config* config)
     if (count < 2)
         return;
     const Kind running = DlssNr::Backend::ActiveKindFromConfig();
-    const Kind picked = DlssNr::Backend::ParseKind(config->NrBackend.value_or_default());
+    const std::string raw = config->NrBackend.value_or_default();
+    const Kind picked = DlssNr::Backend::ParseKind(raw);
+    // lmxxf and rdna2 share Kind::Lmxxf: the key tells them apart (hexneural is rdna2's alias).
+    const bool rdna2 = _stricmp(raw.c_str(), "rdna2") == 0 || _stricmp(raw.c_str(), "hexneural") == 0;
+    const auto isPicked = [&](const Runtime& r)
+    { return r.kind == picked && (r.kind != Kind::Lmxxf || rdna2 == (std::strcmp(r.key, "rdna2") == 0)); };
     const char* preview = runtimes[0].label;
     for (const auto& r : runtimes)
-        if (r.kind == picked)
+        if (isPicked(r))
             preview = r.label;
     if (ImGui::BeginCombo("NR runtime", preview))
     {
         for (size_t i = 0; i < std::size(runtimes); ++i)
-            if (installed[i] && ImGui::Selectable(runtimes[i].label, runtimes[i].kind == picked))
+            if (installed[i] && ImGui::Selectable(runtimes[i].label, isPicked(runtimes[i])))
                 config->NrBackend = std::string(runtimes[i].key);
         ImGui::EndCombo();
     }
-    if (picked != running)
+    // Same kind but another DLL also needs a restart.
+    const bool fileChanged = picked == Kind::Lmxxf && running == Kind::Lmxxf &&
+                             rdna2 != (std::wcscmp(DlssNr::Backend::LmxxfRuntimeFile(), L"Rdna2NrRuntime.dll") == 0);
+    if (picked != running || fileChanged)
     {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1.f, 0.8f, 0.f, 1.f), "(save and restart)");
@@ -727,6 +736,8 @@ static void RuntimeCombo(Config* config)
                "\nResolution only. Detail, colour and debug view."
                "\nmochizuki: open-source Vulkan network on its own device. Its own processing"
                "\npoint, passes, resolution, strengths and model controls."
+               "\nRDNA2 (HexNeural): Rdna2NrRuntime.dll, the lmxxf interface for RX 6000;"
+               "\nthe lmxxf controls apply."
                "\n\nThe choice is stored as NrBackend. Press Save Settings and restart the"
                "\ngame to switch.");
 }

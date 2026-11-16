@@ -5,6 +5,9 @@ namespace DlssNr::Backend
 {
 Kind RequestedKind();
 Kind ActiveKindFromConfig();
+// The DLL behind Kind::Lmxxf: Rdna2NrRuntime.dll when NrBackend (at launch) is rdna2 or hexneural, else
+// LmxxfNrRuntime.dll.
+const wchar_t* LmxxfRuntimeFile();
 // True while lmxxf (with LmxxfWired()) or mochizuki is active, or OpenRR was enabled at launch. Mutual exclusion
 // vs graphics tracker.
 bool SubmissionHooksWanted();

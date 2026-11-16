@@ -101,7 +101,8 @@ class LmxxfBackend final : public Host
     static void OnListRecycled(ID3D12CommandList* list);
     void ListRecycled(ID3D12CommandList* list);
     void UnregisterListRecycled();
-    bool Lmxxf() const { return runtimeFile == L"LmxxfNrRuntime.dll"; }
+    // Every runtime but mochizuki speaks plain lmxxf (LmxxfNrRuntime.dll, Rdna2NrRuntime.dll).
+    bool Lmxxf() const { return runtimeFile != L"MochizukiNrRuntime.dll"; }
     uint32_t FrameInfoSize() const;
     void SetStatus(const char* s);
 

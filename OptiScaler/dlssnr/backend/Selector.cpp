@@ -25,6 +25,13 @@ Kind RequestedKind()
     return raw ? ParseKind(*raw) : Kind::Daniel;
 }
 
+const wchar_t* LmxxfRuntimeFile()
+{
+    const auto& raw = LaunchValue();
+    const bool rdna2 = raw && (_stricmp(raw->c_str(), "rdna2") == 0 || _stricmp(raw->c_str(), "hexneural") == 0);
+    return rdna2 ? L"Rdna2NrRuntime.dll" : L"LmxxfNrRuntime.dll";
+}
+
 Kind ActiveKindFromConfig()
 {
     const auto requested = RequestedKind();
