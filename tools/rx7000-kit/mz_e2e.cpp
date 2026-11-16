@@ -151,8 +151,7 @@ int main(int argc, char** argv)
     std::printf("image %ux%u\n", w, h);
 
     HMODULE dll = LoadLibraryW(W(argv[1]).c_str());
-    if (!dll) { std::fprintf(stderr, "FAIL: load runtime: error %lu
-", GetLastError()); return 1; }   // 4551: App Control
+    if (!dll) { std::fprintf(stderr, "FAIL: load runtime: error %lu\n", GetLastError()); return 1; }   // 4551: App Control
     if (const char* more = std::getenv("E2E_DEVICE_EXTENSIONS"); more && *more)
         AddDeviceExtensions(dll, more);
     auto getApi = reinterpret_cast<int32_t (*)(uint32_t, LmxxfNrApi*)>(GetProcAddress(dll, "LmxxfNrGetApi"));
@@ -318,7 +317,9 @@ int main(int argc, char** argv)
     }
 
     // E2E_PREP: the preprocess on; E2E_RENO_STYLE=n: the RenoDX stage's Style (1 Natural, 2 Cinematic: Style grade).
-    if (std::getenv("E2E_PREP") || std::getenv("E2E_RENO_STYLE"))
+    // E2E_PREP_CURVE=n: the preprocess curve (1 neutral, 3 filmic, ...), E2E_PREP_EXPOSURE=n its exposure; E2E_FAST_METHOD=n: Passes (fast) with that method
+    // (0 Extrapolation .. 3 Edit strength), E2E_EDIT_STRENGTH=x its strength.
+    if (std::getenv("E2E_PREP") || std::getenv("E2E_RENO_STYLE") || std::getenv("E2E_FAST_METHOD"))
     {
         auto defs = reinterpret_cast<PFN_MochizukiNrGetControlDefaults>(GetProcAddress(dll, "MochizukiNrGetControlDefaults"));
         auto set = reinterpret_cast<PFN_MochizukiNrSetControls>(GetProcAddress(dll, "MochizukiNrSetControls"));
@@ -329,8 +330,20 @@ int main(int argc, char** argv)
             c.preprocess = 1;
         if (const char* st = std::getenv("E2E_RENO_STYLE"))
             c.reno_style = uint32_t(std::atoi(st));
+        if (const char* v = std::getenv("E2E_PREP_CURVE"))
+            c.preprocess_curve = uint32_t(std::atoi(v));
+        if (const char* v = std::getenv("E2E_PREP_EXPOSURE"))   // 0 off, 2 fixed: deterministic (1, auto, meters)
+            c.preprocess_exposure = uint32_t(std::atoi(v));
+        if (const char* v = std::getenv("E2E_FAST_METHOD"))
+        {
+            c.reno_passes_mode = 1;
+            c.reno_fast_method = uint32_t(std::atoi(v));
+        }
+        if (const char* v = std::getenv("E2E_EDIT_STRENGTH"))
+            c.reno_fast_edit_strength = float(std::atof(v));
         Require(set(ctx, &c) == LMXXF_NR_OK, "SetControls");
-        std::printf("controls: preprocess %u, RenoDX style %u\n", c.preprocess, c.reno_style);
+        std::printf("controls: preprocess %u curve %u, RenoDX style %u, passes mode %u method %u edit %.2f\n", c.preprocess,
+                    c.preprocess_curve, c.reno_style, c.reno_passes_mode, c.reno_fast_method, c.reno_fast_edit_strength);
     }
     std::vector<double> times;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT ofp {};
