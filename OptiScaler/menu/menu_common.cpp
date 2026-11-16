@@ -861,10 +861,12 @@ static std::string ShortUpscalerName(Upscaler upscaler, API api, int ffxIndex)
     if (auto versions = GetFfxVersionList(upscaler, api);
         versions != nullptr && ffxIndex >= 0 && ffxIndex < versions->names.size())
     {
-        // WrongGPU lists NVIDIA DLSS models as FFX versions ("Model K", "Model M")
+        // WrongGPU lists NVIDIA DLSS models as FFX versions ("WrongGPU Model K", "WrongGPU Model M")
         const std::string name = versions->names[ffxIndex];
-        if (name.rfind("Model ", 0) == 0)
-            return StrFmt("DLSS %s%s", name.c_str(), name == "Model M" ? " (slow on RDNA2)" : "");
+        if (name.find("Model K") != std::string::npos)
+            return "DLSS Model K";
+        if (name.find("Model M") != std::string::npos)
+            return "DLSS Model M (slow on RDNA2)";
         return StrFmt("FSR %s", name.c_str());
     }
 
@@ -998,7 +1000,7 @@ void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, co
                 // WrongGPU: its DLSS models get their own entries, after FSR
                 for (int n = 0; n < (int) versions->names.size(); n++)
                 {
-                    if (std::string(versions->names[n]).rfind("Model ", 0) == 0)
+                    if (std::string(versions->names[n]).find("Model ") != std::string::npos)
                     {
                         entries.push_back({ opt, n, feature_version() });
                         wrongGpu = true;
