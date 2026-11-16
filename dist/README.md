@@ -34,17 +34,7 @@ you pick is the one you override in Step 5.
 ## Step 4:
 
 You need to put the `nvngx_dlssnr.dll` file (about 158mb) in the game's folder. Make sure to use
-the patched version if you have a card other than a 50XX. It is not in either package.
-
-There are two downloads. The plain one is the loader by itself. The `_with_DLSS` one also carries,
-already in place and needing no action:
-
-- `OptiScaler\nvngx_dlss.dll`, `nvngx_dlssd.dll`, `nvngx_dlssg.dll` are DLSS 310.9. OptiScaler
-  searches its own folder ahead of the exe folder, so these are used without touching what the
-  game ships.
-- `OptiScaler\streamline\sl.*.dll` are Streamline 2.14.
-
-Take the plain one if the game already has newer, or you keep your own set.
+the patched version if you have a card other than a 50XX. It is not in the package.
 
 ## Step 5 (proton only)
 
@@ -59,23 +49,6 @@ Use whatever name you renamed the DLL to in Step 3.
 ---
 
 For support, contact y4my4m in Harmony's town hall (https://har.mony.lol)
-
----
-
-In case of emergency, with the files from the `_with_DLSS` package:
-- Copy `OptiScaler\streamline\sl.*.dll` over the set the game ships
-- Copy `OptiScaler\nvngx_dlss.dll`, `nvngx_dlssd.dll`, `nvngx_dlssg.dll` next to the exe
-
-You shouldn't have to do this, but worth the shot if nothing else works. Keep a copy of whatever
-you overwrite.
-
-The first one is the fix for a game stuck at 2X. A game that ships its own Streamline loads it
-from where it put it, and OptiScaler's copy does not override that. Unreal titles keep theirs
-under `Engine\Plugins\Runtime\Nvidia\Streamline\Binaries\ThirdParty\Win64`, which is where the
-files have to go, not next to the exe.
-
-The overlay reports the Streamline version it found. Below 2.7.1 there is no multi frame
-generation to unlock and the ratio stops at 2X, whatever the ini asks for.
 
 ---
 

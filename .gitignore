@@ -420,11 +420,6 @@ FodyWeavers.xsd
 
 !external/directx_agility_sdk/lib/D3D12Core.dll
 
-# Streamline 2.14 and DLSS 310.9 redistributables, packaged into the build under OptiScaler
-# and OptiScaler/streamline.
-!dist/streamline/*.dll
-!dist/nvngx/*.dll
-
 # Fortran module files
 *.mod
 *.smod
@@ -469,3 +464,7 @@ third_party/lmxxf/hip/_build_gfx1201/
 third_party/lmxxf/hip/rtc_compile.exe
 third_party/lmxxf/hip/*.hsaco.s
 third_party/mochizuki/toolchain/
+
+# NVIDIA binaries never go in this repository
+dist/nvngx/
+dist/streamline/

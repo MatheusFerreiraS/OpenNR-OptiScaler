@@ -118,7 +118,6 @@ jobs:
     - name: Add the readme
       run: Copy-Item ${{ github.workspace }}\dist\README.md ${{ github.workspace }}\x64\Release\a\README.md
 
-    # Cut before the redistributables land, so this archive carries the loader alone.
     - name: Compress the artifact
       run: |
         $zipName = "${{ steps.get_version.outputs.filename }}.7z"
@@ -130,34 +129,6 @@ jobs:
       with:
         name: '${{ steps.get_version.outputs.filename }}'
         path: '${{ github.workspace }}\${{ steps.get_version.outputs.filename }}.7z'
-        archive: false
-        compression-level: 0
-        if-no-files-found: error
-
-    # Streamline 2.14. A game carrying an older set stops at 2X whatever the ini asks for, and the
-    # recovery step in the readme is to copy these over the ones it ships.
-    - name: Add Streamline
-      run: |
-        $target = "${{ github.workspace }}\x64\Release\a\OptiScaler\streamline"
-        New-Item -ItemType Directory -Force -Path $target | Out-Null
-        Copy-Item ${{ github.workspace }}\dist\streamline\* $target
-
-    # DLSS 310.9 snippets. OptiScaler searches its own folder ahead of the exe folder, so these
-    # are picked up without touching what the game ships. nvngx_dlssnr.dll is not among them.
-    - name: Add NGX snippets
-      run: Copy-Item ${{ github.workspace }}\dist\nvngx\* ${{ github.workspace }}\x64\Release\a\OptiScaler\
-
-    - name: Compress the artifact with the redistributables
-      run: |
-        $zipName = "${{ steps.get_version.outputs.filename }}_with_DLSS.7z"
-        7z a -r ${{ github.workspace }}\$zipName ${{ github.workspace }}\x64\Release\a\*.*
-
-      continue-on-error: false
-
-    - uses: actions/upload-artifact@v7.0.0
-      with:
-        name: '${{ steps.get_version.outputs.filename }}_with_DLSS'
-        path: '${{ github.workspace }}\${{ steps.get_version.outputs.filename }}_with_DLSS.7z'
         archive: false
         compression-level: 0
         if-no-files-found: error
