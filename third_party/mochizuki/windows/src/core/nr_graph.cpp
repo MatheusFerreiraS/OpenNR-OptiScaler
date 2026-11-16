@@ -6088,6 +6088,25 @@ bool NrSession::make_images(int argc, char** argv) {
 }
 
 void NrSession::create_kernels(const std::string& spv_dir, const std::set<std::string>& chain) {
+    const auto env_u32 = [](const char* name, uint32_t fallback) {
+        const char* v = std::getenv(name);
+        return v && *v ? uint32_t(std::strtoul(v, nullptr, 10)) : fallback;
+    };
+    // RX 7000 with the shipped aco-gfx11 bundle (nr::binary::gfx11_slim): ACO's code runs only where the RX 7000 speed
+    // kit saw it right, 240 to 960 ViT tokens (1152x648 to 2560x1440; NR_RDNA3_ACO_MIN / _MAX); outside that the driver
+    // compiles every kernel, as without the bundle.
+    const std::string aco_dir = nr::binary::directory();
+    const bool slim = ctx.arch == nr::Arch::rdna3 && nr::binary::gfx11_slim(aco_dir);
+    uint32_t vit_tokens = 0;
+    for (const Disp& d : disp)
+        if (d.kern == "vitattn" && d.push.size() >= 12) { std::memcpy(&vit_tokens, d.push.data() + 8, 4); break; }
+    const bool aco_range = slim && vit_tokens >= env_u32("NR_RDNA3_ACO_MIN", 240) && vit_tokens <= env_u32("NR_RDNA3_ACO_MAX", 960);
+    struct DriverOnly { bool was = nr::binary::driver_only; ~DriverOnly() { nr::binary::driver_only = was; } } driver_only;
+    if (slim) {
+        nr::binary::driver_only = !aco_range;
+        nr::logf("[nr] RDNA3 ACO: %u ViT tokens, %s", vit_tokens,
+                 aco_range ? "ACO's code where the bundle has a record" : "the driver compiles every kernel");
+    }
     for (const Disp& d : disp) {
         if (kern.count(d.kern)) continue;
         // A host going away (nr::build_cancel) stops here, between two
@@ -6097,26 +6116,38 @@ void NrSession::create_kernels(const std::string& spv_dir, const std::set<std::s
             throw std::runtime_error("NR build cancelled");
         }
         struct Tick { ~Tick() { ++nr::g_build_pipes_done; } } tick;
-        std::string p = spv_dir + "/g_" + d.kern + ".spv";
+        const std::string own = spv_dir + "/g_" + d.kern + ".spv";
+        std::string p = own;
+        // The shipped aco-gfx11 bundle: a kernel whose ACO SPIR-V it holds in shaders\ (its record beside) runs that
+        // within ACO's range; its template, for the container or the driver's fallback, is shaders-rdna3's.
+        if (aco_range) {
+            const std::string a = aco_dir + "/shaders/g_" + d.kern + ".spv";
+            if (std::ifstream(nr::u8::path(a)).good()) p = a;
+        }
         // RX 7000 kits (local patches 22-24), diagnostic only: NR_RDNA3_ATTN / NR_RDNA3_VITATTN = <file>.spv runs that
         // SPIR-V (same bindings and push block) in place of the shipped g_attn.spv / g_vitattn.spv.
         if (ctx.arch == nr::Arch::rdna3 && (d.kern == "attn" || d.kern == "vitattn")) {
             const char* e = std::getenv(d.kern == "attn" ? "NR_RDNA3_ATTN" : "NR_RDNA3_VITATTN");
             const std::string mode = e ? e : "";
-            // vitattn: the native body is right on gfx11 at every size; the cooperative-matrix one (g_vitattncm, 0.5.8's)
-            // is faster and was right at 1080p and 1440p on RX 7000 kits 5-7, wrong at 648p/720p. It runs from
-            // NR_RDNA3_VITATTN_COOP_MIN ViT tokens up (default 600: 1280x720 has 288, 1920x1080 640), or always / never with
-            // NR_RDNA3_VITATTN=coop / native.
+            // vitattn: the native body is right on gfx11 at every size. The cooperative-matrix one (g_vitattncm, 0.5.8's)
+            // is faster; the driver's compile of it was wrong at 240 and 288 tokens (1152x648, 1280x720) and right from 448
+            // (1706x960) to 2160 (3840x2160) on the RX 7900 XTX and 7800 XT, so it runs from NR_RDNA3_VITATTN_COOP_MIN tokens
+            // (448). ACO's compile of it (aco-gfx11\shaders\g_vitattn.spv, its record in the bundle) was right at 240-960
+            // and is faster still: it runs there when the bundle is in use. NR_RDNA3_VITATTN=coop / native forces the
+            // driver's matrix or native body.
             if (d.kern == "vitattn" && d.push.size() >= 12) {
                 uint32_t tokens = 0;
                 std::memcpy(&tokens, d.push.data() + 8, 4);
-                const char* m = std::getenv("NR_RDNA3_VITATTN_COOP_MIN");
-                const uint32_t min_tokens = m ? uint32_t(std::strtoul(m, nullptr, 10)) : 600u;
+                const uint32_t min_tokens = env_u32("NR_RDNA3_VITATTN_COOP_MIN", 448);
                 const std::string cm = spv_dir + "/g_vitattncm.spv";
-                if (mode == "coop" || (mode != "native" && tokens >= min_tokens)) {
-                    if (std::ifstream(nr::u8::path(cm)).good()) p = cm;
+                if (mode == "coop" || mode == "native") p = own;
+                const char* body = p != own ? "ACO-cooperative-matrix" : "native";
+                if (p == own && (mode == "coop" || (mode != "native" && tokens >= min_tokens)) &&
+                    std::ifstream(nr::u8::path(cm)).good()) {
+                    p = cm;
+                    body = "cooperative-matrix";
                 }
-                nr::logf("[nr] RDNA3 vitattn: %s body, %u tokens", p == cm ? "cooperative-matrix" : "native", tokens);
+                nr::logf("[nr] RDNA3 vitattn: %s body, %u tokens", body, tokens);
             }
             if (mode.size() > 4 && mode.compare(mode.size() - 4, 4, ".spv") == 0 && std::ifstream(mode).good()) {
                 p = mode;

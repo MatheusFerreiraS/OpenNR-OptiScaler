@@ -675,7 +675,17 @@ optional `shell\` and `shell-aliases.txt`) and takes it when the PAL adapter tak
 0x41, gfx1101 0x46, gfx1102 0x47 by device id); otherwise `[mochizuki] ACO off for the RDNA3 network: no gfx11 ACO
 records ...` or `... the PAL adapter does not take this GPU's code objects`, and the driver compiles
 `shaders-rdna3`. Since local patch 28 the adapter takes gfx11 (and gfx10.3) code objects and a pipeline without a
-working record falls back to the driver alone; the records are in `windows/data/aco/gfx11/` (not yet in the build).
+working record falls back to the driver alone; the records are in `windows/data/aco/gfx11/`.
+
+Local patch 34 (2026-11-16, RX 7000 speed kit on an RX 7900 XTX and RX 7800 XT): the build ships `aco-gfx11` with
+only the 8 records ACO won on both cards (`tools/build-mochizuki-aco-gfx11.py`: fswin32nh, fswinfusedup64, gemmproj,
+gemmprojc, gemmprojt, gemmvact, gemmvqkvs, and vitattn as ACO's compile of the matrix body; `windows/data/aco/gfx11/
+shaders` keeps the three whose ACO SPIR-V is not shaders-rdna3's). With that bundle (`nr::binary::gfx11_slim`: no
+`shaders\g_attn.spv`) the network is shaders-rdna3's, those kernels taken from the bundle's `shaders\`, within 240-960
+ViT tokens (1152x648-2560x1440, `NR_RDNA3_ACO_MIN`/`_MAX`); outside that range every kernel is the driver's
+(`nr::binary::driver_only`). The driver's matrix vitattn (`g_vitattncm`) runs from 448 tokens (1706x960) up: wrong at
+240/288 on both cards, right at 448-2160. Log: `[nr] RDNA3 ACO: N ViT tokens, ...` and `[nr] RDNA3 vitattn:
+ACO-cooperative-matrix|cooperative-matrix|native body`.
 
 On an RX 9070 XT with `MZ_FORCE_RDNA3=1` (driver 26.9.2) every pipeline compiles, the network builds (16 s cold at
 1080p) and runs at 720p, 1080p and 4K without errors; the picture is wrong, as gfx12's fragment layout is not gfx11's.

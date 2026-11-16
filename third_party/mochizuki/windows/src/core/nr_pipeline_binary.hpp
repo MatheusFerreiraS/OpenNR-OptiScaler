@@ -340,6 +340,15 @@ inline std::string fallback_bundle(const std::string& dir) {
     return name=="aco-gfx11"?"gfx11":name=="aco-gfx103x"?"gfx103x":"";
 }
 inline bool gfx11_bundle(const std::string& dir) { return fallback_bundle(dir)=="gfx11"; }
+// aco-gfx11 as OpenNR ships it: records\ only for the kernels ACO's code runs faster on RX 7000, named by the hash of
+// shaders-rdna3's SPIR-V or, where ACO's differs, by that one's, which shaders\ holds (no g_attn.spv). The network is
+// then shaders-rdna3's with those kernels taken from shaders\; a full bundle (the kits', every kernel's SPIR-V in shaders\) keeps its own.
+inline bool gfx11_slim(const std::string& dir) {
+    return gfx11_bundle(dir) && !std::ifstream(nr::u8::path(dir+"/shaders/g_attn.spv")).good();
+}
+// This thread's pipelines are the driver's compile whatever the bundle holds (nr_graph.cpp create_kernels: an RX 7000
+// network outside the sizes ACO's code was checked at).
+inline thread_local bool driver_only=false;
 inline VkResult create_aco(VkDevice device,VkPipelineCache cache,const VkComputePipelineCreateInfo& ci,const std::string& dir,
                            const std::string& path,const uint32_t* code,size_t bytes,VkPipeline* out,uint32_t push_bytes);
 inline VkResult create_fallback(VkDevice device,VkPipelineCache cache,const VkComputePipelineCreateInfo& ci,const std::string& dir,
@@ -456,7 +465,7 @@ inline VkResult create_aco(VkDevice device,VkPipelineCache cache,const VkCompute
 inline VkResult create_or_default(VkDevice device,VkPipelineCache cache,const VkComputePipelineCreateInfo& ci,
                                  const std::string& path,const uint32_t* code,size_t bytes,VkPipeline* out,uint32_t push_bytes) {
     auto dir=directory();
-    if(dir.empty() || !network_path(path))return vkCreateComputePipelines(device,cache,1,&ci,nullptr,out);
+    if(dir.empty() || !network_path(path) || driver_only)return vkCreateComputePipelines(device,cache,1,&ci,nullptr,out);
     // The FP16 networks' bundles fall back a pipeline at a time; aco's failure turns ACO Mode off (Error).
     const std::string tag=fallback_bundle(dir);
     if(!tag.empty())return create_fallback(device,cache,ci,dir,tag,path,code,bytes,out,push_bytes);

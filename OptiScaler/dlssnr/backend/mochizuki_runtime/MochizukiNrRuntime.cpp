@@ -1244,9 +1244,10 @@ struct Vulkan
             Fp16Checks();
     }
 
-    // ACO for the RDNA3 network, when it was asked for (ConfigureAco set dlssnr-amd\aco up): the network as Mesa ACO
-    // gfx11 machine code in dlssnr-amd\aco-gfx11\ laid out as aco\ is (records\ named by the hash of the SPIR-V in
-    // shaders\, which linux\build\build_network.py rdna3 makes; tools\aco-records makes the records). It is taken when
+    // ACO for the RDNA3 network, when it was asked for (ConfigureAco set dlssnr-amd\aco up): Mesa ACO gfx11 machine code
+    // in dlssnr-amd\aco-gfx11\. As shipped (tools\build-mochizuki-runtime.cmd) it holds records\ only for the kernels
+    // ACO runs faster on RX 7000 and shaders\ with the ACO SPIR-V of those that differ from shaders-rdna3's
+    // (vitattn's matrix body among them; nr::binary::gfx11_slim); a kit's full bundle is laid out as aco\ is. It is taken when
     // its records are there and the PAL adapter takes this GPU's code objects (nr::pal::takes_machine); a pipeline
     // whose record is missing or does not import is compiled by the driver from shaders-rdna3 (nr_pipeline_binary.hpp).
     void Rdna3Aco()
