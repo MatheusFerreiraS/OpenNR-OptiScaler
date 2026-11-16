@@ -680,6 +680,117 @@ static void MochizukiBuildProgress(Config* config, uint32_t network)
     }
 }
 
+// RDNA2 network: the settings Rdna2NrRuntime.dll reads once at game start, from [nr] in Rdna2NrRuntime.ini next to
+// OptiScaler. They apply from the next launch, like NrBackend.
+static std::filesystem::path Rdna2IniPath()
+{
+    return Util::DllPath().parent_path() / L"Rdna2NrRuntime.ini";
+}
+
+static std::string Rdna2IniRead(const char* key, const char* fallback)
+{
+    char buf[512] {};
+    GetPrivateProfileStringA("nr", key, fallback, buf, sizeof buf, Rdna2IniPath().string().c_str());
+    return buf;
+}
+
+static void Rdna2IniWrite(const char* key, const std::string& value)
+{
+    WritePrivateProfileStringA("nr", key, value.c_str(), Rdna2IniPath().string().c_str());
+}
+
+// Index of the entry whose value is current, or fallback when none matches.
+static size_t Rdna2IndexOf(const std::string& current, const char* const* values, size_t count, size_t fallback)
+{
+    for (size_t i = 0; i < count; ++i)
+        if (_stricmp(current.c_str(), values[i]) == 0)
+            return i;
+    return fallback;
+}
+
+// Returns true when the user picked another entry.
+static bool Rdna2Combo(const char* label, size_t& index, const char* const* names, size_t count, const char* help)
+{
+    bool changed = false;
+    if (ImGui::BeginCombo(label, names[index]))
+    {
+        for (size_t i = 0; i < count; ++i)
+            if (ImGui::Selectable(names[i], i == index) && i != index)
+            {
+                index = i;
+                changed = true;
+            }
+        ImGui::EndCombo();
+    }
+    HelpMarker(help);
+    return changed;
+}
+
+static void Rdna2NetworkSection()
+{
+    static bool saved = false;
+    static constexpr const char* vitValues[] = { "1", "0", "2", "3", "4" };
+    static constexpr const char* vitNames[] = { "Off (cleanest)", "Per model (default)", "Every 2nd job", "Every 3rd job",
+                                                "Every 4th job" };
+    static constexpr const char* resValues[] = { "auto", "3840x2160", "2560x1440", "1920x1080", "1707x960", "1280x720" };
+    static constexpr const char* resNames[] = { "Auto (output size)", "3840 x 2160", "2560 x 1440", "1920 x 1080",
+                                                "1707 x 960", "1280 x 720" };
+    static constexpr const char* layoutNames[] = { "Hybrid (recommended)", "Classic" };
+    static constexpr const char* splitValues[] = { "0", "2", "3" };
+    static constexpr const char* splitNames[] = { "Off", "2 frames (recommended)", "3 frames (more FPS)" };
+
+    if (auto section = ScopedCollapsingHeader("RDNA2 network##rdna2section"); section.IsHeaderOpen())
+    {
+        size_t vit = Rdna2IndexOf(Rdna2IniRead("vit_every", "0"), vitValues, std::size(vitValues), 1);
+        if (Rdna2Combo("ViT skip", vit, vitNames, std::size(vitNames),
+                       "Reuses the vision transformer's previous result on the jobs in between: faster, slightly less"
+                       "\nexact. Off runs it on every job for the cleanest picture. Per model is the runtime's default."))
+        {
+            Rdna2IniWrite("vit_every", vitValues[vit]);
+            saved = true;
+        }
+
+        size_t res = Rdna2IndexOf(Rdna2IniRead("model_res", "auto"), resValues, std::size(resValues), 0);
+        if (Rdna2Combo("Network resolution", res, resNames, std::size(resNames),
+                       "The resolution the network runs at. Auto takes it from the output size. Lower is faster"
+                       "\nand softer."))
+        {
+            Rdna2IniWrite("model_res", resValues[res]);
+            saved = true;
+        }
+
+        // The layout is the last folder of data_dir (nr_data_h15 or nr_data); only that part is replaced.
+        const std::string dataDir = Rdna2IniRead("data_dir", "");
+        const size_t sep = dataDir.find_last_of("\\/");
+        const std::string leaf = sep == std::string::npos ? dataDir : dataDir.substr(sep + 1);
+        size_t layout = _stricmp(leaf.c_str(), "nr_data") == 0 ? 1 : 0;
+        if (Rdna2Combo("Network layout", layout, layoutNames, std::size(layoutNames),
+                       "Hybrid (recommended) runs the nr_data_h15 weights, Classic the nr_data ones. Only the last"
+                       "\nfolder of data_dir changes."))
+        {
+            const bool known = sep != std::string::npos &&
+                               (_stricmp(leaf.c_str(), "nr_data") == 0 || _stricmp(leaf.c_str(), "nr_data_h15") == 0);
+            if (known)
+            {
+                Rdna2IniWrite("data_dir", dataDir.substr(0, sep + 1) + (layout == 1 ? "nr_data" : "nr_data_h15"));
+                saved = true;
+            }
+        }
+
+        size_t split = Rdna2IndexOf(Rdna2IniRead("nr_split", "2"), splitValues, std::size(splitValues), 1);
+        if (Rdna2Combo("Split network", split, splitNames, std::size(splitNames),
+                       "How many frames the network's work is spread over. Off runs it in one frame. 3 gives more FPS"
+                       "\nat the cost of a slightly older result."))
+        {
+            Rdna2IniWrite("nr_split", splitValues[split]);
+            saved = true;
+        }
+
+        if (saved)
+            ImGui::TextColored(ImVec4(.4f, .9f, .4f, 1.f), "Saved - restart the game to apply.");
+    }
+}
+
 // With more than one runtime installed, choose the one the next launch uses. This session keeps the one it started
 // with: each installs its own D3D12 hooks as the device is created.
 static void RuntimeCombo(Config* config)
@@ -975,6 +1086,11 @@ void RenderMenu(Config* config, float menuResScale)
                                    "\n\nThe fps is 1000 divided by that time: how many frames per second the"
                                    "\nmodel alone could keep up with. The game runs slower than that, because"
                                    "\nthe rest of the frame takes time too.");
+
+            std::error_code iniEc;
+            if (std::wcscmp(DlssNr::Backend::LmxxfRuntimeFile(), L"Rdna2NrRuntime.dll") == 0 &&
+                std::filesystem::exists(Rdna2IniPath(), iniEc))
+                Rdna2NetworkSection();
 
             ImGui::SeparatorText("Temporal");
             bool temporal = config->LmxxfTemporal.value_or_default();
