@@ -3518,9 +3518,9 @@ void MenuCommon::RenderOpenRrModeCombo(RenderMenuContext& ctx)
         ImGui::TextDisabled(fastState == 2 ? "building..." : "not available");
     }
 
-    // FP8 rides on the New/Fast kernels; Legacy has nothing for it to change
+    // FP8 rides on the New/Fast kernels; Legacy has nothing for it to change (left checked there, it can still be cleared)
     const int fp8State = OpenNrRr::Fp8State();
-    const bool fp8Off = fastState < 0 || fp8State < 0 || mode == 2;
+    const bool fp8Off = fastState < 0 || fp8State < 0 || (mode == 2 && !config->OpenNrRrFp8.value_or_default());
     if (fp8Off)
         ImGui::BeginDisabled();
     ConfigCheckbox("FP8 (experimental)", config->OpenNrRrFp8);
