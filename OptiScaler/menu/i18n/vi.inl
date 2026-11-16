@@ -1715,7 +1715,6 @@
 { "checking the RX 7000 pipelines", "đang kiểm tra pipeline RX 7000" },
 { "danielblnc's NR is off: its host runs on D3D12 for NeuralHub's DLSS-FG.", "NR của danielblnc đang tắt: host của nó chạy trên D3D12 cho DLSS-FG của NeuralHub." },
 { "danielblnc's Style: the look the network is asked for, as in his own overlay.\nChanging it restarts the model's history.\n\nNeeds the danielblnc runtime 0.4.0 or later.", "Phong cách của danielblnc: vẻ ngoài được yêu cầu từ mạng, như trong overlay riêng của danielblnc.\nThay đổi sẽ khởi động lại lịch sử của model.\n\nCần runtime danielblnc 0.4.0 trở lên." },
-{ "danielblnc: the DLSS-NR-on-AMD runtime, every control below.\nlmxxf: open-source HIP kernels in the game's own queue, before Super\nResolution only. Detail, colour and debug view.\nmochizuki: open-source Vulkan network on its own device. Its own processing\npoint, passes, resolution, strengths and model controls.\n\nThe choice is stored as NrBackend. Press Save Settings and restart the\ngame to switch.", "danielblnc: runtime DLSS-NR-on-AMD, mọi mục bên dưới.\nlmxxf: kernel HIP mã nguồn mở trong queue của chính game, chỉ trước Super\nResolution. Chi tiết, màu và debug view.\nmochizuki: mạng Vulkan mã nguồn mở trên device riêng. Có điểm xử lý,\nsố lượt, độ phân giải, cường độ và các mục model riêng.\n\nLựa chọn được lưu thành NrBackend. Nhấn Lưu cài đặt rồi khởi động lại\ngame để chuyển." },
 { "different", "khác" },
 { "failed", "thất bại" },
 { "fast", "fast" },

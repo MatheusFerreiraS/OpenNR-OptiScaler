@@ -1715,7 +1715,6 @@
 { "checking the RX 7000 pipelines", "กำลังตรวจ pipeline ของ RX 7000" },
 { "danielblnc's NR is off: its host runs on D3D12 for NeuralHub's DLSS-FG.", "NR ของ danielblnc ปิดอยู่: host ของมันรันบน D3D12 สำหรับ DLSS-FG ของ NeuralHub" },
 { "danielblnc's Style: the look the network is asked for, as in his own overlay.\nChanging it restarts the model's history.\n\nNeeds the danielblnc runtime 0.4.0 or later.", "สไตล์ของ danielblnc: ลุคที่ขอจากเครือข่าย เหมือนในโอเวอร์เลย์ของ danielblnc เอง\nการเปลี่ยนจะเริ่มประวัติของโมเดลใหม่\n\nต้องใช้รันไทม์ danielblnc 0.4.0 ขึ้นไป" },
-{ "danielblnc: the DLSS-NR-on-AMD runtime, every control below.\nlmxxf: open-source HIP kernels in the game's own queue, before Super\nResolution only. Detail, colour and debug view.\nmochizuki: open-source Vulkan network on its own device. Its own processing\npoint, passes, resolution, strengths and model controls.\n\nThe choice is stored as NrBackend. Press Save Settings and restart the\ngame to switch.", "danielblnc: รันไทม์ DLSS-NR-on-AMD ทุกตัวควบคุมด้านล่าง\nlmxxf: kernel HIP แบบโอเพนซอร์สในคิวของเกมเอง ก่อน Super\nResolution เท่านั้น รายละเอียด สี และมุมมองดีบัก\nmochizuki: เครือข่าย Vulkan แบบโอเพนซอร์สบน device ของตัวเอง มีจุด\nประมวลผล จำนวนรอบ ความละเอียด ความแรง และตัวควบคุมโมเดลของตัวเอง\n\nตัวเลือกถูกเก็บเป็น NrBackend กด บันทึกการตั้งค่า แล้วรีสตาร์ต\nเกมเพื่อสลับ" },
 { "different", "ต่างกัน" },
 { "failed", "ล้มเหลว" },
 { "fast", "fast" },

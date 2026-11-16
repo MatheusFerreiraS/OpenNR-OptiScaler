@@ -1715,7 +1715,6 @@
 { "checking the RX 7000 pipelines", "正在檢查 RX 7000 的 pipeline" },
 { "danielblnc's NR is off: its host runs on D3D12 for NeuralHub's DLSS-FG.", "danielblnc 的 NR 關閉：host 為了 NeuralHub 的 DLSS-FG 在 D3D12 上執行。" },
 { "danielblnc's Style: the look the network is asked for, as in his own overlay.\nChanging it restarts the model's history.\n\nNeeds the danielblnc runtime 0.4.0 or later.", "danielblnc 的「風格」：要求網路呈現的觀感，和他自己的 overlay 中一樣。\n變更它會重新開始模型的歷史。\n\n需要 danielblnc runtime 0.4.0 或更新版本。" },
-{ "danielblnc: the DLSS-NR-on-AMD runtime, every control below.\nlmxxf: open-source HIP kernels in the game's own queue, before Super\nResolution only. Detail, colour and debug view.\nmochizuki: open-source Vulkan network on its own device. Its own processing\npoint, passes, resolution, strengths and model controls.\n\nThe choice is stored as NrBackend. Press Save Settings and restart the\ngame to switch.", "danielblnc：DLSS-NR-on-AMD runtime，下方的所有控制項。\nlmxxf：在遊戲自己佇列中執行的開源 HIP kernel，只能在超解析度\n之前。細節、顏色與偵錯檢視。\nmochizuki：在自己的裝置上執行的開源 Vulkan 網路。有自己的處理點、\n遍數、解析度、強度與模型控制項。\n\n選擇會儲存為 NrBackend。按「儲存設定」並重新啟動遊戲\n即可切換。" },
 { "different", "不同" },
 { "failed", "失敗" },
 { "fast", "fast" },

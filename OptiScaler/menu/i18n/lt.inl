@@ -1715,7 +1715,6 @@
 { "checking the RX 7000 pipelines", "tikrinami RX 7000 pipeline" },
 { "danielblnc's NR is off: its host runs on D3D12 for NeuralHub's DLSS-FG.", "danielblnc NR išjungtas: jo host veikia su D3D12 dėl NeuralHub DLSS-FG." },
 { "danielblnc's Style: the look the network is asked for, as in his own overlay.\nChanging it restarts the model's history.\n\nNeeds the danielblnc runtime 0.4.0 or later.", "danielblnc Stilius: išvaizda, kurios prašoma iš tinklo, kaip paties danielblnc perdangoje.\nPakeitus modelio istorija prasideda iš naujo.\n\nReikia danielblnc runtime 0.4.0 arba naujesnio." },
-{ "danielblnc: the DLSS-NR-on-AMD runtime, every control below.\nlmxxf: open-source HIP kernels in the game's own queue, before Super\nResolution only. Detail, colour and debug view.\nmochizuki: open-source Vulkan network on its own device. Its own processing\npoint, passes, resolution, strengths and model controls.\n\nThe choice is stored as NrBackend. Press Save Settings and restart the\ngame to switch.", "danielblnc: DLSS-NR-on-AMD runtime, visi valdikliai žemiau.\nlmxxf: atviro kodo HIP kerneliai paties žaidimo eilėje, tik prieš Super\nResolution. Detalės, spalva ir debug vaizdas.\nmochizuki: atviro kodo Vulkan tinklas atskirame device. Savas apdorojimo\ntaškas, praėjimai, raiška, stiprumai ir modelio valdikliai.\n\nPasirinkimas saugomas kaip NrBackend. Paspauskite Išsaugoti nustatymus ir paleiskite\nžaidimą iš naujo, kad perjungtumėte." },
 { "different", "skiriasi" },
 { "failed", "nepavyko" },
 { "fast", "fast" },

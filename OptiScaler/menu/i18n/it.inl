@@ -1715,7 +1715,6 @@
 { "checking the RX 7000 pipelines", "controllo delle pipeline RX 7000" },
 { "danielblnc's NR is off: its host runs on D3D12 for NeuralHub's DLSS-FG.", "L'NR di danielblnc è off: il suo host gira su D3D12 per il DLSS-FG di NeuralHub." },
 { "danielblnc's Style: the look the network is asked for, as in his own overlay.\nChanging it restarts the model's history.\n\nNeeds the danielblnc runtime 0.4.0 or later.", "Lo Stile di danielblnc: l'aspetto chiesto alla rete, come nel suo overlay.\nCambiarlo azzera lo storico del modello.\n\nServe il runtime danielblnc 0.4.0 o successivo." },
-{ "danielblnc: the DLSS-NR-on-AMD runtime, every control below.\nlmxxf: open-source HIP kernels in the game's own queue, before Super\nResolution only. Detail, colour and debug view.\nmochizuki: open-source Vulkan network on its own device. Its own processing\npoint, passes, resolution, strengths and model controls.\n\nThe choice is stored as NrBackend. Press Save Settings and restart the\ngame to switch.", "danielblnc: il runtime DLSS-NR-on-AMD, tutti i controlli qui sotto.\nlmxxf: kernel HIP open source nella coda del gioco stesso, solo prima di\nSuper Resolution. Dettaglio, colore e vista di debug.\nmochizuki: rete Vulkan open source su un device tutto suo. Ha il suo punto di\nelaborazione, passate, risoluzione, intensità e controlli del modello.\n\nLa scelta viene salvata come NrBackend. Premi Salva impostazioni e riavvia il\ngioco per cambiare." },
 { "different", "diverso" },
 { "failed", "non riuscito" },
 { "fast", "fast" },

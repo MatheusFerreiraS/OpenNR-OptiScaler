@@ -736,7 +736,6 @@ static void Rdna2NetworkSection()
     static constexpr const char* resNames[] = { "Auto (output size)", "3840 x 2160", "2560 x 1440", "1920 x 1080",
                                                 "1707 x 960", "1280 x 720" };
     static constexpr const char* layoutNames[] = { "Hybrid (recommended)", "Classic" };
-    static constexpr const char* splitValues[] = { "0", "2", "3" };
     static constexpr const char* splitNames[] = { "Off", "2 frames (recommended)", "3 frames (more FPS)" };
 
     if (auto section = ScopedCollapsingHeader("RDNA2 network##rdna2section"); section.IsHeaderOpen())
@@ -777,14 +776,13 @@ static void Rdna2NetworkSection()
             }
         }
 
-        size_t split = Rdna2IndexOf(Rdna2IniRead("nr_split", "2"), splitValues, std::size(splitValues), 1);
-        if (Rdna2Combo("Split network", split, splitNames, std::size(splitNames),
-                       "How many frames the network's work is spread over. Off runs it in one frame. 3 gives more FPS"
-                       "\nat the cost of a slightly older result."))
-        {
-            Rdna2IniWrite("nr_split", splitValues[split]);
-            saved = true;
-        }
+        // Split is off for the release (picture trails behind in motion); the runtime ignores nr_split too.
+        size_t split = 0;
+        ImGui::BeginDisabled();
+        Rdna2Combo("Split network", split, splitNames, std::size(splitNames),
+                   "Not available yet: spreading the network over several frames caused quality problems.\nIt will be added in a later version.");
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("Coming in a later version (quality problems).");
 
         if (saved)
             ImGui::TextColored(ImVec4(.4f, .9f, .4f, 1.f), "Saved - restart the game to apply.");
