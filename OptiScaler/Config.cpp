@@ -480,6 +480,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             OpenNrRrNrImage.set_from_config(readString("OpenNR-RR", "NrImage", true));
             OpenNrRrNrDeltaRate.set_from_config(readFloat("OpenNR-RR", "NrDeltaRate"));
             OpenNrRrMode.set_from_config(readString("OpenNR-RR", "Mode", true));
+            OpenNrRrFp8.set_from_config(readBool("OpenNR-RR", "Fp8"));
             OpenNrRrBackend.set_from_config(readString("OpenNR-RR", "Backend", true));
             OpenNrRrVkInputLayout.set_from_config(readString("OpenNR-RR", "VkInputLayout", true));
             OpenNrRrUseDisocclusionMask.set_from_config(readBool("OpenNR-RR", "UseDisocclusionMask"));
@@ -1771,6 +1772,7 @@ bool Config::SaveIni()
         ini.SetValue("OpenNR-RR", "NrImage", Instance()->OpenNrRrNrImage.value_for_config().value_or("auto").c_str());
         ini.SetValue("OpenNR-RR", "NrDeltaRate", GetFloatValue(Instance()->OpenNrRrNrDeltaRate.value_for_config()).c_str());
         ini.SetValue("OpenNR-RR", "Mode", Instance()->OpenNrRrMode.value_for_config().value_or("auto").c_str());
+        ini.SetValue("OpenNR-RR", "Fp8", GetBoolValue(Instance()->OpenNrRrFp8.value_for_config()).c_str());
         ini.SetValue("OpenNR-RR", "Backend", Instance()->OpenNrRrBackend.value_for_config().value_or("auto").c_str());
         ini.SetValue("OpenNR-RR", "VkInputLayout", Instance()->OpenNrRrVkInputLayout.value_for_config().value_or("read").c_str());
         ini.SetValue("OpenNR-RR", "UseDisocclusionMask",

@@ -43,6 +43,8 @@ decltype(OnrRrApi4::Record) s_record = nullptr;
 decltype(&OnrRrSetDeltaRate) s_setDeltaRate = nullptr;
 decltype(&OnrRrSetFastMode) s_setFastMode = nullptr;
 decltype(&OnrRrGetFastMode) s_getFastMode = nullptr;
+decltype(&OnrRrSetFp8) s_setFp8 = nullptr;
+decltype(&OnrRrGetFp8) s_getFp8 = nullptr;
 decltype(OnrRrApi4::RecordPost) s_recordPost = nullptr;
 // ABI 5: the Vulkan host backend (PrepareVkDevice / FinishVkDevice / RecordVk); null with an older runtime
 OnrRrApi5 s_api5 {};
@@ -296,6 +298,8 @@ bool Load()
     s_setDeltaRate = reinterpret_cast<decltype(&OnrRrSetDeltaRate)>(GetProcAddress(module, "OnrRrSetDeltaRate"));
     s_setFastMode = reinterpret_cast<decltype(&OnrRrSetFastMode)>(GetProcAddress(module, "OnrRrSetFastMode"));
     s_getFastMode = reinterpret_cast<decltype(&OnrRrGetFastMode)>(GetProcAddress(module, "OnrRrGetFastMode"));
+    s_setFp8 = reinterpret_cast<decltype(&OnrRrSetFp8)>(GetProcAddress(module, "OnrRrSetFp8"));
+    s_getFp8 = reinterpret_cast<decltype(&OnrRrGetFp8)>(GetProcAddress(module, "OnrRrGetFp8"));
     s_recordPost = api4.RecordPost;
     if (has5)
         s_api5 = api5;
@@ -635,6 +639,9 @@ void ApplyFastMode(void* context)
     // 2 is the runtime's experimental level; one without it takes any non-zero value as New
     const std::string mode = Config::Instance()->OpenNrRrMode.value_or_default();
     s_setFastMode(context, mode == "legacy" ? 0 : mode == "fast" ? 2 : 1);
+
+    if (s_setFp8 != nullptr)
+        s_setFp8(context, Config::Instance()->OpenNrRrFp8.value_or_default() ? 1 : 0);
 }
 
 int FastModeState()
@@ -642,6 +649,13 @@ int FastModeState()
     if (s_getFastMode == nullptr)
         return -1;
     return s_getFastMode(s_infoContext);
+}
+
+int Fp8State()
+{
+    if (s_getFp8 == nullptr)
+        return -1;
+    return s_getFp8(s_infoContext);
 }
 
 std::string DenoisedNrStatus()

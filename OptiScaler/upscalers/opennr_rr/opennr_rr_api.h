@@ -356,6 +356,20 @@ int32_t OnrRrSetFastMode(void* context, int32_t on);
 __declspec(dllexport)
 #endif
 int32_t OnrRrGetFastMode(void* context);
+// FP8, experimental: the New mode's 7-kernel MLP (C = 64..128) in e4m3 with f32 accumulation. Exported beside the fast
+// mode, resolved by name (an older DLL has none). Applies only with the fast mode on (New and Fast); Legacy ignores it.
+// Takes effect on the next recorded frame, keeping every history; the kernels are built on the first frame that asks.
+// Before Record, on the render thread. on: 0 off (default), 1 on.
+#ifdef ONR_RR_BUILDING
+__declspec(dllexport)
+#endif
+int32_t OnrRrSetFp8(void* context, int32_t on);
+// 0 off, 1 on, 2 asked and the kernels still building, 3 asked and not available (shader folder without the _l8
+// kernels), 4 asked but the current mode does not use it (Legacy).
+#ifdef ONR_RR_BUILDING
+__declspec(dllexport)
+#endif
+int32_t OnrRrGetFp8(void* context);
 
 #ifdef __cplusplus
 }

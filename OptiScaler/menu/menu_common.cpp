@@ -3517,6 +3517,25 @@ void MenuCommon::RenderOpenRrModeCombo(RenderMenuContext& ctx)
         ImGui::SameLine();
         ImGui::TextDisabled(fastState == 2 ? "building..." : "not available");
     }
+
+    // FP8 rides on the New/Fast kernels; Legacy has nothing for it to change
+    const int fp8State = OpenNrRr::Fp8State();
+    const bool fp8Off = fastState < 0 || fp8State < 0 || mode == 2;
+    if (fp8Off)
+        ImGui::BeginDisabled();
+    ConfigCheckbox("FP8 (experimental)", config->OpenNrRrFp8);
+    if (fp8Off)
+        ImGui::EndDisabled();
+    ShowTooltip(fp8State < 0 ? "This OpenRR runtime does not have FP8."
+                             : "Runs part of the New/Fast network in FP8. Faster in some scenes; very bright\n"
+                               "points (sparks, small lights) may look different. Only with New or Fast.\n"
+                               "Flips live; the first time, its kernels are built in the background.\n"
+                               "Experimental, off by default.");
+    if (fp8State >= 2 && fp8State <= 4)
+    {
+        ImGui::SameLine();
+        ImGui::TextDisabled(fp8State == 2 ? "building..." : fp8State == 3 ? "not available" : "only New/Fast");
+    }
 }
 
 void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)

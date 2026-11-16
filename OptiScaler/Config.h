@@ -1136,6 +1136,8 @@ class Config
     // new (the runtime's cheaper kernels, a small measured loss of precision), fast (the experimental level above it, a
     // larger loss) or legacy, flipped live from the menu. Anything else is new: an old Mode=faithful means nothing now
     CustomOptional<std::string> OpenNrRrMode { "new" };
+    // experimental: part of the New/Fast network in FP8, flipped live from the menu; Legacy ignores it
+    CustomOptional<bool> OpenNrRrFp8 { false };
     // what runs the network: auto (D3D12 in the game's own command list when the runtime's check passes, otherwise
     // Vulkan), d3d12 or vulkan; read when the runtime is created
     CustomOptional<std::string> OpenNrRrBackend { "auto" };
