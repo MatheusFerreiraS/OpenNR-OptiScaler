@@ -814,6 +814,13 @@ const std::vector<GameConfig> gameConfigs = {
         .quirks = { SkipD3D11FeatureLevelElevation },
     },
 
+    // Mass Effect Legendary Edition (Unreal Engine 3 like Arkham Knight)
+    // Given a feature level 11_1 device for its 11_0 request, MassEffect1.exe crashes right after creating it
+    {
+        .exes = { "masseffect1.exe", "masseffect2.exe", "masseffect3.exe" },
+        .quirks = { SkipD3D11FeatureLevelElevation },
+    },
+
     // Stellar Blade
     {
         .ueExes = { "sb" },
