@@ -338,6 +338,7 @@
 { "DLSS 5 mode", "DLSS 5 modu" },
 { "DLSS Enabler as dlss-enabler-headless.dll", "dlss-enabler-headless.dll olarak DLSS Enabler" },
 { "DLSS Model K", "DLSS Model K" },
+{ "DLSS Model M", "DLSS Model M" },
 { "DLSS Model M (slow on RDNA2)", "DLSS Model M (RDNA2'de yavaş)" },
 { "DLSS NR : OFF", "DLSS NR : OFF" },
 { "DLSS NR : ON", "DLSS NR : ON" },

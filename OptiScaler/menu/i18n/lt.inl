@@ -338,6 +338,7 @@
 { "DLSS 5 mode", "DLSS 5 režimas" },
 { "DLSS Enabler as dlss-enabler-headless.dll", "DLSS Enabler kaip dlss-enabler-headless.dll" },
 { "DLSS Model K", "DLSS Model K" },
+{ "DLSS Model M", "DLSS Model M" },
 { "DLSS Model M (slow on RDNA2)", "DLSS Model M (lėtas su RDNA2)" },
 { "DLSS NR : OFF", "DLSS NR : OFF" },
 { "DLSS NR : ON", "DLSS NR : ON" },

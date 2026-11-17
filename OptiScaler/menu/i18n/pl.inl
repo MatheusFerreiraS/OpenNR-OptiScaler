@@ -338,6 +338,7 @@
 { "DLSS 5 mode", "Tryb DLSS 5" },
 { "DLSS Enabler as dlss-enabler-headless.dll", "DLSS Enabler jako dlss-enabler-headless.dll" },
 { "DLSS Model K", "DLSS Model K" },
+{ "DLSS Model M", "DLSS Model M" },
 { "DLSS Model M (slow on RDNA2)", "DLSS Model M (wolny na RDNA2)" },
 { "DLSS NR : OFF", "DLSS NR : OFF" },
 { "DLSS NR : ON", "DLSS NR : ON" },

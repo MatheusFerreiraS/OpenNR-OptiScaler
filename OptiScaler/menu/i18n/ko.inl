@@ -338,6 +338,7 @@
 { "DLSS 5 mode", "DLSS 5 모드" },
 { "DLSS Enabler as dlss-enabler-headless.dll", "DLSS Enabler (dlss-enabler-headless.dll)" },
 { "DLSS Model K", "DLSS Model K" },
+{ "DLSS Model M", "DLSS Model M" },
 { "DLSS Model M (slow on RDNA2)", "DLSS Model M(RDNA2에서 느림)" },
 { "DLSS NR : OFF", "DLSS NR : OFF" },
 { "DLSS NR : ON", "DLSS NR : ON" },

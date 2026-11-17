@@ -866,7 +866,9 @@ static std::string ShortUpscalerName(Upscaler upscaler, API api, int ffxIndex)
         if (name.find("Model K") != std::string::npos)
             return "DLSS Model K";
         if (name.find("Model M") != std::string::npos)
-            return "DLSS Model M (slow on RDNA2)";
+            return IdentifyGpu::getPrimaryGpu().amdHwGeneration == device_info::HwGeneration::kGfx10_3
+                       ? "DLSS Model M (slow on RDNA2)"
+                       : "DLSS Model M";
         return StrFmt("FSR %s", name.c_str());
     }
 
