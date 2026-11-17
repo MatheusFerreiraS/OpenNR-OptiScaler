@@ -550,7 +550,7 @@ bool HasFiles()
     const auto dir = Directory();
     const auto active = DlssNr::Backend::ActiveKindFromConfig();
     if (active == DlssNr::Backend::Kind::Lmxxf)
-        return std::filesystem::exists(dir / L"LmxxfNrRuntime.dll", ec);
+        return std::filesystem::exists(dir / DlssNr::Backend::LmxxfRuntimeFile(), ec);
     if (active == DlssNr::Backend::Kind::Mochizuki)
         return std::filesystem::exists(dir / L"MochizukiNrRuntime.dll", ec);
     if (active == DlssNr::Backend::Kind::Daniel)
@@ -879,8 +879,9 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         std::string label;
         if (active == DlssNr::Backend::Kind::Lmxxf)
         {
-            b = new DlssNr::Backend::LmxxfBackend(device, q, Directory());
-            label = "lmxxf";
+            const wchar_t* file = DlssNr::Backend::LmxxfRuntimeFile();
+            b = new DlssNr::Backend::LmxxfBackend(device, q, Directory(), file);
+            label = wcscmp(file, L"LmxxfNrRuntime.dll") == 0 ? "lmxxf" : "rdna2 (Rdna2NrRuntime.dll)";
         }
         else if (active == DlssNr::Backend::Kind::Mochizuki)
         {
@@ -900,7 +901,7 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
             const bool named = DlssNr::Backend::ParseKind(raw) != DlssNr::Backend::Kind::Daniel || raw.empty() ||
                                _stricmp(raw.c_str(), "auto") == 0 || _stricmp(raw.c_str(), "daniel") == 0;
             if (!named)
-                LOG_WARN("AMD neural: NrBackend={} is not a runtime (daniel, lmxxf, mochizuki, auto or off); "
+                LOG_WARN("AMD neural: NrBackend={} is not a runtime (daniel, lmxxf, rdna2, mochizuki, auto or off); "
                          "danielblnc runs instead",
                          raw);
             LOG_INFO("AMD neural: NrBackend={} runs {}", raw, label);

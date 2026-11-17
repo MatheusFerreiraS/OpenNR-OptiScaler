@@ -32,7 +32,7 @@ SKIP_CALLS = re.compile(
     r"(LOG_[A-Z_]+|strcmp|_stricmp|stricmp|strstr|wcscmp|GetProcAddress|GetModuleHandle[AW]?|LoadLibrary[AW]?"
     r"|IM_ASSERT|assert|ShellExecute[AW]?|ImGui::PushID|ImGui::GetID|ImGui::BeginChild|ImGui::BeginTable|ScopedCard::Shows"
     r"|ImGui::OpenPopup|ImGui::BeginPopup|ImHashStr|readBool|readString|readInt|readFloat|readUInt|readWString"
-    r"|SetValue|GetValue|find|contains|ends_with|starts_with|Screenshot::\w+|CheckShortcut)$")
+    r"|SetValue|GetValue|GetPrivateProfileString[AW]?|WritePrivateProfileString[AW]?|find|contains|ends_with|starts_with|Screenshot::\w+|CheckShortcut)$")
 
 
 def tokens(src):

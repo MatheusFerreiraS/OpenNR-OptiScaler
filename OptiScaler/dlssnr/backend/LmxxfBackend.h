@@ -101,7 +101,10 @@ class LmxxfBackend final : public Host
     static void OnListRecycled(ID3D12CommandList* list);
     void ListRecycled(ID3D12CommandList* list);
     void UnregisterListRecycled();
-    bool Lmxxf() const { return runtimeFile == L"LmxxfNrRuntime.dll"; }
+    // Every runtime but mochizuki speaks plain lmxxf (LmxxfNrRuntime.dll, Rdna2NrRuntime.dll).
+    bool Lmxxf() const { return runtimeFile != L"MochizukiNrRuntime.dll"; }
+    // HexNeural's Rdna2NrRuntime.dll: a failed start is retried with mochizuki's backoff, not on every frame.
+    bool Rdna2() const { return runtimeFile == L"Rdna2NrRuntime.dll"; }
     uint32_t FrameInfoSize() const;
     void SetStatus(const char* s);
 

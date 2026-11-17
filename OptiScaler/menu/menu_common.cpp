@@ -860,7 +860,15 @@ static std::string ShortUpscalerName(Upscaler upscaler, API api, int ffxIndex)
 {
     if (auto versions = GetFfxVersionList(upscaler, api);
         versions != nullptr && ffxIndex >= 0 && ffxIndex < versions->names.size())
-        return StrFmt("FSR %s", versions->names[ffxIndex]);
+    {
+        // WrongGPU lists NVIDIA DLSS models as FFX versions ("WrongGPU Model K", "WrongGPU Model M")
+        const std::string name = versions->names[ffxIndex];
+        if (name.find("Model K") != std::string::npos)
+            return "DLSS Model K";
+        if (name.find("Model M") != std::string::npos)
+            return "DLSS Model M (slow on RDNA2)";
+        return StrFmt("FSR %s", name.c_str());
+    }
 
     switch (upscaler)
     {
@@ -954,6 +962,7 @@ void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, co
     };
 
     std::vector<Entry> entries;
+    bool wrongGpu = false; // FFX list has DLSS models: FFX entries are told apart by index
 
     for (auto opt : options)
     {
@@ -984,8 +993,19 @@ void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, co
             // Fall back to a generic entry if FFX couldn't be queried
             if (!versions->names.empty())
             {
+                // Model names parse as version 0, so the newest is a real FSR even with WrongGPU loaded
                 auto newest = FfxVersionsNewestFirst(*versions)[0];
                 entries.push_back({ opt, newest, feature_version(versions->names[newest]) });
+
+                // WrongGPU: its DLSS models get their own entries, after FSR
+                for (int n = 0; n < (int) versions->names.size(); n++)
+                {
+                    if (std::string(versions->names[n]).find("Model ") != std::string::npos)
+                    {
+                        entries.push_back({ opt, n, feature_version() });
+                        wrongGpu = true;
+                    }
+                }
                 continue;
             }
         }
@@ -1022,14 +1042,22 @@ void MenuCommon::RenderUpscalerCombo(const API api, Upscaler currentUpscaler, co
         if (i > 0 && group(entry.upscaler) != group(entries[i - 1].upscaler))
             ImGui::Separator();
 
-        auto label = StrFmt("%s##%d", upscalerName(entry.upscaler, entry.ffxIndex).c_str(), (int) entry.upscaler);
+        auto label = StrFmt("%s##%d_%d", upscalerName(entry.upscaler, entry.ffxIndex).c_str(), (int) entry.upscaler,
+                            entry.ffxIndex);
+        const bool byIndex = wrongGpu && entry.ffxIndex >= 0;
+        const bool selected = currentUpscaler == entry.upscaler && (!byIndex || ffxIndex == entry.ffxIndex);
 
-        if (ImGui::Selectable(label.c_str(), currentUpscaler == entry.upscaler))
+        if (ImGui::Selectable(label.c_str(), selected))
         {
             State::Instance().newBackend = entry.upscaler;
 
-            // Switching to FFX starts with the newest one
-            if (entry.ffxIndex >= 0 && currentUpscaler != entry.upscaler)
+            // Switching to FFX starts with the newest one; with WrongGPU each entry is its own FFX version
+            if (byIndex && !selected)
+            {
+                config->FfxUpscalerIndex = entry.ffxIndex;
+                MARK_ALL_BACKENDS_CHANGED();
+            }
+            else if (entry.ffxIndex >= 0 && currentUpscaler != entry.upscaler)
                 config->FfxUpscalerIndex = entry.ffxIndex;
         }
 
