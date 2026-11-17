@@ -10691,10 +10691,10 @@ void MenuCommon::RenderKeybindSettings(RenderMenuContext& ctx)
         screenshot.Render(config->ScreenshotKey);
 
         bool withMenu = config->ScreenshotWithMenu.value_or_default();
-        if (ImGui::Checkbox("Also save a copy with the menu when it is open", &withMenu))
+        if (ImGui::Checkbox("Also save a copy with the menu or the FPS overlay when shown", &withMenu))
             config->ScreenshotWithMenu = withMenu;
-        ShowHelpMarker("The same frame twice: without OptiScaler's overlays, and as shown with the menu on it,\n"
-                       "named \"... (menu).png\".");
+        ShowHelpMarker("The same frame twice: without OptiScaler's overlays, and as shown with them on it,\n"
+                       "named \"... (menu).png\", or \"... (overlay).png\" when only the FPS overlay is on.");
 
         // Where the screenshot key saves, without OptiScaler's overlays.
         const auto folder = Screenshot::Folder();

@@ -1002,7 +1002,7 @@ class Config
     CustomOptional<std::string, NoDefault> MenuLanguage;
     CustomOptional<int> FGShortcutKey { VK_END };
     // Saves the presented frame without OptiScaler's overlays. ScreenshotPath empty means
-    // <Pictures>\OptiScaler\<exe name>. With the menu open, ScreenshotWithMenu adds a copy with it.
+    // <Pictures>\OptiScaler\<exe name>. With the menu or the FPS overlay shown, ScreenshotWithMenu adds a copy with it.
     CustomOptional<int> ScreenshotKey { VK_F6 };
     CustomOptional<std::wstring, NoDefault> ScreenshotPath;
     CustomOptional<bool> ScreenshotWithMenu { true };

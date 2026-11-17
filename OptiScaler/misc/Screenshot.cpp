@@ -88,6 +88,8 @@ struct Shot
     SYSTEMTIME time {};
     std::shared_ptr<std::wstring> base = std::make_shared<std::wstring>();
     bool menu = false;
+    // " (menu)", or " (overlay)" when only the FPS overlay is on screen.
+    const wchar_t* tag = L" (menu)";
 };
 
 // The copy with the menu of the frame just taken, for the ...Menu point of the same present.
@@ -101,10 +103,14 @@ std::optional<Shot> Take()
     Shot shot;
     GetLocalTime(&shot.time);
     _menuShot.reset();
-    if (MenuOverlayBase::IsVisible() && Config::Instance()->ScreenshotWithMenu.value_or_default())
+    const bool menu = MenuOverlayBase::IsVisible();
+    if ((menu || Config::Instance()->ShowFps.value_or_default()) &&
+        Config::Instance()->ScreenshotWithMenu.value_or_default())
     {
         _menuShot = shot;
         _menuShot->menu = true;
+        if (!menu)
+            _menuShot->tag = L" (overlay)";
     }
     return shot;
 }
@@ -316,7 +322,7 @@ std::filesystem::path Unused(const std::filesystem::path& folder, const SYSTEMTI
         const auto path = (folder / (i == 0 ? base : std::format(L"{}-{}", base, i))).wstring();
         std::error_code error;
         bool used = false;
-        for (const wchar_t* name : { L".png", L".jxr", L" (menu).png", L" (menu).jxr" })
+        for (const wchar_t* name : { L".png", L".jxr", L" (menu).png", L" (menu).jxr", L" (overlay).png", L" (overlay).jxr" })
             used = used || std::filesystem::exists(path + name, error);
         if (!used)
             return path;
@@ -338,7 +344,7 @@ bool Save(const Image& image, const Shot& shot, std::string& saved, std::string&
     std::lock_guard lock(_nameMutex);
     if (shot.base->empty())
         *shot.base = Unused(folder, shot.time).wstring();
-    const std::filesystem::path base = *shot.base + (shot.menu ? L" (menu)" : L"");
+    const std::filesystem::path base = *shot.base + (shot.menu ? shot.tag : L"");
     const std::filesystem::path png = base.wstring() + L".png";
     const bool hdr = image.encoding != Encoding::Srgb;
 
