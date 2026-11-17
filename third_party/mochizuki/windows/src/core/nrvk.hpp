@@ -1094,7 +1094,8 @@ struct Kernel {
                     aliases.push_back({b, bindings[b - kAliasBase]});
             for (const auto& alias : aliases) alias_bindings.push_back(alias.first);
             const auto name = spirv_path.substr(spirv_path.find_last_of("/\\") + 1);
-            aco_push_gap = name.rfind("g_gemm", 0) == 0 && push_bytes >= 88 ? 80u : name == "g_vitattn.spv" ? 20u : 0u;
+            aco_push_gap = name.rfind("g_gemm", 0) == 0 && push_bytes >= 88 ? 80u
+                         : name == "g_vitattn.spv" || name == "g_vitattncm.spv" ? 20u : 0u;
         }
 #if NR_INT4
         if (!nr::binary::directory().empty() && nr::build_cfg("NR_I4_WEIGHTS")) {

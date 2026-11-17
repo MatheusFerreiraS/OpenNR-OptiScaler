@@ -116,6 +116,10 @@ def main():
         consth = sorted(k for k, e in pipelines.items() if 'NR_CONSTH=1' in e['defines'])
         if consth:
             (out / 'const-heads.txt').write_text('\n'.join(consth) + '\n')
+        # the pipelines with the int4 QKV products: the host runs them only on layers that have the tables (nr_graph.cpp)
+        q4 = sorted(k for k, e in pipelines.items() if 'NR_SWQ4=1' in e['defines'])
+        if q4:
+            (out / 'int4-qkv.txt').write_text('\n'.join(q4) + '\n')
         if i4.get('routes'):
             lines = []
             for r in i4['routes']:

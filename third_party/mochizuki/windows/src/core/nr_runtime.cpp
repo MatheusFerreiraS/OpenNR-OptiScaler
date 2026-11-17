@@ -2313,7 +2313,10 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
         nr::binary::disable("the RDNA2 network has no ACO records");
     const std::string aco = nr::binary::directory();
     const auto native_shaders = installed ? data / arch_shaders(config.arch) : root / "build";
-    const auto network_shaders = !aco.empty() ? std::filesystem::path(aco) / "shaders" : native_shaders;
+    // The shipped aco-gfx11 bundle (nr::binary::gfx11_slim) holds records for shaders-rdna3's own SPIR-V: the network
+    // stays shaders-rdna3's, and the graph takes vitattn's ACO SPIR-V from the bundle itself.
+    const bool gfx11_slim = config.arch == Arch::rdna3 && nr::binary::gfx11_slim(aco);
+    const auto network_shaders = !aco.empty() && !gfx11_slim ? std::filesystem::path(aco) / "shaders" : native_shaders;
     // Shaders are read from inside the NR root, or from the ACO bundle when one is in use.
     const auto inside = [&](const std::filesystem::path& p) {
         for (const auto& base : {root, aco.empty() ? root : std::filesystem::canonical(aco)}) {
@@ -2581,6 +2584,7 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
         }
         arguments.push_back("--spv-dir-aco");
     }
+    if (gfx11_slim) arguments.push_back("--spv-dir-aco");
 #if NR_INT4
     if (int4)   // with the int4 layers: their own shaders and pipeline cache
         for (size_t i = 0; i + 1 < arguments.size(); ++i) {
@@ -3003,9 +3007,10 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
     }
     if (temporal_config.enable) {
         auto& t = impl_->temporal;
-        // The temporal pre/post blocks are network kernels: the ACO bundle's own SPIR-V when it is in use.
+        // The temporal pre/post blocks are network kernels: the ACO bundle's own SPIR-V when it is in use (the shipped
+        // gfx11 bundle has none: shaders-rdna3's).
         auto shaders = std::filesystem::canonical(temporal_config.shaders.empty()
-            ? (!aco.empty() ? std::filesystem::path(aco) / "shaders/temporal"
+            ? (!aco.empty() && !gfx11_slim ? std::filesystem::path(aco) / "shaders/temporal"
                : installed ? native_shaders / "temporal" : root / "build/windows/rdna4/network/temporal")
             : std::filesystem::path(temporal_config.shaders));
         if (experimental) shaders = std::filesystem::canonical(xroot / "shaders" / "temporal");

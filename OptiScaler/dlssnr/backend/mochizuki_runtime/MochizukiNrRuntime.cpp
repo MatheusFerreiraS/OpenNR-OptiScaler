@@ -1244,9 +1244,10 @@ struct Vulkan
             Fp16Checks();
     }
 
-    // ACO for the RDNA3 network, when it was asked for (ConfigureAco set dlssnr-amd\aco up): the network as Mesa ACO
-    // gfx11 machine code in dlssnr-amd\aco-gfx11\ laid out as aco\ is (records\ named by the hash of the SPIR-V in
-    // shaders\, which linux\build\build_network.py rdna3 makes; tools\aco-records makes the records). It is taken when
+    // ACO for the RDNA3 network, when it was asked for (ConfigureAco set dlssnr-amd\aco up): Mesa ACO gfx11 machine code
+    // in dlssnr-amd\aco-gfx11\. As shipped (tools\build-mochizuki-runtime.cmd) it holds records\ only for the kernels
+    // ACO runs faster on RX 7000 and shaders\ with the ACO SPIR-V of those that differ from shaders-rdna3's
+    // (vitattn's matrix body among them; nr::binary::gfx11_slim); a kit's full bundle is laid out as aco\ is. It is taken when
     // its records are there and the PAL adapter takes this GPU's code objects (nr::pal::takes_machine); a pipeline
     // whose record is missing or does not import is compiled by the driver from shaders-rdna3 (nr_pipeline_binary.hpp).
     void Rdna3Aco()
@@ -3996,7 +3997,23 @@ struct Session
                 throw std::runtime_error("stopped: the session is being destroyed");
             {
                 const nr::BuildCancelScope cancel(&abandon);
-                made = std::make_unique<ProductRuntime>(host, made_config, temporal, key, vk);
+                try
+                {
+                    made = std::make_unique<ProductRuntime>(host, made_config, temporal, key, vk);
+                }
+                catch (const nr::binary::Error& e)
+                {
+                    // ACO's machine code itself failed (a record, its template, the driver refusing the import, a
+                    // user-data layout the adapter does not know): ACO off for the process and the network built
+                    // again by the driver's compiler, as upstream's host does. Out of memory and a lost device are
+                    // not Error and stay this build's failure.
+                    if (abandon)
+                        throw;
+                    nr::binary::disable(std::string("the ACO network did not build (") + e.what() + ")");
+                    nr::logf("[mochizuki] ACO off: %s; building with the driver's compiler",
+                             nr::binary::disabled_why().c_str());
+                    made = std::make_unique<ProductRuntime>(host, made_config, temporal, key, vk);
+                }
             }
             pipelines.Finish();
         }

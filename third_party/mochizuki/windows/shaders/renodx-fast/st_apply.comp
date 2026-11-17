@@ -227,7 +227,8 @@ vec3 strengthened(uvec2 px, vec4 n, vec3 p) {
 vec3 st_edit(vec3 nE, vec3 pE) {
     const vec3 p = st_dec(clamp(pE, 0.0, 1.0)), n = st_dec(clamp(nE, 0.0, 1.0));
     const vec3 e = log2(max(n, vec3(1.0 / 1024.0))) - log2(max(p, vec3(1.0 / 1024.0)));
-    const float t = smoothstep(1.0 / 1024.0, 1.0 / 64.0, max(p.x, max(p.y, p.z)));
+    const float pm = max(p.x, max(p.y, p.z));
+    const vec3 t = smoothstep(1.0 / 1024.0, 1.0 / 64.0, pm) * smoothstep(vec3(pm / 256.0), vec3(pm / 64.0), p);
     return st_enc(n * exp2(t * (pc.k - 1.0) * e));
 }
 void main() {

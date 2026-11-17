@@ -57,6 +57,8 @@ python "%UP%\windows\build\build_network.py" rdna4 --out "%OUT%\dlssnr-amd\shade
 rem The RDNA3 network (RX 7000, no FP8) in shaders-rdna3\: mauri870/DLSSNR-RDNA3's linux\shaders\rdna3, unrolled for
 rem LLPC as the Windows network is (it crashes on their rolled loops), without the four-wide quantisation.
 python "%UP%\windows\build\build_network.py" rdna3 --tree linux --no-quad --out "%OUT%\dlssnr-amd\shaders-rdna3" || goto fail
+rem Its ACO code (MochizukiAco on an RX 7000) in aco-gfx11\: records only for the kernels ACO runs faster there.
+python tools\build-mochizuki-aco-gfx11.py "%OUT%\dlssnr-amd\shaders-rdna3" "%UP%\windows\data\aco\gfx11" "%OUT%\dlssnr-amd\aco-gfx11" || goto fail
 rem The RDNA2 network (RX 6000, no FP8 and no matrices) in shaders-rdna2\: linux\shaders\rdna2, the RDNA3 network with
 rem its matrix fragments emulated in ALU, built the same way.
 python "%UP%\windows\build\build_network.py" rdna2 --tree linux --no-quad --out "%OUT%\dlssnr-amd\shaders-rdna2" || goto fail

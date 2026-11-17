@@ -9,6 +9,8 @@ The Vulkan network behind `MochizukiNrRuntime.dll` (`NrBackend=mochizuki`).
   apart from the local patches below, and the Linux network ACO is made from (`linux/build/build_network.py`,
   `linux/shaders/rdna4`, `linux/shaders/passes`) and `linux/data/` (int4, int4-ultra, optimized, experimental) from
   the same tag. See Sync to v0.0.8.3. Upstream's unreleased `dev/0.0.8.4` is not taken
+- From `9503f6b` (2026-11-13, tag v0.0.9) only the core fixes of Sync to v0.0.9 (core): the PAL adapter's user-data
+  layout (GitLab issue 5), the int4 QKV guard, the Preprocess neutral inverse and the Edit strength guard
 - Before it: `c53878b` (v0.0.8.2, 2026-11-02; v0.0.8.1 is `339938c`), `cc27501` (v0.0.7, 2026-10-19), and before that `8a70f7f4` (v0.0.5-win-preview) with the hotfix
   `f35f00f` and `windows/src/core/` from `ab00d2b` (v0.0.6-win-preview-alpha)
 - `linux/package/model-tools/` is still from `791b046` (v0.0.1); the model it makes has not changed
@@ -106,6 +108,77 @@ The new passes are in both `build_network.py` `RUNTIME` lists.
     `CC_SILVER_AARDWOLD_OPTIMIZED_INT4.bin` beside the models, made by its installer; the model files keep their names
     here, `dlssnr.bin` and `dlssnr-small.bin`); RDNA4 only. And `nr::make_int4_weights` (`windows/src/tools/
     nr_int4_weights.cpp`'s run, under the build lock), so that the host makes the int4 weights at first use.
+35. (0.0.9 core sync) The PAL adapter's user-data layout beyond upstream's: v0.0.9 reads where the device puts the
+    push constants (`pal_metadata`, `xgl_layout`, `push_base` in `Arguments` and `prologue`) for its gfx12 and gfx11
+    splices. Here the same `push_base` also reaches `prologue_gfx11` (gfx11 and gfx10.3: the push block's address was
+    `s96 + 4` fixed, `0x84`; now `0x80 + 4 * push_base`) and `synthesize` (the gfx10.3 container, which no driver
+    compile gives a layout to: `nr_pipeline_binary.hpp` `device_code`, once a device, compiles a small kernel of its
+    own layout - set 0 binding 0 a storage buffer, 4 push-constant bytes, both read - and takes `.user_data_limit` - 2,
+    `DeviceCode::push_base`; an empty kernel's limit counts only the entries it uses (1 on both layouts, RX 9070 XT);
+    metadata without it or a failed probe keeps entry 1, as the RX 6600 probe ran). Log: `[nr] ACO: the driver's
+    code objects are for machine 0x4e (...), push constants at user data 1` (2 with VK_EXT_vertex_input_dynamic_state).
+    `splice_elf` takes the layout (`XglLayout`) from `splice` or `synthesize`; upstream's new machine check in `splice`
+    (gfx10.3 refused) is not taken, `same_generation` stays. The import cache's key (`aco-cache`) also takes the
+    device's `push_base` (the same key as before on a plain device, so an existing aco-cache stays valid: its splices
+    are byte-identical). At push_base 1 every prologue and splice is byte-identical to the
+    adapter before (`tools/aco-records/test-pal.cmd`: 199 gfx12 prologues = rdna3-k6's, 265 = dd989104c's, and the
+    40000 random gfx11/gfx10.3 layouts now also at push_base 1-3).
+
+### Sync to v0.0.9, core only (2026-11-16)
+
+Upstream v0.0.9 (`9503f6b`) is one squashed commit (Interleaved presets, native D3D12, processing changes; the RDNA4
+network, its records and data unchanged). Taken, as upstream has them:
+- GitLab issue 5 (ACO refused on a device with VK_EXT_vertex_input_dynamic_state, graphics pipeline libraries or
+  transform feedback, where XGL puts the push constants after entry 1): `nr_pal_binary.hpp` `pal_metadata`,
+  `XglLayout` / `xgl_layout`, `push_base`; with local patch 35 for the gfx11 / gfx10.3 prologue and `synthesize`;
+- the int4 QKV guard: `linux/build/build_network.py` writes `int4-qkv.txt` (the `NR_SWQ4` pipelines: `fswin256`,
+  `fswindsp256`, `fswinp256`, `fswinpds256`, in `int4-ultra\shaders`) and `nr_graph.cpp` refuses a build that would run
+  one on a layer without its int4 QKV tables (`g_qkv4_blocks`; log `int4 QKV guard: ...`). A wrong picture without an
+  error was seen upstream on RDNA3 Optimized Ultra with persistent runs off; RDNA4 runs them, so here it only guards;
+- the Preprocess neutral inverse bounded near the clip (`renodx-prep/prep_math.glsl`, `prep_resolve.hlsli`: the gap
+  to the clip at least 1/128, was 1e-6), against pure-colour blotches when Edit strength drives a bright channel to the
+  clip, and Edit strength's guard for a channel near zero (`renodx-fast/st_apply.comp`). The three files are
+  upstream's byte for byte; `passes/runtime_prep.comp` (the runtime's own preprocess, outside the stage) keeps its
+  1e-6 as upstream's does.
+
+Host (`MochizukiNrRuntime.cpp`, not in this tree): a network build that fails with `nr::binary::Error` (ACO's code
+itself: a record, its template, an import the driver refuses, a layout the adapter does not know) turns ACO off for the
+process (`nr::binary::disable`) and builds again with the driver's compiler, as upstream's host does; before, NR stayed
+off ("network build failed ... unsupported XGL user-data layout"). Out of memory and a lost device stay the build's
+failure.
+
+Not taken: the D3D12 passthrough (`windows/src/pe/nr_d3d12_passthrough*`, `nr_d3d12_net_plan.hpp`), Passes (fast)
+Interleaved and the renumbered `fast_method` (OptiScaler's `MochizukiRenoFastMethod` keeps 0 Extrapolation .. 3 Edit
+strength), the history rotation (`Temporal::extra`, `select_history`), `EngineFrame::history`, upstream's RDNA3 bundle
+(`windows/data/aco/rdna3`, record stand-ins, `record_reference`), the driver-asked architecture detection
+(`nr_gpu_arch.hpp`, `nr_gpu_arch_ids.hpp`, `GpuArch`; `nr::Arch` of patch 31 stays), the `splice` machine check that
+refuses gfx10.3, `renodx_prep.comp`'s fused paths and the `_up` resolves, `weights_out`/`plan_d3d12_network`, the HUD,
+NR Control and FG changes of its host.
+
+Data the build makes: every network SPIR-V of every folder (shaders, shaders-rdna3, shaders-rdna2, shaders-rdna2-int8,
+aco, aco/int4, aco/optimized, aco/experimental, int4, int4-performance, int4-ultra) and aco-gfx11 byte-identical to
+mz-gfx11-hybrid's build; new `int4-ultra\shaders\int4-qkv.txt`; five RenoDX SPIR-V changed (`renodx_prep`,
+`renodx_st_apply`, `renodx_v6_pedestal_reduce_unshaped_prep`, `renodx_v6_resolve_commit_prep`,
+`renodx_v6_resolve_prep`, each 16-276 bytes larger), so `prewarm\manifest.txt` (its folder line: file list and sizes
+of `shaders\`) was made again; the RDNA3 and RDNA2 lists cover their own folders and stay.
+
+Harness (RX 9070 XT, AMD Software 26.10.1, `tools/rx7000-kit/mz_e2e.cpp`, test.png, 40 frames, pan 8 px a frame where
+noted; `D:\mz-009-core\t\tests.ps1` of the sync), against mz-gfx11-hybrid (470041070, the staged build):
+- RDNA4 small and 310.8 model, 720p and 1080p, driver compiler and ACO, pan: byte-identical (8 of 8); Optimized Ultra
+  (int4; log `int4 QKV guard: 4 pipelines, 8 layers with tables, consistent`) and Experimental, ACO, 720p and 1080p: byte-identical;
+- forced RDNA3 (`MZ_FORCE_RDNA3=1`) and RDNA2 FP16 / INT8 (`MZ_FORCE_RDNA2=1`, `MZ_RDNA2_INT8=1`), 1152x648 and 1080p,
+  ACO off and on: byte-identical (12 of 12);
+- RenoDX stage, 1080p, pan, exposure off (`E2E_PREP_EXPOSURE=0`; with auto exposure the stage is not deterministic run
+  to run, 51 dB between two runs of the same build): Preprocess filmic and neutral alone, and Passes (fast)
+  Extrapolation, byte-identical; Edit strength 2 / 4: 52.0-52.6 dB, 1.8% of the pixels (about 1.0-1.3% by more than
+  1/255; dark channels of bright pixels, the guard); neutral Preprocess + Edit strength 4: 28.4-28.6 dB, 1.8% of the
+  pixels, max 2.4-2.6 (the pure-colour blotches gone); filmic + Edit strength 4: 54.2 dB, 1.4%. Two runs gave the same
+  bytes;
+- issue 5 (`E2E_DEVICE_EXTENSIONS=VK_EXT_vertex_input_dynamic_state=1000352000`, renamed exe, own data folder), ACO,
+  720p and 1080p: the build before fails (`unsupported XGL user-data layout`, NR off); now `push constants at user data
+  2`, ACO imports and the output is byte-identical to the plain device's;
+- every ACO record damaged (`adapter code checksum`): before, the build failed; now `ACO off: the ACO network did not
+  build (...); building with the driver's compiler` and the output is byte-identical to the driver-compiled network's.
 
 ### Sync to v0.0.8.3 (2026-11-09)
 
@@ -675,7 +748,17 @@ optional `shell\` and `shell-aliases.txt`) and takes it when the PAL adapter tak
 0x41, gfx1101 0x46, gfx1102 0x47 by device id); otherwise `[mochizuki] ACO off for the RDNA3 network: no gfx11 ACO
 records ...` or `... the PAL adapter does not take this GPU's code objects`, and the driver compiles
 `shaders-rdna3`. Since local patch 28 the adapter takes gfx11 (and gfx10.3) code objects and a pipeline without a
-working record falls back to the driver alone; the records are in `windows/data/aco/gfx11/` (not yet in the build).
+working record falls back to the driver alone; the records are in `windows/data/aco/gfx11/`.
+
+Local patch 34 (2026-11-16, RX 7000 speed kit on an RX 7900 XTX and RX 7800 XT): the build ships `aco-gfx11` with
+only the 8 records ACO won on both cards (`tools/build-mochizuki-aco-gfx11.py`: fswin32nh, fswinfusedup64, gemmproj,
+gemmprojc, gemmprojt, gemmvact, gemmvqkvs, and vitattn as ACO's compile of the matrix body; `windows/data/aco/gfx11/
+shaders` keeps the three whose ACO SPIR-V is not shaders-rdna3's). With that bundle (`nr::binary::gfx11_slim`: no
+`shaders\g_attn.spv`) the network is shaders-rdna3's, those kernels taken from the bundle's `shaders\`, within 240-960
+ViT tokens (1152x648-2560x1440, `NR_RDNA3_ACO_MIN`/`_MAX`); outside that range every kernel is the driver's
+(`nr::binary::driver_only`). The driver's matrix vitattn (`g_vitattncm`) runs from 448 tokens (1706x960) up: wrong at
+240/288 on both cards, right at 448-2160. Log: `[nr] RDNA3 ACO: N ViT tokens, ...` and `[nr] RDNA3 vitattn:
+ACO-cooperative-matrix|cooperative-matrix|native body`.
 
 On an RX 9070 XT with `MZ_FORCE_RDNA3=1` (driver 26.9.2) every pipeline compiles, the network builds (16 s cold at
 1080p) and runs at 720p, 1080p and 4K without errors; the picture is wrong, as gfx12's fragment layout is not gfx11's.

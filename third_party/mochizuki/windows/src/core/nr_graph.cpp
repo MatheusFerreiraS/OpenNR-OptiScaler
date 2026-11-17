@@ -218,6 +218,9 @@ static bool tchain_kern(const std::string& k);
 // int4 mixed: per Swin block whether its MLP weights took the hard-swish fold, and the e_off values that are int4
 // records (never packed as matrices).
 static std::map<int, bool> g_hs_folded;
+// The blocks whose Swin layer got its int4 QKV tables (record words 10-12; NR_SWQ4 pipelines read them): the guard
+// below refuses an int4-QKV pipeline on any other block (its words would be 0 - the tables read from the buffer's start)
+static std::set<int> g_qkv4_blocks;
 static std::set<uint32_t> g_swi4_eoff;
 // The int4 pipelines are their base kernels for every table keyed on kernel names.
 static std::string i4base(const std::string& k) {
@@ -1824,7 +1827,7 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
     // the int4 state too - one process may build the exact and the int4_mixed network in turn ([Int4Mixed] Hotkey)
     // The installed int4 weights file is read once per build (the arena probe build inside it uses the same copy) and
     // let go when the build ends, as are the ViT weight copies: nothing int4 stays in host memory after a build.
-    g_hs_folded.clear(); g_swi4_eoff.clear();
+    g_hs_folded.clear(); g_qkv4_blocks.clear(); g_swi4_eoff.clear();
     if (!arena_probe) { g_i4_wsave.clear(); i4_store_reset(); }
     struct I4OutScope {
         std::string path; std::vector<I4Entry> list; bool out = false, top = false;
@@ -2510,6 +2513,7 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
                         const I4Mat imq = i4_obtain(std::string(nb) + ".qkv", qsel, N3, K4, 1, yaq);
                         rv[11] = pairrec(imq.q, N3, K4);
                         rv[12] = f16pairs(imq.sc, N3);
+                        g_qkv4_blocks.insert(s.block);
                     }
                     std::vector<uint8_t> rec(256, 0);
                     std::memcpy(rec.data(), rv, sizeof rv);
@@ -5669,6 +5673,28 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
             nr::logf("hard-swish guard: %zu pipelines, folds consistent", hs.size());
         }
     }
+    // guard: a pipeline built with the int4 QKV products (spv marker int4-qkv.txt: NR_SWQ4) runs only layers that have
+    // their int4 QKV tables. Ultra has them for the encoder's C=256 layers only; with persistent runs off (RDNA3's
+    // default) the decoder's C=256 layers ran the same plain kernel with record words 0 and read garbage tables - a wrong
+    // picture and no error (RDNA3 OPTIMIZED Ultra, 0.0.8.4-t17). block-routes.txt gives the encoder its own pipeline.
+    {
+        const std::string qm = spv_dir + "/int4-qkv.txt";
+        if (std::filesystem::exists(qm)) {
+            std::set<std::string> q4;
+            { std::ifstream f(nr::u8::path(qm)); std::string k; while (f >> k) q4.insert(k); }
+            std::string bad;
+            for (const Disp& d : disp) {
+                if (!q4.count(d.kern)) continue;
+                std::vector<int> blocks;
+                if (d.lo >= 0) for (int q = d.lo; q <= d.hi; ++q) blocks.push_back(run[size_t(q)]->block);
+                else if (d.s) blocks.push_back(d.s->block);
+                for (int b : blocks)
+                    if (!g_qkv4_blocks.count(b)) bad += " b" + std::to_string(b) + "@" + d.kern;
+            }
+            if (!bad.empty()) throw std::runtime_error("int4 QKV pipeline on a layer without its int4 QKV tables:" + bad);
+            nr::logf("int4 QKV guard: %zu pipelines, %zu layers with tables, consistent", q4.size(), g_qkv4_blocks.size());
+        }
+    }
 #endif
     // One pass of the graph a submit. A pass is a few milliseconds, which is
     // under a display frame, so the compositor is never blocked for longer than
@@ -6088,6 +6114,25 @@ bool NrSession::make_images(int argc, char** argv) {
 }
 
 void NrSession::create_kernels(const std::string& spv_dir, const std::set<std::string>& chain) {
+    const auto env_u32 = [](const char* name, uint32_t fallback) {
+        const char* v = std::getenv(name);
+        return v && *v ? uint32_t(std::strtoul(v, nullptr, 10)) : fallback;
+    };
+    // RX 7000 with the shipped aco-gfx11 bundle (nr::binary::gfx11_slim): ACO's code runs only where the RX 7000 speed
+    // kit saw it right, 240 to 960 ViT tokens (1152x648 to 2560x1440; NR_RDNA3_ACO_MIN / _MAX); outside that the driver
+    // compiles every kernel, as without the bundle.
+    const std::string aco_dir = nr::binary::directory();
+    const bool slim = ctx.arch == nr::Arch::rdna3 && nr::binary::gfx11_slim(aco_dir);
+    uint32_t vit_tokens = 0;
+    for (const Disp& d : disp)
+        if (d.kern == "vitattn" && d.push.size() >= 12) { std::memcpy(&vit_tokens, d.push.data() + 8, 4); break; }
+    const bool aco_range = slim && vit_tokens >= env_u32("NR_RDNA3_ACO_MIN", 240) && vit_tokens <= env_u32("NR_RDNA3_ACO_MAX", 960);
+    struct DriverOnly { bool was = nr::binary::driver_only; ~DriverOnly() { nr::binary::driver_only = was; } } driver_only;
+    if (slim) {
+        nr::binary::driver_only = !aco_range;
+        nr::logf("[nr] RDNA3 ACO: %u ViT tokens, %s", vit_tokens,
+                 aco_range ? "ACO's code where the bundle has a record" : "the driver compiles every kernel");
+    }
     for (const Disp& d : disp) {
         if (kern.count(d.kern)) continue;
         // A host going away (nr::build_cancel) stops here, between two
@@ -6097,12 +6142,39 @@ void NrSession::create_kernels(const std::string& spv_dir, const std::set<std::s
             throw std::runtime_error("NR build cancelled");
         }
         struct Tick { ~Tick() { ++nr::g_build_pipes_done; } } tick;
-        std::string p = spv_dir + "/g_" + d.kern + ".spv";
+        const std::string own = spv_dir + "/g_" + d.kern + ".spv";
+        std::string p = own;
+        // The shipped aco-gfx11 bundle: a kernel whose ACO SPIR-V it holds in shaders\ (its record beside) runs that
+        // within ACO's range; its template, for the container or the driver's fallback, is shaders-rdna3's.
+        if (aco_range) {
+            const std::string a = aco_dir + "/shaders/g_" + d.kern + ".spv";
+            if (std::ifstream(nr::u8::path(a)).good()) p = a;
+        }
         // RX 7000 kits (local patches 22-24), diagnostic only: NR_RDNA3_ATTN / NR_RDNA3_VITATTN = <file>.spv runs that
         // SPIR-V (same bindings and push block) in place of the shipped g_attn.spv / g_vitattn.spv.
         if (ctx.arch == nr::Arch::rdna3 && (d.kern == "attn" || d.kern == "vitattn")) {
             const char* e = std::getenv(d.kern == "attn" ? "NR_RDNA3_ATTN" : "NR_RDNA3_VITATTN");
             const std::string mode = e ? e : "";
+            // vitattn: the native body is right on gfx11 at every size. The cooperative-matrix one (g_vitattncm, 0.5.8's)
+            // is faster; the driver's compile of it was wrong at 240 and 288 tokens (1152x648, 1280x720) and right from 448
+            // (1706x960) to 2160 (3840x2160) on the RX 7900 XTX and 7800 XT, so it runs from NR_RDNA3_VITATTN_COOP_MIN tokens
+            // (448). ACO's compile of it (aco-gfx11\shaders\g_vitattn.spv, its record in the bundle) was right at 240-960
+            // and is faster still: it runs there when the bundle is in use. NR_RDNA3_VITATTN=coop / native forces the
+            // driver's matrix or native body.
+            if (d.kern == "vitattn" && d.push.size() >= 12) {
+                uint32_t tokens = 0;
+                std::memcpy(&tokens, d.push.data() + 8, 4);
+                const uint32_t min_tokens = env_u32("NR_RDNA3_VITATTN_COOP_MIN", 448);
+                const std::string cm = spv_dir + "/g_vitattncm.spv";
+                if (mode == "coop" || mode == "native") p = own;
+                const char* body = p != own ? "ACO-cooperative-matrix" : "native";
+                if (p == own && (mode == "coop" || (mode != "native" && tokens >= min_tokens)) &&
+                    std::ifstream(nr::u8::path(cm)).good()) {
+                    p = cm;
+                    body = "cooperative-matrix";
+                }
+                nr::logf("[nr] RDNA3 vitattn: %s body, %u tokens", body, tokens);
+            }
             if (mode.size() > 4 && mode.compare(mode.size() - 4, 4, ".spv") == 0 && std::ifstream(mode).good()) {
                 p = mode;
                 nr::logf("[nr] RDNA3 %s: %s", d.kern.c_str(), p.c_str());
